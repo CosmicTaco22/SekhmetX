@@ -1,0 +1,39 @@
+[package]
+name = "rdicom-viewer"
+version = "0.1.0"
+edition = "2024"
+description = "A small DICOM viewer for Windows, written in Rust (inspired by IsiX / Horos / OsiriX)"
+license = "LGPL-3.0-or-later"
+
+[dependencies]
+anyhow = "1"
+walkdir = "2.5"
+rayon = "1"
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# GUI: egui via eframe (OpenGL renderer works on any Windows PC)
+eframe = { version = "0.37", default-features = true }
+# Native "Open folder" dialog
+rfd = "0.17"
+
+# DICOM (pure Rust, from the dicom-rs project)
+dicom-object = "0.10"
+dicom-dictionary-std = "0.10"
+dicom-core = "0.10"
+# native = JPEG baseline/lossless, RLE, deflate; openjpeg-sys = JPEG 2000 via the reference OpenJPEG C library (built from source, no install needed)
+dicom-pixeldata = { version = "0.10", default-features = false, features = ["rayon", "native", "openjpeg-sys", "image"] }
+
+[features]
+default = ["jpegls"]
+# JPEG-LS support needs a C++ compiler + CMake; enable with --features jpegls
+jpegls = ["dicom-pixeldata/charls"]
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+
+# Decode quickly even in debug builds
+[profile.dev.package."*"]
+opt-level = 2
