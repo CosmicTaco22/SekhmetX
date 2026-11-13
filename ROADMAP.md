@@ -1,5 +1,8 @@
 # Roadmap: porting IsiX features to Rust
 
+> **Superseded by [`PORTING_MAP.md`](PORTING_MAP.md)**, which covers every IsiX file and
+> is generated from `porting/map.toml`. This file is kept as the original overview.
+
 IsiX's Swift code is mostly macOS interface glue. What carries over is the
 logic and data: measurement maths, slice handling, reslicing, colour tables,
 presets and rules. Each item lists where to look in the IsiX source

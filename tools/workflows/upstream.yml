@@ -1,0 +1,90 @@
+name: Track IsiX and Horos
+
+# Every Monday, check IsiX and Horos for changes since the last review and keep
+# one GitHub issue per upstream up to date with what changed, sorted by area of
+# the porting map. Run it by hand from the Actions tab at any time.
+#
+# After reviewing an issue, record the review point and commit it:
+#   python3 tools/upstream.py mark-reviewed isix
+#   git commit -am "Reviewed IsiX up to <commit>" && git push
+# The next run then closes the issue.
+
+on:
+  schedule:
+    - cron: "17 10 * * 1"   # Mondays 10:17 UTC (07:17 in Buenos Aires)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - upstream: isix
+            label: IsiX
+          - upstream: horos
+            label: Horos
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ISSUE_LABEL: upstream-${{ matrix.upstream }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the porting map
+        run: python3 tools/test_map.py
+
+      - name: Fetch ${{ matrix.label }}
+        run: python3 tools/upstream.py fetch ${{ matrix.upstream }}
+
+      - name: Build the report
+        id: report
+        run: >
+          python3 tools/upstream.py report ${{ matrix.upstream }}
+          --out report.md --full-out report-full.md --max-chars 60000
+          --full-note "The full report is attached to this run: ${RUN_URL}"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Check every upstream file is in the porting map
+        run: python3 tools/upstream.py coverage ${{ matrix.upstream }} | tee coverage.txt
+
+      - name: Keep the full report
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-${{ matrix.upstream }}-report
+          path: |
+            report-full.md
+            coverage.txt
+
+      - name: Open or update the review issue
+        if: steps.report.outputs.commits != '0'
+        run: |
+          until="${{ steps.report.outputs.until }}"
+          title="${{ matrix.label }}: ${{ steps.report.outputs.commits }} upstream commits to review (up to ${until})"
+          gh label create "$ISSUE_LABEL" --color 1d76db --description "Upstream changes to review" --force
+          num=$(gh issue list --label "$ISSUE_LABEL" --state open --json number,title --jq '.[0].number // empty')
+          if [ -z "$num" ]; then
+            gh issue create --title "$title" --label "$ISSUE_LABEL" --body-file report.md
+          elif gh issue view "$num" --json title --jq .title | grep -q "up to ${until})"; then
+            echo "Issue #$num already covers ${until}; nothing new."
+          else
+            gh issue edit "$num" --title "$title" --body-file report.md
+            gh issue comment "$num" --body "Updated: ${{ matrix.label }} now has changes up to \`${until}\`. The list above was refreshed (ticks reset). Run: ${RUN_URL}"
+          fi
+
+      - name: Close the issue when everything is reviewed
+        if: steps.report.outputs.commits == '0'
+        run: |
+          num=$(gh issue list --label "$ISSUE_LABEL" --state open --json number --jq '.[0].number // empty')
+          if [ -n "$num" ]; then
+            gh issue close "$num" --comment "All ${{ matrix.label }} changes are reviewed (porting/upstream.toml is up to date)."
+          fi

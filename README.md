@@ -90,8 +90,14 @@ rdicom-viewer --render FOLDER OUT.png [SERIES] [IMAGE] [WIDTH LEVEL]
 | `src/main.rs` | Startup and command-line helpers |
 
 Built on [dicom-rs](https://github.com/Enet4/dicom-rs) for DICOM and
-[egui](https://github.com/emilk/egui) for the interface. See `ROADMAP.md` for the
-plan to bring over more of IsiX.
+[egui](https://github.com/emilk/egui) for the interface.
+
+## Porting from IsiX
+
+- `PORTING_MAP.md`: every area of IsiX/Horos, what we do with it (port, rebuild,
+  replace, skip), its priority and RDicom's progress.
+- `porting/README.md`: how the map works and how RDicom keeps up with new IsiX
+  and Horos changes (a weekly GitHub workflow opens an issue listing them).
 
 ## Licence
 

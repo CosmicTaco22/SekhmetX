@@ -1,0 +1,438 @@
+# RDicom porting map
+#
+# Every file in IsiX (github.com/ThalesMMS/IsiX-DICOM-Viewer-macOS), and in
+# Horos, which IsiX is forked from, belongs to exactly one area below.
+# tools/upstream.py uses this file to sort upstream changes by area, and to
+# generate PORTING_MAP.md.
+#
+# How files are matched: areas are tried in the order they appear in this file,
+# and the first match wins.
+#   paths  regular expressions searched against the full path in the repo
+#   names  regular expressions that must match the whole file name, without
+#          extension and without an Objective-C "+Category" suffix
+#          (e.g. "DCMView+Drawing.m" is matched as "DCMView")
+# Broad, folder-based areas come first; feature areas follow.
+#
+# Field meanings:
+#   decision  port     translate the logic to Rust (with its tests)
+#             rebuild  recreate the screen/behaviour in Rust (egui + wgpu), matching Horos
+#             replace  use an existing Rust crate instead
+#             reuse    copy the data files as they are
+#             skip     not planned
+#             meta     build files, docs, tests, translations: not app code
+#   priority  1 = daily reading core, 2 = next, 3 = later, 4 = maybe, 0 = never
+#   progress  todo / partial / done (for RDicom)
+#   rdicom    where it lives (or will live) in RDicom
+#   ported_from  IsiX commit the RDicom code was last brought up to date with
+
+# ---------------------------------------------------------------- folder-based
+
+[[area]]
+id = "meta"
+name = "Build system, docs, scripts, test harnesses, release tooling"
+decision = "meta"
+priority = 0
+progress = "done"
+paths = ['^(DicomImporter|Horos Launcher|LetsMoveAndDock)/', '^DCM Framework/(DCMSampleApp|Sample App)/',
+         
+  '^(tests|tools|script|updates|screenshots|Examples|API|Binaries|FinderPreview|Decompress)/',
+  '^Horos\.xcodeproj/', '^Horos/(Scripts|Configuration|Unit Tests)/',
+  '^[^/]+$',                         # top-level files: README, Makefile, licences...
+  '^Horos/[^/]+$',                   # Info.plist, entitlements, xcconfig, pch
+  '^\.github/', '^Modules/Package\.swift$',
+]
+
+[[area]]
+id = "translations-icons"
+name = "Translations, icons, help pages"
+decision = "meta"
+priority = 0
+progress = "done"
+notes = "Icons are Horos artwork: draw our own. Spanish UI text can be added later."
+paths = [
+  '^Horos/Resources/[^/]+\.lproj/', '^Horos/Resources/Icons/',
+  '^Horos/Resources/(iChatTheatreHelp|WebServicesHTML|QTExport[^/]*|ReportsToPDF)',
+  '^Horos/Resources/.*\.(png|tiff?|icns|pdf|jpg|gif|html|css|js|xib|nib|storyboard|strings|rtf)$',
+]
+
+[[area]]
+id = "data-assets"
+name = "Colour tables, 3D presets, DICOM dictionaries"
+decision = "reuse"
+priority = 1
+progress = "todo"
+rdicom = "assets/"
+crates = "plist"
+notes = "CLUTs and 3D presets are plain data files: load them directly. Check licence notes for the dicom3tools tables."
+paths = ['^Horos/Resources/']
+
+[[area]]
+id = "third-party"
+name = "Bundled third-party code (OpenSSL, libarchive, VTK/ITK helpers, codecs)"
+decision = "replace"
+priority = 0
+progress = "done"
+crates = "rustls, zip/tar, dicom-pixeldata (OpenJPEG, CharLS)"
+paths = ['^DCM Framework/jasper/', '^NIfTI_Library/', '^Papyrus3/',
+         '^Horos/Sources/ThirdParty/', '^OpenSSL/', '^Horos/Models/']
+names = ['JRSwizzle', 'altivecFunctions', 'kdu_.*', 'OPJSupport',
+         'archive(_entry)?', 'options', 'url', 'vtk.*', 'Horos-Bridging-Header']
+
+[[area]]
+id = "glue"
+name = "Swift/Objective-C bridges and adapters"
+decision = "skip"
+priority = 0
+progress = "done"
+notes = "Glue between IsiX's old and new code. Rust needs none of it, but read it to find which module does the real work."
+paths = ['^IsiXLegacyBridge/', '^Horos/Sources/Adapters/']
+names = ['IsiX(Database|Network|Viewer)Adapter', 'HorosDCMFacade', 'HorosArchitectureAudit', 'HorosPlatformPolicy',
+         'HorosObjCException', 'MainActorCallbacks', 'DeferredCalls', 'ObservedThread', 'HorosBoundedTask']
+
+[[area]]
+id = "ui-toolkit"
+name = "Cocoa widgets and helpers (Nitrogen, custom cells, NS categories)"
+decision = "replace"
+priority = 0
+progress = "done"
+crates = "egui"
+notes = "Generic AppKit building blocks. Replaced by egui widgets; only copy their look where Horos users would notice."
+paths = ['^NSFont_OpenGL/',
+         '^Nitrogen/']
+names = ['GLString', 'StringTexture', 'OpenGLScreenReader', 'ContextCleaner', 'DragMatrix(WithDelete)?', 'PlaceholderWindowController', 'OsiriXNotificationCenter', '(Static)?Schedul(er|able)', 'Survey',
+         'NS[A-Z].*', 'My[A-Z].*', 'Dark(Box|Panel|Window)', 'KFSplitView', 'Button(AndText)?(Cell|Field)', 'ImageAndTextCell',
+         'PrettyCell', 'MiddleAlignedTextFieldCell', 'OnOffSwitchControl(Cell)?', 'HorosModernControls', 'HorosAlertPanel',
+         'ModalAlertPanel', 'HorosCellSlider', 'DNDArrayController', 'ContextMenuPruning', 'NativeFilterMenus',
+         'stringAdditions', 'stringNumericCompare', 'MutableArrayCategory', 'OwnColorSpaceBitmap', 'HorosContentBounds',
+         'OpeningContentBounds', 'ThreadModalForWindowController', 'ColorView', 'CustomIntervalPanel', 'Wait', 'ProgressPanel',
+         'PieChartImage', 'LogTableView', 'ToolbarPanel', 'ToolBarNSWindow', 'ToolbarImage', 'ToolbarMenuBridge', 'ToolbarPolicy']
+
+# ---------------------------------------------------------------- not planned
+
+[[area]]
+id = "plugins"
+name = "OsiriX/Horos plugin system"
+decision = "skip"
+priority = 0
+progress = "todo"
+notes = "Plugins are Objective-C bundles and cannot load in a Rust app."
+paths = ['^Plugins/', '^IsiXPluginKit/', '^Modules/IsiXPluginLoading/']
+names = ['OSIStudy',
+         'Plugin.*', 'HorosPlugin.*', 'IsiXPlugin.*', 'LegacyPluginIngest', 'pluginSDKAdditions']
+
+[[area]]
+id = "web-sharing"
+name = "Web portal, HTTP/XML-RPC servers, shared databases, Bonjour sharing"
+decision = "skip"
+priority = 0
+progress = "todo"
+paths = ['^cocoahttpserver/',
+         '^Modules/IsiXHTTPServer/']
+names = ['IChatTheatre.*', 'XMLControllerDCMTKCategory', 'DCMCalendarScript',
+         'WebPortal.*', 'HTTP.*', 'XMLRPC.*', 'ExternalRequestHandler', 'SharedDatabase.*', 'HorosDatabaseServer',
+         'BonjourPublisher', 'HorosWebPathSafety', 'PortalStudyLinks', 'XMLController', 'RemoteDicomDatabase',
+         'Scripting_Additions', 'NSAppleScript']
+
+[[area]]
+id = "print-burn-mail"
+name = "DICOM printing, CD/DVD burning, e-mail, Photos, iCloud"
+decision = "skip"
+priority = 0
+progress = "todo"
+paths = ['^DICOMPrint/', '^Modules/IsiXMail/', '^Preference Panes/OSICDPreferencePane/']
+names = ['DCMTKPrintSCU',
+         'DICOMPrintPreview', 'PrintSelection', 'ViewerPrintJob', 'printView', 'PSGenerator', 'Burner.*', 'DiscBurningOptions',
+         'Mail.*', 'CSMail.*', 'Photos', 'ICloudDriveDetector', 'CloudFileAccess', 'CloudReportAssociation']
+
+# ---------------------------------------------------------------- priority 1
+
+[[area]]
+id = "dicom-core"
+name = "DICOM files: parsing, datasets, character sets, transfer syntaxes, DICOMDIR, codecs"
+decision = "replace"
+priority = 1
+progress = "partial"
+rdicom = "src/dicom_index.rs, src/frame.rs"
+crates = "dicom-object, dicom-pixeldata, dicom-dictionary-std"
+notes = "dicom-rs covers most of this. Port IsiX's import rules and edge-case fixes (character sets, broken files) on top."
+paths = ['^DCM Framework/',
+         '^Modules/IsiXDICOM(Dataset|File)/']
+names = ['DCMUSRegion', 'DCMWaveform', 'DicomCompressor', 'DicomImageDCMTKCategory', 'PathForImage', 'FVTiff',
+         '(Horos|IsiX)DCMTK(?!Query|Store|Move|Get|SCP|Root|Study|Series|Image|Anonymizer|StructuredReport).*',
+         'DCMTKFileFormat', 'DicomFile.*', 'DICOMToNSString', 'DICOMKeyword', 'DICOMTagPath', 'DICOMTrailingDataRepair',
+         'HorosDICOM(Probe|Representation|Identity|Writer|EditingStorage|GlobalAbort)', 'HorosDerivedUID',
+         'HorosJPEG2000Codec', 'HorosJPEGColourModel', 'DicomDir(Parser)?', 'DicomdirReader', 'HorosDicomDirIcons',
+         'WrappedImageFragments', 'H264.*', 'BioradHeader', 'Analyze', 'DicomData', 'DCMObject.*', 'HorosRasterSeriesFolder',
+         'HorosHVRVOL02', 'NiftiAtlasConversion', 'HorosAtlasConversion', 'PhilipsCTECG', 'DICOMTriageMetadata']
+
+[[area]]
+id = "geometry"
+name = "Geometry: vectors, planes, patient coordinates, Bezier paths"
+decision = "port"
+priority = 1
+progress = "todo"
+rdicom = "src/geometry.rs (planned)"
+crates = "glam or nalgebra"
+paths = ['^Modules/IsiXGeometry/', '^Modules/IsiXImaging/(Sources|Tests)/(Geometry|ViewGeometry)/']
+names = ['Quaternion',
+         'Point3D', 'OSIGeometry', 'Spline3D', 'Piecewise3D', 'Interpolation3D', 'CroppedImageGeometry', 'GantryTiltPolicy']
+
+[[area]]
+id = "imaging"
+name = "Pixel pipeline: frame loading, rescale, window/level, VOI LUT, overlays, image maths"
+decision = "port"
+priority = 1
+progress = "partial"
+rdicom = "src/frame.rs, src/loader.rs"
+notes = "The core of how images look. Port VOILUTMapping, FramePhotometry and WindowRendering first and test against IsiX's tests."
+paths = ['^Modules/IsiXImaging/(Sources|Tests)/BufferOperations/(?!PETSUV|SUV|T1|T2|SyntheticDiffusion|BValue)',
+         '^Modules/IsiXImaging/(Sources|Tests)/(Display|NonDICOM|Calibration)/',
+         '^Modules/IsiXImaging/Sources/(?![^/]*SUV)[^/]+$']
+fallback_paths = ['^Modules/IsiXImaging/']
+names = ['DCMPix', 'DCMPixSettings', 'VOILookupTable', 'ColourTableCache', 'HighDynamicRangePolicy', 'Monochrome1Thumbnails',
+         'SliceIntervalRegularity', 'AcquisitionTimeOrdering', 'HeaderImagePair', 'RawDataImport', 'ViewerPixelValues',
+         'FourDSeriesGuard', 'WindowLevelText', 'ViewerWindowLevel', 'ViewerColourTables', 'PreviewWindowing']
+
+[[area]]
+id = "viewer-2d"
+name = "2D viewer: viewport, tools, scrolling, cine, annotations, layouts, sync, toolbar"
+decision = "rebuild"
+priority = 1
+progress = "partial"
+rdicom = "src/app.rs"
+crates = "egui, wgpu"
+notes = "Where Horos's feel lives. Rebuild screen by screen, side by side with Horos."
+paths = ['^Modules/IsiXImaging/(Sources|Tests)/(Viewer(?!Fusion|Reconstruction|Export)[A-Za-z]*|View(Input|Drawing|Capture|Series|Presentation)|Annotations|SeriesOperations)/']
+names = ['Loupe(Controller|View|Window)', 'HangingProtocolController',
+         'DCMView', 'DCMViewSettings', 'DCMCursor', 'ViewerController', 'ViewerControllerStorage', 'CinePlayback',
+         'ImageNavigationSlider', 'MagnifierPresentation', 'PreciseMouse', 'ScrollDirection', 'ScrollPositionPreview.*',
+         'ToolModeCapability', 'OsiriXToolbar', 'ViewerToolbarItem.*', 'Annotation(Overlay|Level|Presentation)', 'AnnotationsPopUp',
+         'CaptureAnnotations', 'LengthPresentation', 'MeasurementLabelSuppression', 'Planar(FramePresenter|HostRenderer|Metal4?Renderer|PerformanceTrace)',
+         'Metal.*', 'WaitRendering', 'TilingArea', 'WindowLayoutManager', 'SyncSeriesIndex', 'ViewerReferenceLines',
+         'ViewerSyncState', 'PatientCrosshairController', 'SeriesView', 'StudyView', 'ThumbnailsList.*', 'ViewerWindow.*',
+         'FullScreen.*', 'NSFullScreenWindow', 'ViewerSeries(Load|Loader|Reduction|Reorientation|Duplicate)', 'ViewerSpacingGapFill',
+         'SeriesImageLoader', 'ImagePresentationStore', 'ViewerPresentationState', 'ViewerSettingsPropagator', 'ViewerUndoQueue',
+         'ViewerContextualMenuBuilder', 'ViewerMenuValidation', 'KeyWindowReturn', 'MagneticWindowSnapping', 'WindowSizeLimits',
+         'Viewer(Registry|SessionGraph|StudyOpening|Opener|StudyCommands|ImageDrag|FileDropTarget|WorkspaceArchiver|AutounbinderDetach|BindingTeardown)',
+         'Navigator(View|WindowController)', 'PaletteController', 'SelectionView', 'PreviewIdentity', 'ScreenCaptureSeriesName',
+         'OSIWindow(Controller)?', 'OSIEnvironment', 'PresetMenuCache', 'PresetPageLayout', 'ViewerSeriesReslice']
+fallback_names = ['Viewer.*']
+
+[[area]]
+id = "roi-measurements"
+name = "ROIs and measurements: length, angle, ellipse, polygon, brush, statistics, ROI manager"
+decision = "port"
+priority = 1
+progress = "partial"
+rdicom = "src/app.rs (length, angle); src/roi/ (planned)"
+notes = "Statistics and geometry port directly from IsiXROI with its 25 test files; drawing tools are rebuilt."
+paths = ['^Modules/IsiXROI/']
+names = ['ROI.*', 'Viewer(ROI.*|BrushROIs|LengthRatio|PointsBetween|VolumeLengths)', 'OSI.*ROI.*', 'OSIROI.*', 'OSIMask.*', 'Brush.*', 'ViewROIEditing', 'StenosisMeasurement', 'StenosisTool',
+         'CalciumScoringWindowController', 'HorosVolumeLengthROI', 'HorosMPRBrush', 'HorosLegacyROISeg', 'MyPoint',
+         'CurveFitter', 'Plot(View|Window)', 'Histo(View|gramWindow)', 'ROITemporalStatistics', 'OSIROIManager']
+
+[[area]]
+id = "database-import"
+name = "Local database and import: indexing, folders, archives, incoming, storage"
+decision = "port"
+priority = 1
+progress = "partial"
+rdicom = "src/dicom_index.rs; src/db/ (planned)"
+crates = "rusqlite"
+notes = "IsiX already moved to SQLite (IsiXStorage), which maps directly onto rusqlite."
+paths = ['^Modules/IsiX(Database|Storage)/']
+fallback_names = ['.*Import']
+names = ['Database.*', 'Dicom(Database|Study|Series|Image|Album)', 'DCMModel', 'CoreDataAlbumStore', 'Import.*',
+         'Incoming.*', 'IncomingFolderOnQuit', 'DicomFileIndexer', 'UnindexedFileImport', 'ArchiveImportLedger', 'MediaImportJob',
+         'MediaScanTiming', 'MediaVolumeScan', 'URLImport.*', 'ConversionImportFallback', 'EnhancedImportTriage', 'IVUSImportTriage',
+         'ImportedFileNames', 'HorosImportFileSafety', 'HorosDatabaseFileValidation', 'IndexRecovery', 'LocalDatabaseStudyReader',
+         'HorosLocalQueryReader', 'StorageLocations', 'StorageFailure', 'LocalCompleteness', 'Missing(File|Pixels)Reason',
+         'ExcludedSeriesPlaceholders', 'KeyObjectSelectionIndexing', 'SelectionMarkedImages', 'File(Identity|Revision)',
+         'HorosAtomicFileWriter', 'HorosFileCopy', 'SourceCopyJob', 'SourceLocation', 'HorosVolumeDiscovery', 'SandboxFileAccess',
+         'O2HMigrationAssistant', 'Study(MergeJob|DeletionJob|FileImporter|FileDICOMWriter|ImageIndex|ContentPredicates|States|StatesEditor|NotOpenedReason|OpeningWait)',
+         'Patient(Identity|IdentityChoice|NameMatching|IdentifierList|HistoryList)', 'DraggedImage(File|Promise)', 'ClipboardImagePaste',
+         'HistoricalArchive', 'UpdateArchive', 'DataNodeIdentifier', 'IdentityToken', 'GeneratedSeriesImport', 'VRImageImport',
+         'SurgicalProcedure(Import|Outline)', 'AutoCleanupPreview', 'ForeignDatabaseChoice', 'LegacySupportImportPrompt',
+         'RestrictedUnarchiver', 'AutoCommentRegenerator', 'StudyAnnotationEditor', 'StudyNoteEditor']
+
+[[area]]
+id = "browser"
+name = "Study browser: study list, series thumbnails, previews, albums, search, comparison"
+decision = "rebuild"
+priority = 1
+progress = "partial"
+rdicom = "src/app.rs (browser panel)"
+notes = "The second half of Horos's feel. Match its columns, thumbnails and preview behaviour."
+paths = ['^Modules/IsiXImaging/(Sources|Tests)/ViewerSeriesList/']
+names = ['SearchWindowController',
+         'Browser.*', 'StudyList.*', 'SeriesList.*', 'Thumbnail(Cell|Loader)', 'Preview(View|Window)?', 'O2.*', 'PatientList.*',
+         'Album.*', 'SmartWindowController', 'Comparative.*', 'PreviousStudyMark', 'PreviousSeriesHold', 'Federated.*',
+         'sourcesTableView', 'SourceList', 'StudyListExport', 'OutlineSelectionRestore', 'SeriesReplaceLoadPolicy',
+         'ScrollPositionPreviewGeometry', 'SeriesListColors']
+
+# ---------------------------------------------------------------- priority 2
+
+[[area]]
+id = "network-pacs"
+name = "PACS networking: echo, query/retrieve, send, listener, TLS, worklist"
+decision = "port"
+priority = 2
+progress = "todo"
+rdicom = "src/net/ (planned)"
+crates = "dicom-ul (dicom-rs), rustls"
+paths = ['^Modules/IsiXDICOMNetwork/', '^Preference Panes/OSILocationsPreferencePane/']
+names = ['DCMTKServiceClassUser', 'DCMTKVerifySCU', 'MoveManager', 'OsiriXSCPDataHandler', 'SimplePing',
+         'DCMTK(Query|Store|Root|Study|Series|Image).*', 'IsiXDCMTK(QueryRetrieve.*|Move.*|GetUser|StoreSCU|SCPDatabase)',
+         'PMDICOMStoreSCU', 'Query.*', 'Retrieve.*', 'Send.*', 'DICOMSendSelection', 'DICOMListenerController', 'Listen.*',
+         'DICOMNode.*', 'DicomNodeConfiguration', 'MoveDestinations', 'AssociationContract', 'HorosDIMSE.*',
+         'HorosDICOM(Services|StoreSource)', 'HorosDirectTransfer', 'DICOMTLS', 'HorosTLSConfiguration', 'TLSVerificationPolicy',
+         'Network.*', 'NodeRequestLimiter', 'ReceivingIndicator', 'AutoQueryRestoration', 'CFindKeysCoding', 'SCPDatabaseSession',
+         'ActivitySendTransport', 'RemoteDataNodeIdentifier', 'Bonjour(Browser|Discovery)', 'DICOMBonjourDiscovery',
+         'ModalityWorklist.*', 'RIS.*', 'ListenBindFailure', 'ProgressiveRetrieveState', 'DatabaseRouting.*']
+
+[[area]]
+id = "dicomweb"
+name = "DICOMweb and WADO (QIDO/WADO/STOW, OAuth)"
+decision = "port"
+priority = 2
+progress = "todo"
+crates = "reqwest"
+names = ['DICOMweb.*', 'WADO.*']
+
+[[area]]
+id = "mpr"
+name = "MPR: orthogonal and oblique reslicing, thick slab MIP/MinIP"
+decision = "rebuild"
+priority = 2
+progress = "todo"
+rdicom = "src/mpr/ (planned)"
+crates = "wgpu, rayon"
+paths = ['^Modules/IsiXImaging/(Sources|Tests)/ViewerReconstruction/']
+names = ['MPR.*', 'OrthogonalMPR(Controller|View|Viewer)', 'OrthogonalReslice', 'ResliceCacheLayout', 'ThickSlab(Controller|Range|SliderScale)',
+         'HorosThickSlabSlider', 'ReconstructionPlanePreferences']
+
+[[area]]
+id = "fusion-pet"
+name = "PET-CT fusion and SUV"
+decision = "port"
+priority = 2
+progress = "todo"
+paths = ['^Modules/IsiXImaging/(Sources|Tests)/ViewerFusion/', '^Modules/IsiXImaging/(Sources|Tests)/(BufferOperations/)?(PETSUV|SUV)[A-Za-z]*\.swift$']
+names = ['OrthogonalMPRPETCT.*', 'ViewerFusion', 'PETBlendingTables', 'OrthogonalFusionSliceExport']
+
+[[area]]
+id = "annotations-sr"
+name = "Presentation states (GSPS), key images, structured reports"
+decision = "port"
+priority = 2
+progress = "todo"
+names = ['KeyObject(Controller|PopupController|Report)', '(All|Selected)KeyImagesArrayController',
+         'GSPSDocument', 'Structured.*', 'StructuredReportExtraction', 'HorosStructuredReportBridge',
+         'AnnotationsSRPruning', 'ArchivedSR.*', 'ViewerKeyObjectDocument', 'IsiXDCMTKStructuredReportReader', 'SRAnnotation']
+
+[[area]]
+id = "anonymize-export"
+name = "Anonymization and export (DICOM, images, movies)"
+decision = "port"
+priority = 2
+progress = "todo"
+paths = ['^Modules/IsiXImaging/(Sources|Tests)/ViewerExport/']
+names = ['Anonymiz.*', 'HorosAnonymizationSafety', 'HorosGDCMAnonymizer', 'IsiXDCMTKAnonymizer', 'HorosSelectedAnonymizationCatalog',
+         'DICOMExport', 'DICOMFolderExport', 'Export.*', 'ImageExportPath', 'ViewerImageExporter', 'ViewerMovieExport',
+         'SelectionMovieExport', 'QuicktimeExport', 'QTExportHTMLSummary', 'MovieExportDiagnostics', 'RegisteredGIFExport', 'JPEGExif',
+         'BatchExportManifest', 'StudyMetadataExport', 'DatabaseDragExport', 'DatabaseFilePromiseWriter']
+
+[[area]]
+id = "preferences"
+name = "Preferences, presets, shortcuts"
+decision = "rebuild"
+priority = 2
+progress = "partial"
+rdicom = "src/app.rs (PRESETS); src/settings.rs (planned)"
+notes = "Port the preference values and defaults (IsiXPreferences); rebuild only the settings screens that matter."
+paths = ['^Modules/IsiXPreferences/', '^Preference Panes/']
+names = ['Preference.*', 'Preferences.*', 'DefaultPreferences', 'DefaultsOsiriX', 'MenuShortcut.*', 'TemporaryPreferenceWork',
+         'ApplicationPreferencesSetup', 'LayoutDebuggingDefaults', 'ROIDefaultsWindow']
+
+[[area]]
+id = "app-shell"
+name = "App shell: startup, menus, activity/progress, logging, updates, keychain"
+decision = "rebuild"
+priority = 2
+progress = "partial"
+rdicom = "src/main.rs"
+paths = ['^Modules/IsiX(Contracts|Logging|CrashReporting|Installation|Keychain)/', '^Horos/FeedbackReporter/']
+names = ['AppControllerDCMTKCategory', 'GetPrimaryMACAddress',
+         'AppController', 'Application.*', 'main', 'Horos', 'SplashScreen', 'ReleaseNotes', 'Update(CheckScheduler|FeedClient|Installer)',
+         'Notifications', 'UserNotificationDelivery', 'DockProgress', 'Activity(ProgressCount|Thread)', 'Threads.*', 'ThreadCell',
+         'LogManager', 'Log.*', 'Crash.*', 'HorosApplicationInstaller', 'LicenseAttribution', 'ProtectedMode', 'DistributionChannel',
+         'EventCapturePause', 'Keychain.*', 'NonInteractiveKeychainRead', 'BLAuthentication', 'SFHorosAuthorizationView',
+         'UnifiedLogNSLog', 'HorosSchemeURL', 'HorosOpenDocument', 'HorosPagesCompatibility', 'ProcessGraph']
+
+# ---------------------------------------------------------------- priority 3
+
+[[area]]
+id = "volume-3d"
+name = "3D: volume rendering, MIP/VR, surface rendering, 3D presets"
+decision = "rebuild"
+priority = 3
+progress = "todo"
+crates = "wgpu"
+notes = "IsiX renders 3D with VTK and Metal. Rebuild as a wgpu ray caster; the opacity/colour preset maths ports directly."
+paths = ['^Modules/IsiXVolumeRendering/']
+names = ['SRArrayController', 'NO-VRControllerVPRO',
+         'VR.*', 'Volume(MetalRenderer|Session|Allocation)', 'ViewerVolumeSession', 'ThreeD.*', 'Window3DController', 'ThickSlabVR', 'IsiXVTK.*',
+         'VTK.*', 'SR(View|Controller|SurfacePointGeometry|FlyThruAdapter)', 'Scene(View|Overlay)', 'Camera', 'CLUTOpacityView',
+         'ColorTransferView', 'OpacityTransferView', 'ShadingArrayController', 'StereoPresentation', 'OSIVolumeWindow',
+         'OSIFloatVolumeData', 'OSIVoxel', 'ViewAngleControl', 'IsiXITKVolume', 'ITKVolumeImport']
+
+[[area]]
+id = "cpr"
+name = "Curved MPR (CPR) and straightened views"
+decision = "rebuild"
+priority = 3
+progress = "todo"
+names = ['CurvedMPR', 'Centerline',
+         'CPR.*', 'CurvedMPRPath']
+
+[[area]]
+id = "segmentation-registration"
+name = "Segmentation, registration, subtraction, SEG objects"
+decision = "port"
+priority = 3
+progress = "todo"
+paths = ['^MSRG/',
+         '^Modules/IsiXSegmentation/']
+names = ['LL(DCMView|MPRController|MPRView|MPRViewer|ScoutOrthogonalReslice|ScoutView|ScoutViewer|Subtraction)', 'MSRGSegmentation',
+         'ITK.*', 'IsiXITK.*', 'Segmentation.*', 'TumorSegmentationJob', 'HornRegistration', 'LongitudinalRegistration',
+         'MRIMotionCorrection', 'MaskSubtractionSession', 'DicomSEG', 'HorosSEGSurface', 'SEGViewerSession',
+         'ViewerRegistrationSession', 'ViewerSEGSurface']
+
+[[area]]
+id = "advanced-mr"
+name = "MR maps: T1/T2 fitting, synthetic DWI, b-value split"
+decision = "port"
+priority = 3
+progress = "todo"
+paths = ['^Modules/IsiXImaging/(Sources|Tests)/BufferOperations/(T1|T2|SyntheticDiffusion|BValue)']
+names = ['T1FitMap', 'T2FitMap', 'ViewerSyntheticDWI']
+
+[[area]]
+id = "reports"
+name = "Reports (Word/Pages/RTF templates linked to studies)"
+decision = "rebuild"
+priority = 3
+progress = "todo"
+notes = "Decide later: may be replaced by your own dictation workflow."
+names = ['Reports', 'Report.*', 'StudyReports', 'WordReportAutomation', 'WordDocumentFigures', 'Pages.*', 'RichTextReportPDF',
+         'HorosReport.*', 'StoreReport']
+
+# ---------------------------------------------------------------- priority 4
+
+[[area]]
+id = "endoscopy-flythru"
+name = "Virtual endoscopy and fly-through"
+decision = "rebuild"
+priority = 4
+progress = "todo"
+names = ['Endoscopy.*', 'Fly.*', 'FlyThru.*']
