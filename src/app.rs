@@ -50,7 +50,7 @@ const CACHE_BUDGET_BYTES: usize = 3072 * 1024 * 1024;
 const MAX_VIEWPORTS: usize = 16;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-enum Tool {
+pub(crate) enum Tool {
     WindowLevel,
     Scroll,
     Pan,
@@ -67,7 +67,7 @@ enum Tool {
 }
 
 #[derive(Clone)]
-enum Measure {
+pub(crate) enum Measure {
     /// End points in unrotated image pixel coordinates.
     Length(Pos2, Pos2),
     /// Vertex in the middle, in unrotated image pixel coordinates.
@@ -101,27 +101,27 @@ struct RenderKey {
 }
 
 /// State of a single 2D comparison viewport cell.
-struct ViewportCell {
-    selected: Option<(usize, usize)>,
-    slice: usize,
+pub(crate) struct ViewportCell {
+    pub(crate) selected: Option<(usize, usize)>,
+    pub(crate) slice: usize,
     /// User-chosen window (`None` = series default).
-    window: Option<Window>,
+    pub(crate) window: Option<Window>,
     /// Default window captured from the series' reference (middle) slice.
-    series_default: Option<Window>,
-    clut_name: String,
+    pub(crate) series_default: Option<Window>,
+    pub(crate) clut_name: String,
     /// Optional 2D spatial convolution filter index into `FACTORY_CONVOLUTIONS`.
-    convolution_idx: Option<usize>,
-    conv_cached: Option<(SliceKey, usize, Arc<Frame>, SliceKey)>,
-    invert: bool,
-    zoom: f32,
-    pan: Vec2,
-    rotation: f32,
-    x_flipped: bool,
-    y_flipped: bool,
-    wheel_accum: f32,
-    mpr_enabled: bool,
-    mpr_plane: Option<MprPlane3D>,
-    mpr_cached: Option<(MprPlane3D, Arc<Frame>, SliceKey)>,
+    pub(crate) convolution_idx: Option<usize>,
+    pub(crate) conv_cached: Option<(SliceKey, usize, Arc<Frame>, SliceKey)>,
+    pub(crate) invert: bool,
+    pub(crate) zoom: f32,
+    pub(crate) pan: Vec2,
+    pub(crate) rotation: f32,
+    pub(crate) x_flipped: bool,
+    pub(crate) y_flipped: bool,
+    pub(crate) wheel_accum: f32,
+    pub(crate) mpr_enabled: bool,
+    pub(crate) mpr_plane: Option<MprPlane3D>,
+    pub(crate) mpr_cached: Option<(MprPlane3D, Arc<Frame>, SliceKey)>,
     mpr_seq: usize,
     texture: Option<TextureHandle>,
     rendered: Option<RenderKey>,
@@ -155,7 +155,7 @@ impl ViewportCell {
         }
     }
 
-    fn reset_view(&mut self) {
+    pub(crate) fn reset_view(&mut self) {
         self.zoom = 1.0;
         self.pan = Vec2::ZERO;
         self.rotation = 0.0;
@@ -189,7 +189,7 @@ impl ViewportCell {
         }
     }
 
-    fn reset_clut(&mut self) {
+    pub(crate) fn reset_clut(&mut self) {
         self.clut_name = ColourTableBook::NONE_TITLE.to_string();
         self.convolution_idx = None;
         self.conv_cached = None;
@@ -206,12 +206,12 @@ pub struct ViewerApp {
     scan_gen: u64,
     message: Option<String>,
 
-    tiling: ViewportTiling,
-    viewports: Vec<ViewportCell>,
-    active_viewport: usize,
-    sync_mode: SliceSynchronization,
-    show_reference_lines: bool,
-    show_annotations: bool,
+    pub(crate) tiling: ViewportTiling,
+    pub(crate) viewports: Vec<ViewportCell>,
+    pub(crate) active_viewport: usize,
+    pub(crate) sync_mode: SliceSynchronization,
+    pub(crate) show_reference_lines: bool,
+    pub(crate) show_annotations: bool,
 
     loader: Loader,
     cache: HashMap<SliceKey, Arc<Frame>>,
@@ -228,7 +228,7 @@ pub struct ViewerApp {
     browser_search: String,
     browser_modality: String,
 
-    presets: presets::Catalog,
+    pub(crate) presets: presets::Catalog,
     /// A window/level drag in progress: `(viewport_id, start_pos, drag_state)`.
     wl_drag: Option<(usize, Pos2, drag::Drag)>,
     /// A slice-scroll drag in progress: `(viewport_id, start_y, start_slice)`.
@@ -240,35 +240,35 @@ pub struct ViewerApp {
     /// Visual & 3D pivot anchor for `Tool::Orbit3D`: `(viewport_id, anchor_screen_pos, anchor_lps)`.
     orbit_anchor: Option<(usize, Pos2, [f64; 3])>,
     gpu: Option<GpuInfo>,
-    tool: Tool,
+    pub(crate) tool: Tool,
 
-    measures: HashMap<(PathBuf, u32), Vec<Measure>>,
-    drawing: Vec<Pos2>,
-    angle_pending: Option<(Pos2, Pos2)>,
-    hover_px: Option<Pos2>,
-    tiling_hover: Option<(usize, usize)>,
+    pub(crate) measures: HashMap<(PathBuf, u32), Vec<Measure>>,
+    pub(crate) drawing: Vec<Pos2>,
+    pub(crate) angle_pending: Option<(Pos2, Pos2)>,
+    pub(crate) hover_px: Option<Pos2>,
+    pub(crate) tiling_hover: Option<(usize, usize)>,
 
-    playing: bool,
-    fps: f32,
+    pub(crate) playing: bool,
+    pub(crate) fps: f32,
     last_tick: f64,
     cursor_info: Option<String>,
 
-    show_browser: bool,
-    ortho_mpr_active: bool,
-    ortho_crosshair_lps: Option<[f64; 3]>,
+    pub(crate) show_browser: bool,
+    pub(crate) ortho_mpr_active: bool,
+    pub(crate) ortho_crosshair_lps: Option<[f64; 3]>,
     ortho_saved_tiling: Option<ViewportTiling>,
     crosshair_drag: Option<usize>,
     forced_mpr_series: std::collections::HashSet<(usize, usize)>,
     pending_force_mpr: Option<PendingForceMpr>,
-    pending_mpr_activate: Option<(usize, (usize, usize), bool)>,
-    update_status: crate::updater::UpdateStatus,
+    pub(crate) pending_mpr_activate: Option<(usize, (usize, usize), bool)>,
+    pub(crate) update_status: crate::updater::UpdateStatus,
     update_rx: Option<Receiver<anyhow::Result<Option<crate::updater::ReleaseInfo>>>>,
     install_rx: Option<Receiver<anyhow::Result<String>>>,
-    show_update_modal: bool,
-    db: Option<crate::db::Database>,
-    lang: crate::i18n::Lang,
-    blend_siblings: bool,
-    gpu_bilinear: bool,
+    pub(crate) show_update_modal: bool,
+    pub(crate) db: Option<crate::db::Database>,
+    pub(crate) lang: crate::i18n::Lang,
+    pub(crate) blend_siblings: bool,
+    pub(crate) gpu_bilinear: bool,
     check_updates_on_startup: bool,
 }
 
@@ -391,7 +391,7 @@ impl ViewerApp {
 
     // ---------------------------------------------------------------- state
 
-    fn start_scan(&mut self, paths: Vec<PathBuf>) {
+    pub(crate) fn start_scan(&mut self, paths: Vec<PathBuf>) {
         let done = Arc::new(AtomicUsize::new(0));
         let total = Arc::new(AtomicUsize::new(0));
         let (tx, rx) = channel();
@@ -412,11 +412,11 @@ impl ViewerApp {
         self.index.as_ref()?.studies.get(sel.0)?.series.get(sel.1)
     }
 
-    fn active_cell(&self) -> &ViewportCell {
+    pub(crate) fn active_cell(&self) -> &ViewportCell {
         &self.viewports[self.active_viewport]
     }
 
-    fn active_cell_mut(&mut self) -> &mut ViewportCell {
+    pub(crate) fn active_cell_mut(&mut self) -> &mut ViewportCell {
         &mut self.viewports[self.active_viewport]
     }
 
@@ -430,7 +430,7 @@ impl ViewerApp {
         self.study_at(st)
     }
 
-    fn viewport_slice_count(&self, vp_idx: usize) -> usize {
+    pub(crate) fn viewport_slice_count(&self, vp_idx: usize) -> usize {
         if let Some(vp) = self.viewports.get(vp_idx) {
             if vp.mpr_enabled {
                 if let (Some(vol), Some(plane)) = (self.viewport_volume(vp_idx), &vp.mpr_plane) {
@@ -449,7 +449,7 @@ impl ViewerApp {
         self.viewport_series(vp_idx).map_or(0, |s| s.slices.len())
     }
 
-    fn disable_viewport_mpr(&mut self, vp_idx: usize) {
+    pub(crate) fn disable_viewport_mpr(&mut self, vp_idx: usize) {
         if let (Some(vol), Some(plane)) = (
             self.viewport_volume(vp_idx).cloned(),
             self.viewports[vp_idx].mpr_plane.clone(),
@@ -517,12 +517,12 @@ impl ViewerApp {
         }
     }
 
-    fn viewport_volume(&self, vp_idx: usize) -> Option<&Arc<Volume3D>> {
+    pub(crate) fn viewport_volume(&self, vp_idx: usize) -> Option<&Arc<Volume3D>> {
         let sel = self.viewports.get(vp_idx)?.selected?;
         self.volumes.get(&sel)
     }
 
-    fn viewport_sibling_volumes(&self, vp_idx: usize) -> Vec<Arc<Volume3D>> {
+    pub(crate) fn viewport_sibling_volumes(&self, vp_idx: usize) -> Vec<Arc<Volume3D>> {
         let Some((st_idx, se_idx)) = self.viewports.get(vp_idx).and_then(|v| v.selected) else {
             return Vec::new();
         };
@@ -556,7 +556,7 @@ impl ViewerApp {
         })
     }
 
-    fn viewport_frame(&self, vp_idx: usize) -> Option<&Arc<Frame>> {
+    pub(crate) fn viewport_frame(&self, vp_idx: usize) -> Option<&Arc<Frame>> {
         let vp = self.viewports.get(vp_idx)?;
         if vp.mpr_enabled {
             if let Some((_, ref f, _)) = vp.mpr_cached {
@@ -608,7 +608,7 @@ impl ViewerApp {
         Some((frame, key))
     }
 
-    fn effective_mpr_plane(&self, vp_idx: usize) -> Option<MprPlane3D> {
+    pub(crate) fn effective_mpr_plane(&self, vp_idx: usize) -> Option<MprPlane3D> {
         let vp = self.viewports.get(vp_idx)?;
         if vp.mpr_enabled {
             if let Some(ref p) = vp.mpr_plane {
@@ -643,7 +643,7 @@ impl ViewerApp {
         self.viewports[vp_idx].slice = (t * (count - 1) as f64).round() as usize;
     }
 
-    fn set_viewport_mpr_plane(
+    pub(crate) fn set_viewport_mpr_plane(
         &mut self,
         vp_idx: usize,
         plane: MprPlane3D,
@@ -723,7 +723,7 @@ impl ViewerApp {
 
     /// Manually locks the current 3D plane & slice offset of all visible follower viewports
     /// to the active leader viewport (`⚓ Lock 3D Sync`).
-    fn lock_current_3d_alignment(&mut self) {
+    pub(crate) fn lock_current_3d_alignment(&mut self) {
         let leader_idx = self.active_viewport;
         let Some(leader_sel) = self.viewports[leader_idx].selected else {
             return;
@@ -846,7 +846,7 @@ impl ViewerApp {
 
     /// Toggles the classic Horos 3-pane Orthogonal MPR layout (`Axial | Coronal | Sagittal`)
     /// for the active viewport's 3D volume.
-    fn toggle_orthogonal_mpr(&mut self) {
+    pub(crate) fn toggle_orthogonal_mpr(&mut self) {
         if self.ortho_mpr_active {
             self.ortho_mpr_active = false;
             self.ortho_crosshair_lps = None;
@@ -900,7 +900,7 @@ impl ViewerApp {
         self.active_viewport = 0;
     }
 
-    fn set_tiling(&mut self, tiling: ViewportTiling) {
+    pub(crate) fn set_tiling(&mut self, tiling: ViewportTiling) {
         self.tiling = tiling;
         let count = tiling.cell_count();
         if self.active_viewport >= count {
@@ -943,7 +943,7 @@ impl ViewerApp {
         }
     }
 
-    fn set_viewport_slice(&mut self, vp_idx: usize, idx: isize, synchronize_others: bool) {
+    pub(crate) fn set_viewport_slice(&mut self, vp_idx: usize, idx: isize, synchronize_others: bool) {
         let n = self.viewport_slice_count(vp_idx);
         if n == 0 {
             return;
@@ -987,12 +987,12 @@ impl ViewerApp {
         }
     }
 
-    fn step_viewport_slice(&mut self, vp_idx: usize, delta: isize) {
+    pub(crate) fn step_viewport_slice(&mut self, vp_idx: usize, delta: isize) {
         let cur = self.viewports[vp_idx].slice as isize;
         self.set_viewport_slice(vp_idx, cur + delta, true);
     }
 
-    fn all_series_pairs(&self) -> Vec<(usize, usize)> {
+    pub(crate) fn all_series_pairs(&self) -> Vec<(usize, usize)> {
         let Some(index) = &self.index else {
             return Vec::new();
         };
@@ -1005,7 +1005,7 @@ impl ViewerApp {
         out
     }
 
-    fn step_active_series(&mut self, delta: isize) {
+    pub(crate) fn step_active_series(&mut self, delta: isize) {
         let pairs = self.all_series_pairs();
         if pairs.is_empty() {
             return;
@@ -1222,14 +1222,14 @@ impl ViewerApp {
         )
     }
 
-    fn preset_label(&self) -> String {
+    pub(crate) fn preset_label(&self) -> String {
         match self.viewport_frame(self.active_viewport) {
             Some(f) => format!("WL/WW: {}", self.window_name(self.active_viewport, f).label()),
             None => "WL/WW Presets".into(),
         }
     }
 
-    fn set_active_window(&mut self, w: Option<Window>) {
+    pub(crate) fn set_active_window(&mut self, w: Option<Window>) {
         let leader_idx = self.active_viewport;
         self.viewports[leader_idx].window = w;
         self.wl_drag = None;
@@ -1247,7 +1247,7 @@ impl ViewerApp {
         ColourTableBook::table_named(&self.viewports[vp_idx].clut_name)
     }
 
-    fn viewport_measure_key(&self, vp_idx: usize) -> Option<(PathBuf, u32)> {
+    pub(crate) fn viewport_measure_key(&self, vp_idx: usize) -> Option<(PathBuf, u32)> {
         let slice = self.viewports.get(vp_idx)?.slice;
         let s = self.viewport_series(vp_idx)?.slices.get(slice)?;
         Some((s.path.clone(), s.frame))
@@ -1796,603 +1796,6 @@ impl ViewerApp {
     }
 
     // ----------------------------------------------------------------- UI
-
-    fn toolbar(&mut self, ui: &mut egui::Ui) {
-        let tr = crate::i18n::tr(self.lang);
-        // Row 1: Primary Horos-style uncluttered icon/compact toolbar (scrolls horizontally if very narrow, never wraps into a messy pile)
-        egui::ScrollArea::horizontal()
-            .id_salt("horos_toolbar_scroll")
-            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-
-                    if ui
-                        .toggle_value(&mut self.show_browser, "◧")
-                        .on_hover_text(tr.browser_hover)
-                        .changed()
-                    {}
-                    ui.menu_button(format!("📂 {}", tr.open), |ui| {
-                        let (lbl_folder, lbl_files) = match self.lang {
-                            crate::i18n::Lang::En => ("Open Folder…", "Open Files / ZIP…"),
-                            crate::i18n::Lang::Es => ("Abrir Carpeta…", "Abrir Archivos / ZIP…"),
-                        };
-                        if ui.button(lbl_folder).clicked() {
-                            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                                self.start_scan(vec![dir]);
-                            }
-                            ui.close();
-                        }
-                        if ui.button(lbl_files).clicked() {
-                            if let Some(files) = rfd::FileDialog::new().pick_files() {
-                                self.start_scan(files);
-                            }
-                            ui.close();
-                        }
-                    })
-                    .response
-                    .on_hover_text(tr.open_hover);
-                    ui.separator();
-
-                    // Mouse tools (compact Horos-style strip)
-                    let prev_tool = self.tool;
-                    ui.selectable_value(&mut self.tool, Tool::WindowLevel, tr.wl)
-                        .on_hover_text("Window / Level (W)");
-                    ui.selectable_value(&mut self.tool, Tool::Scroll, tr.scroll)
-                        .on_hover_text("Stack scroll (S)");
-                    ui.selectable_value(&mut self.tool, Tool::Pan, tr.pan)
-                        .on_hover_text("Pan (Middle mouse button)");
-                    ui.selectable_value(&mut self.tool, Tool::Zoom, tr.zoom)
-                        .on_hover_text("Zoom (Right mouse button / Ctrl+wheel) (Z)");
-                    ui.selectable_value(&mut self.tool, Tool::Rotate, tr.rot)
-                        .on_hover_text("In-plane 2D rotation");
-                    ui.selectable_value(&mut self.tool, Tool::Orbit3D, tr.orbit_3d)
-                        .on_hover_text("3D Trackball orbit rotation (O)");
-                    ui.separator();
-
-                    // Quick ROIs + ROI dropdown
-                    ui.selectable_value(&mut self.tool, Tool::Length, "📏")
-                        .on_hover_text("Length (mm) (L / M)");
-                    ui.selectable_value(&mut self.tool, Tool::Oval, "◯")
-                        .on_hover_text("Oval / Ellipse ROI (E)");
-                    ui.selectable_value(&mut self.tool, Tool::Rect, "▭")
-                        .on_hover_text("Rectangle ROI (B)");
-                    let roi_label = match self.tool {
-                        Tool::Angle => "ROI: ∠",
-                        Tool::Polygon => "ROI: ⬠",
-                        Tool::Pencil => "ROI: ✏",
-                        Tool::Point => "ROI: ⌖",
-                        _ => "ROI ▾",
-                    };
-                    ui.menu_button(roi_label, |ui| {
-                        ui.selectable_value(&mut self.tool, Tool::Length, "📏 Length (L)");
-                        ui.selectable_value(&mut self.tool, Tool::Angle, "∠ Angle (A)");
-                        ui.selectable_value(&mut self.tool, Tool::Oval, "◯ Oval ROI (E)");
-                        ui.selectable_value(&mut self.tool, Tool::Rect, "▭ Rect ROI (B)");
-                        ui.selectable_value(&mut self.tool, Tool::Polygon, "⬠ Polygon ROI (G)");
-                        ui.selectable_value(&mut self.tool, Tool::Pencil, "✏ Pencil ROI (F)");
-                        ui.selectable_value(&mut self.tool, Tool::Point, "⌖ Point Probe (T)");
-                        if self
-                            .viewport_measure_key(self.active_viewport)
-                            .and_then(|k| self.measures.get(&k))
-                            .is_some_and(|m| !m.is_empty())
-                        {
-                            ui.separator();
-                            if ui.button("🗑 Clear ROIs on Slice").clicked() {
-                                if let Some(k) = self.viewport_measure_key(self.active_viewport) {
-                                    self.measures.remove(&k);
-                                }
-                                ui.close();
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text("Measurement & ROI tools");
-                    ui.separator();
-
-                    // 3-Pane Orthogonal MPR (Axial | Coronal | Sagittal) & In-Place 3D MPR
-                    let has_series = self.active_cell().selected.is_some();
-                    ui.add_enabled_ui(has_series || self.ortho_mpr_active, |ui| {
-                        let mut ortho_on = self.ortho_mpr_active;
-                        if ui
-                            .toggle_value(&mut ortho_on, "⊞ Ax·Cor·Sag")
-                            .on_hover_text("Classic Horos 3-pane Orthogonal MPR (Axial | Coronal | Sagittal) with interactive crosshairs")
-                            .changed()
-                        {
-                            if ortho_on {
-                                self.request_mpr_mode(self.active_viewport, true);
-                            } else if self.ortho_mpr_active {
-                                self.toggle_orthogonal_mpr();
-                            }
-                        }
-                    });
-                    ui.add_enabled_ui(has_series, |ui| {
-                        let mut mpr_on = self.active_cell().mpr_enabled;
-                        if ui
-                            .toggle_value(&mut mpr_on, "🧊 3D")
-                            .on_hover_text("In-place 3D volume slicing inside active viewport")
-                            .changed()
-                        {
-                            let vp_idx = self.active_viewport;
-                            if mpr_on {
-                                self.request_mpr_mode(vp_idx, false);
-                            } else {
-                                self.disable_viewport_mpr(vp_idx);
-                                if self.pending_mpr_activate.is_some_and(|(v, _, o)| v == vp_idx && !o) {
-                                    self.pending_mpr_activate = None;
-                                }
-                            }
-                        }
-                    });
-                    ui.separator();
-
-                    if self.tool != prev_tool {
-                        self.drawing.clear();
-                        self.angle_pending = None;
-                    }
-
-                    // WL/WW Presets ComboBox
-                    let active_win = self.active_cell().window;
-                    let mut chosen_win: Option<Option<Window>> = None;
-                    egui::ComboBox::from_id_salt("presets")
-                        .selected_text(self.preset_label())
-                        .width(110.0)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(active_win.is_none(), "0   Default")
-                                .clicked()
-                            {
-                                chosen_win = Some(None);
-                            }
-                            if let Some(f) = self.viewport_frame(self.active_viewport) {
-                                let full = f.full_window;
-                                if ui
-                                    .selectable_label(
-                                        active_win == Some(full),
-                                        format!("~   Full dynamic   L {:.0} W {:.0}", full.level, full.width),
-                                    )
-                                    .clicked()
-                                {
-                                    chosen_win = Some(Some(full));
-                                }
-                            }
-                            ui.separator();
-                            for (i, entry) in self.presets.hot_key_order().into_iter().enumerate() {
-                                let Some(w) = entry.window else { continue };
-                                let key = if i < 9 {
-                                    format!("{}", i + 1)
-                                } else {
-                                    " ".into()
-                                };
-                                let text = format!("{key}   {}   L {} W {}", entry.name, w.level, w.width);
-                                if ui.selectable_label(active_win == Some(w), text).clicked() {
-                                    chosen_win = Some(Some(w));
-                                }
-                            }
-                        });
-                    if let Some(w) = chosen_win {
-                        self.set_active_window(w);
-                    }
-
-                    // CLUT Selector ComboBox
-                    let current_clut_name = self.active_cell().clut_name.clone();
-                    let mut chosen_clut: Option<String> = None;
-                    egui::ComboBox::from_id_salt("clut_selector")
-                        .selected_text(format!("CLUT: {current_clut_name}"))
-                        .width(108.0)
-                        .show_ui(ui, |ui| {
-                            for name in ColourTableBook::menu_names() {
-                                if ui
-                                    .selectable_label(current_clut_name == name, name)
-                                    .clicked()
-                                {
-                                    chosen_clut = Some(name.to_string());
-                                }
-                            }
-                        });
-                    if let Some(name) = chosen_clut {
-                        self.active_cell_mut().clut_name = name;
-                    }
-
-                    // 2D Spatial Convolution Filter Selector
-                    let cur_conv = self.active_cell().convolution_idx;
-                    let conv_label = cur_conv
-                        .and_then(|i| FACTORY_CONVOLUTIONS.get(i))
-                        .map(|k| k.name)
-                        .unwrap_or("None");
-                    let mut chosen_conv: Option<Option<usize>> = None;
-                    egui::ComboBox::from_id_salt("conv_selector")
-                        .selected_text(format!("Filter: {conv_label}"))
-                        .width(105.0)
-                        .show_ui(ui, |ui| {
-                            if ui
-                                .selectable_label(cur_conv.is_none(), "No Filter")
-                                .clicked()
-                            {
-                                chosen_conv = Some(None);
-                            }
-                            ui.separator();
-                            for (idx, k) in FACTORY_CONVOLUTIONS.iter().enumerate() {
-                                if ui
-                                    .selectable_label(cur_conv == Some(idx), k.name)
-                                    .clicked()
-                                {
-                                    chosen_conv = Some(Some(idx));
-                                }
-                            }
-                        });
-                    if let Some(next_conv) = chosen_conv {
-                        let vp = self.active_cell_mut();
-                        vp.convolution_idx = next_conv;
-                        vp.conv_cached = None;
-                    }
-
-                    // View / Transform menu (keeps toolbar clean & uncluttered)
-                    ui.menu_button("View ▾", |ui| {
-                        ui.toggle_value(&mut self.active_cell_mut().invert, "Invert (I)");
-                        ui.separator();
-                        if ui.button("↺ Rotate 90° CCW").clicked() {
-                            let vp = self.active_cell_mut();
-                            vp.rotation = (vp.rotation - 90.0).rem_euclid(360.0);
-                            ui.close();
-                        }
-                        if ui.button("↻ Rotate 90° CW").clicked() {
-                            let vp = self.active_cell_mut();
-                            vp.rotation = (vp.rotation + 90.0).rem_euclid(360.0);
-                            ui.close();
-                        }
-                        let mut x_flip = self.active_cell().x_flipped;
-                        if ui.toggle_value(&mut x_flip, "⇄ Flip Horizontal (H)").changed() {
-                            self.active_cell_mut().x_flipped = x_flip;
-                        }
-                        let mut y_flip = self.active_cell().y_flipped;
-                        if ui.toggle_value(&mut y_flip, "⇅ Flip Vertical (V)").changed() {
-                            self.active_cell_mut().y_flipped = y_flip;
-                        }
-                        ui.separator();
-                        ui.toggle_value(&mut self.show_reference_lines, "Reference Lines");
-                        ui.toggle_value(&mut self.show_annotations, "Annotations & Orientation");
-                        if ui
-                            .toggle_value(&mut self.gpu_bilinear, "Smooth Interpolation (Bilinear)")
-                            .changed()
-                        {
-                            if let Some(ref db) = self.db {
-                                let _ = db.set_setting(
-                                    "gpu_bilinear",
-                                    if self.gpu_bilinear { "1" } else { "0" },
-                                );
-                            }
-                        }
-                        ui.separator();
-                        ui.label("Slice Sync Mode:");
-                        for mode in [
-                            SliceSynchronization::Absolute,
-                            SliceSynchronization::Location,
-                            SliceSynchronization::Relative,
-                            SliceSynchronization::Off,
-                        ] {
-                            ui.selectable_value(&mut self.sync_mode, mode, mode.label());
-                        }
-                        ui.separator();
-                        if ui.button("Reset Viewport (R)").clicked() {
-                            let vp = self.active_cell_mut();
-                            vp.reset_view();
-                            vp.reset_clut();
-                            vp.invert = false;
-                            vp.mpr_enabled = false;
-                            vp.mpr_plane = None;
-                            vp.mpr_cached = None;
-                            self.set_active_window(None);
-                            ui.close();
-                        }
-                    })
-                    .response
-                    .on_hover_text("Orientation, Invert, Reference Lines, HUD, Sync & Reset");
-
-                    // Multi-Series Visual Square-Grid Tiling Picker (Horos TilingArea style)
-                    let mut new_tiling = None;
-                    let cur_rows = self.tiling.rows;
-                    let cur_cols = self.tiling.columns;
-                    ui.menu_button(format!("⊞ {}", self.tiling.label()), |ui| {
-                        ui.set_min_width(132.0);
-                        let grid_max = 4usize;
-                        let cell_size = 24.0;
-                        let gap = 4.0;
-                        let total_side = grid_max as f32 * cell_size + (grid_max - 1) as f32 * gap;
-                        let (grid_rect, _) =
-                            ui.allocate_exact_size(vec2(total_side, total_side), Sense::hover());
-
-                        let pointer_pos = ui.input(|i| i.pointer.hover_pos());
-                        let clicked = ui.input(|i| i.pointer.primary_clicked());
-                        let mut hovered_rc: Option<(usize, usize)> = None;
-
-                        for r in 0..grid_max {
-                            for c in 0..grid_max {
-                                let min = pos2(
-                                    grid_rect.min.x + c as f32 * (cell_size + gap),
-                                    grid_rect.min.y + r as f32 * (cell_size + gap),
-                                );
-                                let cell_rect = Rect::from_min_size(min, vec2(cell_size, cell_size));
-                                if pointer_pos.is_some_and(|p| cell_rect.expand(gap * 0.5).contains(p)) {
-                                    hovered_rc = Some((r, c));
-                                }
-                            }
-                        }
-                        self.tiling_hover = hovered_rc;
-
-                        let (active_r, active_c) =
-                            hovered_rc.unwrap_or((cur_rows.saturating_sub(1), cur_cols.saturating_sub(1)));
-
-                        let painter = ui.painter();
-                        for r in 0..grid_max {
-                            for c in 0..grid_max {
-                                let min = pos2(
-                                    grid_rect.min.x + c as f32 * (cell_size + gap),
-                                    grid_rect.min.y + r as f32 * (cell_size + gap),
-                                );
-                                let cell_rect = Rect::from_min_size(min, vec2(cell_size, cell_size));
-                                let in_selection = r <= active_r && c <= active_c;
-                                let in_current = r < cur_rows && c < cur_cols;
-
-                                let fill = if in_selection {
-                                    if hovered_rc.is_some() {
-                                        Color32::from_rgb(70, 165, 255)
-                                    } else {
-                                        Color32::from_rgb(55, 130, 210)
-                                    }
-                                } else if in_current {
-                                    Color32::from_rgb(38, 62, 92)
-                                } else {
-                                    Color32::from_gray(42)
-                                };
-
-                                let stroke = if in_selection {
-                                    Stroke::new(1.5, Color32::from_rgb(160, 220, 255))
-                                } else if in_current {
-                                    Stroke::new(1.0, Color32::from_rgb(90, 145, 200))
-                                } else {
-                                    Stroke::new(1.0, Color32::from_gray(95))
-                                };
-
-                                painter.rect_filled(cell_rect, 3.0, fill);
-                                painter.rect_stroke(cell_rect, 3.0, stroke, egui::StrokeKind::Inside);
-                            }
-                        }
-
-                        ui.add_space(4.0);
-                        let disp_r = active_r + 1;
-                        let disp_c = active_c + 1;
-                        let count = disp_r * disp_c;
-                        ui.vertical_centered(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "{disp_r} × {disp_c}  ({count} viewport{})",
-                                    if count == 1 { "" } else { "s" }
-                                ))
-                                .strong()
-                                .color(Color32::from_rgb(150, 210, 255)),
-                            );
-                        });
-
-                        if clicked {
-                            if let Some((hr, hc)) = hovered_rc {
-                                new_tiling = Some(ViewportTiling::new(hr + 1, hc + 1));
-                                ui.close();
-                            }
-                        }
-                    })
-                    .response
-                    .on_hover_text("Viewport grid layout");
-                    if let Some(t) = new_tiling {
-                        self.ortho_mpr_active = false;
-                        self.ortho_crosshair_lps = None;
-                        self.set_tiling(t);
-                    }
-
-                    // Cine play + FPS popover
-                    let cine_label = if self.playing { "⏸" } else { "▶" };
-                    ui.toggle_value(&mut self.playing, cine_label)
-                        .on_hover_text("Play / pause cine loop (Space / P)");
-                    ui.menu_button(format!("{} fps", self.fps as i32), |ui| {
-                        ui.add(
-                            egui::Slider::new(&mut self.fps, 1.0..=60.0)
-                                .text("fps")
-                                .integer(),
-                        );
-                    })
-                    .response
-                    .on_hover_text("Cine playback speed");
-
-                    let lang_btn = match self.lang {
-                        crate::i18n::Lang::En => "🌐 EN",
-                        crate::i18n::Lang::Es => "🌐 ES",
-                    };
-                    if ui
-                        .button(lang_btn)
-                        .on_hover_text("Switch language (English / Español)")
-                        .clicked()
-                    {
-                        self.lang = self.lang.toggle();
-                        if let Some(db) = &self.db {
-                            let _ = db.set_setting("lang", self.lang.code());
-                        }
-                    }
-
-                    ui.separator();
-                    let (upd_label, upd_hover) = match &self.update_status {
-                        crate::updater::UpdateStatus::Available(info) => (
-                            egui::RichText::new(format!("⬆ {}", info.tag_name))
-                                .strong()
-                                .color(Color32::from_rgb(120, 225, 150)),
-                            format!("Update {} available — click to install", info.tag_name),
-                        ),
-                        crate::updater::UpdateStatus::Checking => (
-                            egui::RichText::new("🔄 …"),
-                            "Checking GitHub for updates…".to_string(),
-                        ),
-                        crate::updater::UpdateStatus::Installing => (
-                            egui::RichText::new("⬇ …"),
-                            "Downloading and installing update…".to_string(),
-                        ),
-                        crate::updater::UpdateStatus::Installed(tag) => (
-                            egui::RichText::new(format!("✅ {tag}"))
-                                .color(Color32::from_rgb(120, 225, 150)),
-                            "Update installed — click to restart SekhmetX".to_string(),
-                        ),
-                        _ => (
-                            egui::RichText::new("🔄"),
-                            format!(
-                                "Check for SekhmetX updates (current v{})",
-                                env!("CARGO_PKG_VERSION")
-                            ),
-                        ),
-                    };
-                    if ui.button(upd_label).on_hover_text(upd_hover).clicked() {
-                        self.show_update_modal = true;
-                        if matches!(
-                            self.update_status,
-                            crate::updater::UpdateStatus::Idle
-                                | crate::updater::UpdateStatus::UpToDate(_)
-                                | crate::updater::UpdateStatus::Error(_)
-                        ) {
-                            let ctx = ui.ctx().clone();
-                            self.start_update_check(true, &ctx);
-                        }
-                    }
-                });
-            });
-
-        // Row 2: Slim Slice Scrubber & Contextual MPR Strip
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-
-            let series_count = self.all_series_pairs().len();
-            ui.add_enabled_ui(series_count > 1, |ui| {
-                if ui.small_button("◀ Se").on_hover_text("Previous series ([)").clicked() {
-                    self.step_active_series(-1);
-                }
-                if ui.small_button("Se ▶").on_hover_text("Next series (])").clicked() {
-                    self.step_active_series(1);
-                }
-            });
-
-            let vp_idx = self.active_viewport;
-            let slice_count = self.viewport_slice_count(vp_idx);
-            ui.add_enabled_ui(slice_count > 1, |ui| {
-                if ui.small_button("⏮").on_hover_text("First slice (Home)").clicked() {
-                    self.set_viewport_slice(vp_idx, 0, true);
-                }
-                if ui.small_button("◀").on_hover_text("Previous slice").clicked() {
-                    self.step_viewport_slice(vp_idx, -1);
-                }
-                let max_s = slice_count.max(1);
-                let mut cur_1based = (self.viewports[vp_idx].slice + 1).clamp(1, max_s);
-                let slider_resp = ui
-                    .add(
-                        egui::Slider::new(&mut cur_1based, 1..=max_s)
-                            .show_value(false)
-                            .trailing_fill(true),
-                    )
-                    .on_hover_text(format!("Slice {cur_1based} / {slice_count}"));
-                if slider_resp.changed() {
-                    self.set_viewport_slice(vp_idx, cur_1based as isize - 1, true);
-                }
-                ui.monospace(format!("{cur_1based}/{slice_count}"));
-                if ui.small_button("▶").on_hover_text("Next slice").clicked() {
-                    self.step_viewport_slice(vp_idx, 1);
-                }
-                if ui.small_button("⏭").on_hover_text("Last slice (End)").clicked() {
-                    self.set_viewport_slice(vp_idx, isize::MAX, true);
-                }
-            });
-
-            if self.active_cell().mpr_enabled {
-                ui.separator();
-                if ui.small_button("Ax").on_hover_text("Axial plane").clicked() {
-                    if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
-                        self.set_viewport_mpr_plane(vp_idx, MprPlane3D::axial(vol.center_lps), true);
-                    }
-                }
-                if ui.small_button("Cor").on_hover_text("Coronal plane").clicked() {
-                    if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
-                        self.set_viewport_mpr_plane(vp_idx, MprPlane3D::coronal(vol.center_lps), true);
-                    }
-                }
-                if ui.small_button("Sag").on_hover_text("Sagittal plane").clicked() {
-                    if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
-                        self.set_viewport_mpr_plane(vp_idx, MprPlane3D::sagittal(vol.center_lps), true);
-                    }
-                }
-                if ui.small_button("Nat").on_hover_text("Native orientation").clicked() {
-                    if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
-                        self.set_viewport_mpr_plane(vp_idx, MprPlane3D::from_volume_native(&vol), true);
-                    }
-                }
-                if let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
-                    let mut changed = false;
-                    egui::ComboBox::from_id_salt("mpr_slab_mode")
-                        .selected_text(format!("Slab: {}", plane.slab_mode.label()))
-                        .width(82.0)
-                        .show_ui(ui, |ui| {
-                            for m in [
-                                SlabMode::Thin,
-                                SlabMode::Mip,
-                                SlabMode::MinIp,
-                                SlabMode::Mean,
-                            ] {
-                                if ui.selectable_value(&mut plane.slab_mode, m, m.label()).changed() {
-                                    changed = true;
-                                }
-                            }
-                        });
-                    if plane.slab_mode != SlabMode::Thin {
-                        if ui
-                            .add(
-                                egui::Slider::new(&mut plane.slab_thickness_mm, 1.0..=50.0)
-                                    .suffix(" mm")
-                                    .fixed_decimals(1),
-                            )
-                            .changed()
-                        {
-                            changed = true;
-                        }
-                    }
-                    if changed {
-                        self.set_viewport_mpr_plane(vp_idx, plane, true);
-                    }
-                }
-                let sib_count = self.viewport_sibling_volumes(vp_idx).len();
-                if sib_count > 0 {
-                    if ui
-                        .checkbox(&mut self.blend_siblings, "Blend Siblings")
-                        .on_hover_text("Sample neighboring series to fill gaps in oblique MPR (disables ROI stats)")
-                        .changed()
-                    {
-                        for vp in &mut self.viewports {
-                            vp.mpr_cached = None;
-                        }
-                    }
-                    if self.blend_siblings {
-                        ui.colored_label(
-                            Color32::from_rgb(255, 200, 80),
-                            format!("Blended from {} series (ROI stats disabled)", sib_count + 1),
-                        );
-                    }
-                }
-            }
-
-            if self.tiling.cell_count() > 1 && !self.ortho_mpr_active {
-                ui.separator();
-                if ui
-                    .small_button("⚓ Lock 3D Sync")
-                    .on_hover_text("Lock current slice height & 3D tilt angle between comparison viewports")
-                    .clicked()
-                {
-                    self.lock_current_3d_alignment();
-                }
-            }
-        });
-    }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
@@ -4844,7 +4247,7 @@ impl ViewerApp {
     /// Requests 3D MPR (`ortho = false`) or 3-pane Orthogonal MPR (`ortho = true`) on `vp_idx`.
     /// Normally 3D-capable series activate immediately (or as soon as decoding completes).
     /// Non-3D-capable series (too few slices or missing 3D geometry) prompt a Yes/No quality warning first.
-    fn request_mpr_mode(&mut self, vp_idx: usize, ortho: bool) {
+    pub(crate) fn request_mpr_mode(&mut self, vp_idx: usize, ortho: bool) {
         let Some(key) = self.viewports[vp_idx].selected else {
             return;
         };
@@ -4922,7 +4325,7 @@ impl ViewerApp {
         }
     }
 
-    fn start_update_check(&mut self, open_modal: bool, ctx: &egui::Context) {
+    pub(crate) fn start_update_check(&mut self, open_modal: bool, ctx: &egui::Context) {
         if open_modal {
             self.show_update_modal = true;
         }

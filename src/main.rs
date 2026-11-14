@@ -12,6 +12,7 @@ mod imaging;
 mod loader;
 mod navigation;
 mod roi;
+mod ui;
 mod updater;
 mod volume;
 

@@ -6,30 +6,31 @@ A fast, native radiological DICOM viewer for Windows, macOS, and Linux, written 
 
 ---
 
-## Key Features (v0.2.1)
+## Key Features
 
-- **Direct Folder, File & `.zip` Archive Opening:**
-  - Open folders recursively, individual DICOM files, or **`.zip` patient archives** (extracted non-destructively into an isolated `%TEMP%\rdicom-zip-cache` folder and cleaned up automatically when the app closes).
-- **Horos Study Browser with Search & Live Mini-Thumbnails:**
-  - Instant search bar (`🔍`) filtering by patient name, ID, accession, study, or series description.
-  - One-click modality filter pills (`All`, `CT`, `MR`, `US`, `DX/CR`, `PT/NM`).
-  - Live rendered **38×38 DICOM series mini-thumbnails** and dominant anatomical plane badges (`[AX]`, `[COR]`, `[SAG]`, `[OBL]`).
-  - **Acquisition-Time MPR Auto-Grouping:** Automatically identifies separated Axial, Coronal, and Sagittal reconstructions from the same acquisition and groups them under **`🧊 MPR [AX·COR·SAG]`** with quick `AX` / `COR` / `SAG` launch buttons.
-- **In-Place Single-Viewport 3D MPR, Thick-Slab MIP/MinIP/Mean & 3D Trackball Rotation:**
-  - Enable **`🧊 3D MPR`** directly inside any single viewport square—no need to open a separate 3-panel window just to rotate or compare studies.
-  - **`3D Rotate` (`O`)**: drag in any direction to orbit the 3D slicing plane through Axial, Coronal, Sagittal, or arbitrary 3D oblique angles; hold `Shift` while dragging to tilt/roll in-plane.
-  - **Hybrid Multi-Series Tri-Planar Fusion:** Blends high-resolution in-plane data from sibling Axial, Coronal, and Sagittal stacks weighted by $\cos^4(\theta)$.
-  - **Thick-Slab Projections (`Slab: Thin / MIP / MinIP / Mean`)** with a `1.0–50.0 mm` thickness slider.
-- **Multi-Series Comparison Layouts & Cross-Study 6-DOF 3D Synchronization:**
+- **Direct Folder, File & Streaming `.zip` Archive Opening:**
+  - Open folders recursively, individual DICOM files, or **`.zip` / ZIP64 patient archives** (streamed safely into a per-process `%TEMP%\sekhmetx-zip-<pid>` folder with path-traversal protection, size/entry caps, and automatic cleanup).
+- **Horos-Style Responsive Toolbar (`»` Overflow) & Bilingual UI (`EN` / `ES`):**
+  - Toolbar ordered to match IsiX / Horos (`ViewerToolbarCatalog`), automatically collapsing trailing groups into a **`»`** overflow menu on narrower windows so controls never wrap or clip.
+  - One-click **English / Spanish (`🌐 EN` / `🌐 ES`)** language toggle persisted in the local SQLite database.
+- **Horos Study Browser with Search, Local SQLite Library & Live Mini-Thumbnails:**
+  - Crash-safe local SQLite database (WAL mode) storing study/series metadata and preferences.
+  - Instant search bar (`🔍`) filtering by patient name, ID, accession, study, or series description, plus one-click modality filter pills (`All`, `CT`, `MR`, `US`, `DX/CR`, `PT/NM`).
+  - Live rendered **38×38 DICOM series mini-thumbnails**, dominant anatomical plane badges (`[AX]`, `[COR]`, `[SAG]`, `[OBL]`), and **Acquisition-Time MPR Auto-Grouping** (`🧊 MPR [AX·COR·SAG]`).
+- **Exact Native-Plane & In-Place Single-Viewport 3D MPR, Thick-Slab MIP/MinIP/Mean & Trackball Rotation:**
+  - Native-plane `Thin` MPR returns bit-identical source slice voxels and source slice thickness (`Thk`).
+  - **`3D Rotate` (`O`)** trackball orbit inside any single viewport, **`⊞ Ax·Cor·Sag`** 3-pane orthogonal MPR with interactive crosshairs, **Thick-Slab Projections (`Thin / MIP / MinIP / Mean`, `1.0–50.0 mm`)**, and opt-in **Blend Siblings** mode.
+  - **3D Geometry Validation & Gantry Tilt Support:** Ported `SliceIntervalRegularity` validation, full 3×3 matrix inversion in `lps_to_voxel` for tilted gantries, unverified-geometry measurement guards, and pixel-unit (`px`) fallback when `PixelSpacing` is absent.
+- **Multi-Series Comparison Layouts & Non-Blocking Cross-Study 3D Synchronization:**
   - Interactive **`4 × 4` visual square-grid layout picker (`⊞ Layout`)** (`1×1` up to `4×4` / 16 viewports).
-  - **Computational 6-DOF 3D Rigid Registration (`RigidTransform3D`):** Automatically aligns two studies (e.g., longitudinal brain scans from different dates or scanners) using 3D foreground anatomical centroid matching + multi-scale Normalized Cross-Correlation (NCC), locking both viewports to the same anatomical height and 3D cut angle across Axial, Coronal, Sagittal, and Oblique 3D rotations.
-  - Manual **`⚓ Lock 3D Sync`** button, 3D cross-reference scout cut lines (`Ref Lines`), and `A/P/R/L/S/I` orientation edge letters.
+  - Worker-thread 6-DOF **Normalized Cross-Correlation (NCC)** rigid registration with `FrameOfReferenceUID` identity fast path, alignment score / position-sync fallback banners, and manual **`⚓ Lock 3D Sync`** override.
 - **Horos / IsiX Regions of Interest (`IsiXROI`) & Pixel Statistics:**
   - **`Length` (`L` / `M`)**, **`Angle` (`A`)**, **`◯ Oval` (`E`)**, **`▭ Rect` (`B`)**, **`⬠ Closed Polygon` (`G`)**, **`✏ Freehand Pencil` (`F`, with cubic spline smoothing)**, and **`⌖ Point Probe` (`T`)**.
-  - Live calibrated **Area ($\text{cm}^2 / \text{mm}^2$)**, **Perimeter**, **Mean**, **SD**, **Min**, and **Max** (`HU`) in Horos-style dark callout boxes.
-- **GPU Window/Level, 31 Horos CLUTs & 22 Horos 2D Convolution Filters:**
-  - Hardware-accelerated WGSL shader pipeline (`wgpu`) with CPU fallback (`RDICOM_CPU=1`).
-  - All **31 factory Horos Colour Lookup Tables (`CLUT`)** and **22 factory Horos 2D Spatial Convolution Filters** (`Bone Filter 3x3`, `Sharpen 3x3`, `Sharpen 5x5`, `Basic Smooth 5x5`, `Gaussian blur`, `Edge 3x3`, `Laplacian`, etc.).
+  - Live calibrated **Area ($\text{cm}^2 / \text{mm}^2$)**, **Perimeter**, **Mean**, **SD**, **Min**, and **Max** (`HU`) reading unconvolved source pixels.
+- **GPU Window/Level with Bilinear Interpolation, 31 Horos CLUTs & 22 Horos 2D Convolution Filters:**
+  - Hardware-accelerated WGSL shader pipeline (`wgpu`) with post-windowing **Bilinear Interpolation** (toggleable in View), CPU fallback (`RDICOM_CPU=1`), **31 Horos CLUTs**, and **22 Horos 2D Convolution Filters**.
+- **In-App Auto-Updater:**
+  - Checks GitHub Releases (`CosmicTaco22/SekhmetX`), displays release notes, verifies `SHA256SUMS` before replacing the binary in-place, and supports a startup-check toggle.
 
 ---
 
