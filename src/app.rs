@@ -164,6 +164,7 @@ pub(crate) struct ViewportCell {
     pub(crate) y_flipped: bool,
     pub(crate) wheel_accum: f32,
     pub(crate) mpr_enabled: bool,
+    pub(crate) mpr_auto_applied: bool,
     pub(crate) mpr_plane: Option<MprPlane3D>,
     pub(crate) mpr_cached: Option<(MprPlane3D, Arc<Frame>, SliceKey)>,
     mpr_seq: usize,
@@ -190,6 +191,7 @@ impl ViewportCell {
             y_flipped: false,
             wheel_accum: 0.0,
             mpr_enabled: false,
+            mpr_auto_applied: false,
             mpr_plane: None,
             mpr_cached: None,
             mpr_seq: 0,
@@ -218,6 +220,7 @@ impl ViewportCell {
         self.invert = false;
         self.reset_view();
         self.mpr_enabled = false;
+        self.mpr_auto_applied = false;
         self.mpr_plane = None;
         self.mpr_cached = None;
         self.rendered = None;
@@ -395,7 +398,7 @@ impl ViewerApp {
             } else {
                 gpu_view::install(cc)
             },
-            tool: Tool::WindowLevel,
+            tool: Tool::Scroll,
             measures: HashMap::new(),
             drawing: Vec::new(),
             angle_pending: None,
@@ -1816,6 +1819,32 @@ impl ViewerApp {
             }
         }
 
+        // Automatically enable 3D MPR on MPR-capable studies once their 3D volume is ready.
+        for vp_idx in 0..cell_count {
+            let Some(key) = self.viewports[vp_idx].selected else {
+                continue;
+            };
+            if self.viewports[vp_idx].mpr_auto_applied || self.viewports[vp_idx].mpr_enabled {
+                continue;
+            }
+            let capable = self.series_at(key).is_some_and(|s| s.is_mpr_capable());
+            if !capable {
+                continue;
+            }
+            if let Some(vol) = self.volumes.get(&key).cloned() {
+                self.viewports[vp_idx].mpr_auto_applied = true;
+                let cur_s = self.viewports[vp_idx].slice.min(vol.depth.saturating_sub(1));
+                let mut p = MprPlane3D::from_volume_native(&vol);
+                let z_lps = vol.voxel_to_lps([
+                    vol.width as f64 * 0.5,
+                    vol.height as f64 * 0.5,
+                    cur_s as f64,
+                ]);
+                p.offset_mm = dot3(sub3(z_lps, p.center_lps), p.normal);
+                self.set_viewport_mpr_plane(vp_idx, p, false);
+            }
+        }
+
         if let Some((vp_idx, key, ortho)) = self.pending_mpr_activate {
             if self.viewports[vp_idx].selected != Some(key) {
                 self.pending_mpr_activate = None;
@@ -1960,6 +1989,7 @@ impl ViewerApp {
             Key::M,
             Key::L,
             Key::A,
+            Key::C,
             Key::E,
             Key::B,
             Key::G,
@@ -2029,10 +2059,14 @@ impl ViewerApp {
                     self.drawing.clear();
                     self.angle_pending = None;
                 }
+                Key::A => {
+                    self.switch_viewport_to_plane(vp, crate::dicom_index::DominantPlane::Axial);
+                }
+                Key::C => {
+                    self.switch_viewport_to_plane(vp, crate::dicom_index::DominantPlane::Coronal);
+                }
                 Key::S => {
-                    self.tool = Tool::Scroll;
-                    self.drawing.clear();
-                    self.angle_pending = None;
+                    self.switch_viewport_to_plane(vp, crate::dicom_index::DominantPlane::Sagittal);
                 }
                 Key::O => {
                     self.tool = Tool::Orbit3D;
@@ -2041,11 +2075,6 @@ impl ViewerApp {
                 }
                 Key::M | Key::L => {
                     self.tool = Tool::Length;
-                    self.drawing.clear();
-                    self.angle_pending = None;
-                }
-                Key::A => {
-                    self.tool = Tool::Angle;
                     self.drawing.clear();
                     self.angle_pending = None;
                 }

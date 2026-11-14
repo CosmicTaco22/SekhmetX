@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.7] - 2026-11-14
+
+### Improved (Default Scroll, Auto-3D MPR & Plane Hotkeys)
+- **Default Scroll Tool (`src/app.rs`):** SekhmetX now opens with the **Scroll** tool active instead of Window/Level.
+- **Auto-3D on MPR-Capable Series (`src/app.rs`):** Opening an MPR-capable series automatically enables 3D MPR once its volume finishes assembling (while still allowing manual toggle-off).
+- **`A` / `C` / `S` Plane Hotkeys (`src/app.rs`, `README.md`):** Bound **`A`** (Axial), **`C`** (Coronal), and **`S`** (Sagittal) to switch planes (using native sibling series in the MPR group when available).
+
+---
+
 ## [0.2.6] - 2026-11-14
 
 ### Improved (Native-Resolution MPR Plane Switching & Version Badge)

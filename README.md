@@ -41,7 +41,8 @@ A fast, native radiological DICOM viewer for Windows, macOS, and Linux, written 
 
 | Action | Control |
 |---|---|
-| Previous / next slice | Mouse wheel, `↑` / `↓` / `←` / `→`, `Scroll` tool (`S`), toolbar slider, or bottom viewport scrubber |
+| Previous / next slice | Mouse wheel, `↑` / `↓` / `←` / `→`, `Scroll` tool (default), toolbar slider, or bottom viewport scrubber |
+| Switch Axial / Coronal / Sagittal plane | `A` (Axial) · `C` (Coronal) · `S` (Sagittal), or toolbar `Ax` / `Cor` / `Sag` |
 | Jump 10 slices / first / last | `Page Up` / `Page Down`, `Home` / `End`, toolbar `⏮` / `⏭` |
 | Previous / next series | `[` / `]`, or toolbar `◀ Se` / `Se ▶` |
 | Active tool | Left click / drag |
