@@ -29,6 +29,8 @@ SekhmetX
   sekhmetx --check FOLDER                     try to decode every image and report failures
   sekhmetx --render FOLDER OUT.png [SERIES] [IMAGE] [WIDTH LEVEL]
                                               save one image as PNG (no window)
+  sekhmetx --roi FOLDER_OR_FILE [SERIES IMAGE] (ellipse|rect|length) X1 Y1 X2 Y2
+                                              compute Horos-compatible ROI stats/length
 ";
 
 fn main() -> eframe::Result {
@@ -49,6 +51,13 @@ fn main() -> eframe::Result {
         }
         Some("--render") => {
             if let Err(e) = cli_render(&args[1..]) {
+                eprintln!("error: {e:#}");
+                std::process::exit(1);
+            }
+            return Ok(());
+        }
+        Some("--roi") => {
+            if let Err(e) = cli_roi(&args[1..]) {
                 eprintln!("error: {e:#}");
                 std::process::exit(1);
             }
@@ -168,4 +177,152 @@ fn cli_check(args: &[String]) {
         }
     }
     println!("{ok} images decoded, {bad} failed, {} non-image files skipped", index.files_skipped);
+}
+
+fn evaluate_cli_roi(
+    f: &frame::Frame,
+    shape: &str,
+    x1: f64,
+    y1: f64,
+    x2: f64,
+    y2: f64,
+) -> anyhow::Result<String> {
+    use roi::{RoiBoundingBox, RoiKind, RoiPlanarGeometry, RoiPoint, RoiSize};
+    let a = RoiPoint::new(x1, y1);
+    let b = RoiPoint::new(x2, y2);
+    match shape.to_ascii_lowercase().as_str() {
+        "ellipse" | "oval" => {
+            let rect = RoiBoundingBox::rect(a, b, true);
+            let outline = RoiPlanarGeometry::outline_of_oval(rect, 64);
+            let eval = roi::evaluate_region(
+                f,
+                RoiKind::Oval,
+                &outline,
+                Some(RoiSize::new(rect.size.width, rect.size.height)),
+            );
+            let st = eval
+                .stats
+                .unwrap_or_else(|| roi::RoiPixelStatistics::compute(&[], false, false));
+            let area_str = if let (Some(cm2), Some(mm2)) = (eval.area_cm2_or_px2, eval.area_mm2) {
+                format!("area_cm2={cm2:.4} area_mm2={mm2:.2}")
+            } else {
+                format!("area_px2={:.2}", eval.area_cm2_or_px2.unwrap_or(0.0))
+            };
+            Ok(format!(
+                "shape=ellipse {area_str} mean={:.2} sd={:.2} min={:.2} max={:.2} count={}",
+                st.mean, st.deviation, st.minimum, st.maximum, st.count
+            ))
+        }
+        "rect" | "rectangle" => {
+            let rect = RoiBoundingBox::rect(a, b, false);
+            let outline = RoiPlanarGeometry::outline_of_rectangle(rect);
+            let eval = roi::evaluate_region(f, RoiKind::Rectangle, &outline, None);
+            let st = eval
+                .stats
+                .unwrap_or_else(|| roi::RoiPixelStatistics::compute(&[], false, false));
+            let area_str = if let (Some(cm2), Some(mm2)) = (eval.area_cm2_or_px2, eval.area_mm2) {
+                format!("area_cm2={cm2:.4} area_mm2={mm2:.2}")
+            } else {
+                format!("area_px2={:.2}", eval.area_cm2_or_px2.unwrap_or(0.0))
+            };
+            Ok(format!(
+                "shape=rect {area_str} mean={:.2} sd={:.2} min={:.2} max={:.2} count={}",
+                st.mean, st.deviation, st.minimum, st.maximum, st.count
+            ))
+        }
+        "length" | "line" => {
+            let eval = roi::evaluate_length(f, a, b);
+            if let Some(mm) = eval.length_mm {
+                Ok(format!(
+                    "shape=length length_mm={mm:.3} length_px={:.2}",
+                    eval.length_px.unwrap_or(0.0)
+                ))
+            } else {
+                Ok(format!(
+                    "shape=length length_px={:.2} (uncalibrated)",
+                    eval.length_px.unwrap_or(0.0)
+                ))
+            }
+        }
+        other => anyhow::bail!("unknown ROI shape '{other}'; expected ellipse, rect, or length"),
+    }
+}
+
+fn cli_roi(args: &[String]) -> anyhow::Result<()> {
+    let Some(target) = args.first() else {
+        anyhow::bail!("usage: --roi FOLDER_OR_FILE [SERIES IMAGE] (ellipse|rect|length) X1 Y1 X2 Y2");
+    };
+    let (series_n, image_n, shape, coords) = if args.len() >= 6
+        && matches!(
+            args[1].to_ascii_lowercase().as_str(),
+            "ellipse" | "oval" | "rect" | "rectangle" | "length" | "line"
+        ) {
+        (0usize, None, args[1].as_str(), &args[2..6])
+    } else if args.len() >= 8 {
+        let s: usize = args[1].parse()?;
+        let i: usize = args[2].parse()?;
+        (s, Some(i), args[3].as_str(), &args[4..8])
+    } else {
+        anyhow::bail!("usage: --roi FOLDER_OR_FILE [SERIES IMAGE] (ellipse|rect|length) X1 Y1 X2 Y2");
+    };
+    let x1: f64 = coords[0].parse()?;
+    let y1: f64 = coords[1].parse()?;
+    let x2: f64 = coords[2].parse()?;
+    let y2: f64 = coords[3].parse()?;
+
+    let index = scan(target);
+    let series: Vec<&dicom_index::Series> = index.studies.iter().flat_map(|s| &s.series).collect();
+    let se = series
+        .get(series_n)
+        .ok_or_else(|| anyhow::anyhow!("series {series_n} not found ({} series)", series.len()))?;
+    let i = image_n.unwrap_or(se.slices.len() / 2).min(se.slices.len() - 1);
+    let s = &se.slices[i];
+    let f = frame::load_frame(&s.path, s.frame)?;
+    let report = evaluate_cli_roi(&f, shape, x1, y1, x2, y2)?;
+    println!("{report}");
+    Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn cli_roi_computes_rect_ellipse_and_length() {
+        let mut pixels = vec![100.0f32; 64 * 64];
+        for y in 10..=20 {
+            for x in 10..=20 {
+                pixels[y * 64 + x] = 200.0;
+            }
+        }
+        let f = frame::Frame {
+            width: 64,
+            height: 64,
+            pixels: frame::Pixels::Gray(pixels),
+            stored_window: None,
+            full_window: imaging::Window::new(150.0, 200.0),
+            bits_window: None,
+            inverts: false,
+            voi_lut_applied: false,
+            slope: 1.0,
+            spacing: Some((0.5, 0.5)),
+            pixel_ratio: 1.0,
+            origin: None,
+            orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            is_3d_plane: true,
+            frame_of_reference_uid: None,
+            slice_thickness: None,
+            slice_location: None,
+            value_unit: "HU",
+        };
+        let rect_out = evaluate_cli_roi(&f, "rect", 10.0, 10.0, 20.0, 20.0).unwrap();
+        assert!(rect_out.contains("shape=rect"), "{rect_out}");
+        assert!(rect_out.contains("mean=200.00"), "{rect_out}");
+
+        let ell_out = evaluate_cli_roi(&f, "ellipse", 15.0, 15.0, 5.0, 5.0).unwrap();
+        assert!(ell_out.contains("shape=ellipse"), "{ell_out}");
+
+        let len_out = evaluate_cli_roi(&f, "length", 0.0, 0.0, 10.0, 0.0).unwrap();
+        assert!(len_out.contains("length_mm=5.000"), "{len_out}");
+    }
 }

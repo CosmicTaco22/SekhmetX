@@ -84,6 +84,50 @@ pub(crate) enum Measure {
     Point(Pos2),
 }
 
+impl Measure {
+    pub(crate) fn to_persisted(&self) -> crate::db::PersistedMeasure {
+        match self {
+            Self::Length(a, b) => crate::db::PersistedMeasure::Length([a.x, a.y], [b.x, b.y]),
+            Self::Angle(a, v, b) => {
+                crate::db::PersistedMeasure::Angle([a.x, a.y], [v.x, v.y], [b.x, b.y])
+            }
+            Self::Oval(a, b) => crate::db::PersistedMeasure::Oval([a.x, a.y], [b.x, b.y]),
+            Self::Rect(a, b) => crate::db::PersistedMeasure::Rect([a.x, a.y], [b.x, b.y]),
+            Self::Polygon(pts) => {
+                crate::db::PersistedMeasure::Polygon(pts.iter().map(|p| [p.x, p.y]).collect())
+            }
+            Self::Pencil(pts) => {
+                crate::db::PersistedMeasure::Pencil(pts.iter().map(|p| [p.x, p.y]).collect())
+            }
+            Self::Point(p) => crate::db::PersistedMeasure::Point([p.x, p.y]),
+        }
+    }
+
+    pub(crate) fn from_persisted(pm: crate::db::PersistedMeasure) -> Self {
+        match pm {
+            crate::db::PersistedMeasure::Length(a, b) => {
+                Self::Length(pos2(a[0], a[1]), pos2(b[0], b[1]))
+            }
+            crate::db::PersistedMeasure::Angle(a, v, b) => {
+                Self::Angle(pos2(a[0], a[1]), pos2(v[0], v[1]), pos2(b[0], b[1]))
+            }
+            crate::db::PersistedMeasure::Oval(a, b) => {
+                Self::Oval(pos2(a[0], a[1]), pos2(b[0], b[1]))
+            }
+            crate::db::PersistedMeasure::Rect(a, b) => {
+                Self::Rect(pos2(a[0], a[1]), pos2(b[0], b[1]))
+            }
+            crate::db::PersistedMeasure::Polygon(pts) => {
+                Self::Polygon(pts.into_iter().map(|p| pos2(p[0], p[1])).collect())
+            }
+            crate::db::PersistedMeasure::Pencil(pts) => {
+                Self::Pencil(pts.into_iter().map(|p| pos2(p[0], p[1])).collect())
+            }
+            crate::db::PersistedMeasure::Point(p) => Self::Point(pos2(p[0], p[1])),
+        }
+    }
+}
+
 struct Scan {
     rx: Receiver<Index>,
     done: Arc<AtomicUsize>,
@@ -270,6 +314,8 @@ pub struct ViewerApp {
     pub(crate) blend_siblings: bool,
     pub(crate) gpu_bilinear: bool,
     check_updates_on_startup: bool,
+    pub(crate) copy_policy: crate::db::CopyToLibraryPolicy,
+    pending_copy_prompt: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -308,6 +354,11 @@ impl ViewerApp {
             .and_then(|d| d.get_setting("check_updates_on_startup"))
             .map(|s| s != "0")
             .unwrap_or(true);
+        let saved_copy_policy = db
+            .as_ref()
+            .and_then(|d| d.get_setting("copy_to_library_policy"))
+            .map(|s| crate::db::CopyToLibraryPolicy::from_str(&s))
+            .unwrap_or(crate::db::CopyToLibraryPolicy::Ask);
         let mut app = Self {
             index: None,
             scan: None,
@@ -371,7 +422,19 @@ impl ViewerApp {
             blend_siblings: false,
             gpu_bilinear: saved_bilinear,
             check_updates_on_startup: saved_startup_updates,
+            copy_policy: saved_copy_policy,
+            pending_copy_prompt: false,
         };
+        if let Some(db) = &app.db {
+            if let Ok(saved_rois) = db.load_all_rois() {
+                for (k, list) in saved_rois {
+                    let converted: Vec<Measure> = list.into_iter().map(Measure::from_persisted).collect();
+                    if !converted.is_empty() {
+                        app.measures.insert(k, converted);
+                    }
+                }
+            }
+        }
         if app.check_updates_on_startup {
             app.start_update_check(false, &cc.egui_ctx);
         }
@@ -1247,6 +1310,44 @@ impl ViewerApp {
         ColourTableBook::table_named(&self.viewports[vp_idx].clut_name)
     }
 
+    pub(crate) fn persist_measures_for(&self, key: &(PathBuf, u32)) {
+        if let Some(ref db) = self.db {
+            let list: Vec<crate::db::PersistedMeasure> = self
+                .measures
+                .get(key)
+                .map(|v| v.iter().map(Measure::to_persisted).collect())
+                .unwrap_or_default();
+            let _ = db.save_rois_for_slice(&key.0, key.1, &list);
+        }
+    }
+
+    fn set_copy_policy(&mut self, policy: crate::db::CopyToLibraryPolicy) {
+        self.copy_policy = policy;
+        if let Some(ref db) = self.db {
+            let _ = db.set_setting("copy_to_library_policy", policy.as_str());
+        }
+    }
+
+    fn copy_ephemeral_studies_to_library(&mut self) {
+        let Some(ref mut index) = self.index else {
+            return;
+        };
+        for st in &mut index.studies {
+            let is_zip = st.series.iter().any(|se| {
+                se.slices.first().is_some_and(|sl| {
+                    let p = sl.path.to_string_lossy();
+                    p.contains("sekhmetx-zip-") || p.contains("rdicom-zip-cache")
+                })
+            });
+            if is_zip {
+                let _ = crate::db::copy_study_into_library(st);
+            }
+        }
+        if let Some(ref mut db) = self.db {
+            let _ = db.save_index(index);
+        }
+    }
+
     pub(crate) fn viewport_measure_key(&self, vp_idx: usize) -> Option<(PathBuf, u32)> {
         let slice = self.viewports.get(vp_idx)?.slice;
         let s = self.viewport_series(vp_idx)?.slices.get(slice)?;
@@ -1299,6 +1400,32 @@ impl ViewerApp {
                             "No DICOM images found ({} files checked).",
                             index.files_seen
                         ));
+                    }
+                    let mut index = index;
+                    let has_ephemeral_zip = index.studies.iter().any(|st| {
+                        st.series.iter().any(|se| {
+                            se.slices.first().is_some_and(|sl| {
+                                let p = sl.path.to_string_lossy();
+                                p.contains("sekhmetx-zip-") || p.contains("rdicom-zip-cache")
+                            })
+                        })
+                    });
+                    if self.copy_policy == crate::db::CopyToLibraryPolicy::Always {
+                        for st in &mut index.studies {
+                            let is_zip = st.series.iter().any(|se| {
+                                se.slices.first().is_some_and(|sl| {
+                                    let p = sl.path.to_string_lossy();
+                                    p.contains("sekhmetx-zip-") || p.contains("rdicom-zip-cache")
+                                })
+                            });
+                            if is_zip {
+                                let _ = crate::db::copy_study_into_library(st);
+                            }
+                        }
+                    } else if has_ephemeral_zip
+                        && self.copy_policy == crate::db::CopyToLibraryPolicy::Ask
+                    {
+                        self.pending_copy_prompt = true;
                     }
                     let first = (!index.studies.is_empty()
                         && !index.studies[0].series.is_empty())
@@ -1706,6 +1833,7 @@ impl ViewerApp {
                         if let Some(list) = self.measures.get_mut(&k) {
                             list.pop();
                         }
+                        self.persist_measures_for(&k);
                     }
                 }
                 Key::Escape => {
@@ -1717,9 +1845,10 @@ impl ViewerApp {
                         let pts = std::mem::take(&mut self.drawing);
                         if let Some(k) = self.viewport_measure_key(vp) {
                             self.measures
-                                .entry(k)
+                                .entry(k.clone())
                                 .or_default()
                                 .push(Measure::Polygon(pts));
+                            self.persist_measures_for(&k);
                         }
                     }
                 }
@@ -1887,9 +2016,10 @@ impl ViewerApp {
         };
 
         ui.horizontal(|ui| {
+            let disk_mb = crate::db::library_disk_usage_bytes() as f64 / (1024.0 * 1024.0);
             ui.label(
                 egui::RichText::new(format!(
-                    "{} · {} {}",
+                    "{} · {} {} ({disk_mb:.1} MB)",
                     tr.library,
                     index.studies.len(),
                     tr.studies
@@ -1949,7 +2079,11 @@ impl ViewerApp {
                         continue;
                     }
 
-                    let title = format!("{}   {}", study.patient_name, study.date);
+                    let title = if study.files_missing {
+                        format!("⚠ [files missing] {}   {}", study.patient_name, study.date)
+                    } else {
+                        format!("{}   {}", study.patient_name, study.date)
+                    };
                     let hdr_resp = egui::CollapsingHeader::new(egui::RichText::new(title).strong())
                         .id_salt(&study.uid)
                         .default_open(true)
@@ -2078,8 +2212,9 @@ impl ViewerApp {
                                             egui::RichText::new(text).monospace().size(11.5),
                                         )
                                         .on_hover_text(format!(
-                                            "{} images, {}×{}, plane: {}{} (click for active viewport, right-click to assign)",
+                                            "{} {}, {}×{}, plane: {}{} (click for active viewport, right-click to assign)",
                                             series.slices.len(),
+                                            tr.images,
                                             series.columns,
                                             series.rows,
                                             series.dominant_plane.badge(),
@@ -2216,6 +2351,36 @@ impl ViewerApp {
                     });
                 }
             });
+
+        if self.pending_copy_prompt {
+            ui.add_space(4.0);
+            ui.group(|ui| {
+                ui.label(
+                    egui::RichText::new(tr.copy_zip_prompt)
+                        .small()
+                        .strong()
+                        .color(Color32::from_rgb(255, 210, 100)),
+                );
+                ui.horizontal(|ui| {
+                    if ui.small_button(tr.copy_btn).clicked() {
+                        self.copy_ephemeral_studies_to_library();
+                        self.pending_copy_prompt = false;
+                    }
+                    if ui.small_button(tr.always_btn).clicked() {
+                        self.set_copy_policy(crate::db::CopyToLibraryPolicy::Always);
+                        self.copy_ephemeral_studies_to_library();
+                        self.pending_copy_prompt = false;
+                    }
+                    if ui.small_button(tr.no_btn).clicked() {
+                        self.pending_copy_prompt = false;
+                    }
+                    if ui.small_button(tr.never_btn).clicked() {
+                        self.set_copy_policy(crate::db::CopyToLibraryPolicy::Never);
+                        self.pending_copy_prompt = false;
+                    }
+                });
+            });
+        }
 
         if clear_library {
             if let Some(db) = &self.db {
@@ -3014,9 +3179,10 @@ impl ViewerApp {
                 let pts = std::mem::take(&mut self.drawing);
                 if let Some(k) = self.viewport_measure_key(vp_idx) {
                     self.measures
-                        .entry(k)
+                        .entry(k.clone())
                         .or_default()
                         .push(Measure::Polygon(pts));
+                    self.persist_measures_for(&k);
                 }
             } else {
                 self.viewports[vp_idx].reset_view();
@@ -3238,9 +3404,10 @@ impl ViewerApp {
                             if a.distance(b) > 2.0 {
                                 if let Some(k) = self.viewport_measure_key(vp_idx) {
                                     self.measures
-                                        .entry(k)
+                                        .entry(k.clone())
                                         .or_default()
                                         .push(Measure::Length(a, b));
+                                    self.persist_measures_for(&k);
                                 }
                                 self.drawing.clear();
                             }
@@ -3255,9 +3422,10 @@ impl ViewerApp {
                         if a.distance(b) > 3.0 {
                             if let Some(k) = self.viewport_measure_key(vp_idx) {
                                 self.measures
-                                    .entry(k)
+                                    .entry(k.clone())
                                     .or_default()
                                     .push(Measure::Length(a, b));
+                                self.persist_measures_for(&k);
                             }
                             self.drawing.clear();
                         } else {
@@ -3277,9 +3445,10 @@ impl ViewerApp {
                             if v.distance(b) > 2.0 {
                                 if let Some(k) = self.viewport_measure_key(vp_idx) {
                                     self.measures
-                                        .entry(k)
+                                        .entry(k.clone())
                                         .or_default()
                                         .push(Measure::Angle(a, v, b));
+                                    self.persist_measures_for(&k);
                                 }
                                 self.angle_pending = None;
                                 self.drawing.clear();
@@ -3356,7 +3525,8 @@ impl ViewerApp {
                                     } else {
                                         Measure::Rect(a, b)
                                     };
-                                    self.measures.entry(k).or_default().push(m);
+                                    self.measures.entry(k.clone()).or_default().push(m);
+                                    self.persist_measures_for(&k);
                                 }
                                 self.drawing.clear();
                             }
@@ -3375,7 +3545,8 @@ impl ViewerApp {
                                 } else {
                                     Measure::Rect(a, b)
                                 };
-                                self.measures.entry(k).or_default().push(m);
+                                self.measures.entry(k.clone()).or_default().push(m);
+                                self.persist_measures_for(&k);
                             }
                             self.drawing.clear();
                         } else {
@@ -3396,9 +3567,10 @@ impl ViewerApp {
                                 let pts = std::mem::take(&mut self.drawing);
                                 if let Some(k) = self.viewport_measure_key(vp_idx) {
                                     self.measures
-                                        .entry(k)
+                                        .entry(k.clone())
                                         .or_default()
                                         .push(Measure::Polygon(pts));
+                                    self.persist_measures_for(&k);
                                 }
                                 return;
                             }
@@ -3432,9 +3604,10 @@ impl ViewerApp {
                         let pts = std::mem::take(&mut self.drawing);
                         if let Some(k) = self.viewport_measure_key(vp_idx) {
                             self.measures
-                                .entry(k)
+                                .entry(k.clone())
                                 .or_default()
                                 .push(Measure::Pencil(pts));
+                            self.persist_measures_for(&k);
                         }
                     } else {
                         self.drawing.clear();
@@ -3447,9 +3620,10 @@ impl ViewerApp {
                     if let Some(px) = cur_px {
                         if let Some(k) = self.viewport_measure_key(vp_idx) {
                             self.measures
-                                .entry(k)
+                                .entry(k.clone())
                                 .or_default()
                                 .push(Measure::Point(px));
+                            self.persist_measures_for(&k);
                         }
                     }
                 }

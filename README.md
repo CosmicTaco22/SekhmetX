@@ -14,7 +14,8 @@ A fast, native radiological DICOM viewer for Windows, macOS, and Linux, written 
   - Toolbar ordered to match IsiX / Horos (`ViewerToolbarCatalog`), automatically collapsing trailing groups into a **`»`** overflow menu on narrower windows so controls never wrap or clip.
   - One-click **English / Spanish (`🌐 EN` / `🌐 ES`)** language toggle persisted in the local SQLite database.
 - **Horos Study Browser with Search, Local SQLite Library & Live Mini-Thumbnails:**
-  - Crash-safe local SQLite database (WAL mode) storing study/series metadata and preferences.
+  - Crash-safe local SQLite database (WAL mode, schema v2 migrations) storing study/series metadata, persistent ROIs, and preferences. *(Note: patient metadata in the local SQLite database is stored unencrypted on disk.)*
+  - Managed library storage (`SekhmetX/Studies/<StudyUID>/`) with configurable **`Ask` / `Always` / `Never`** copy policy when opening `.zip` archives, live library disk-usage reporting (MB), **`⚠ [files missing]`** badges if source files move, per-study **`Remove from library`**, and one-click **`Clear`** library reset.
   - Instant search bar (`🔍`) filtering by patient name, ID, accession, study, or series description, plus one-click modality filter pills (`All`, `CT`, `MR`, `US`, `DX/CR`, `PT/NM`).
   - Live rendered **38×38 DICOM series mini-thumbnails**, dominant anatomical plane badges (`[AX]`, `[COR]`, `[SAG]`, `[OBL]`), and **Acquisition-Time MPR Auto-Grouping** (`🧊 MPR [AX·COR·SAG]`).
 - **Exact Native-Plane & In-Place Single-Viewport 3D MPR, Thick-Slab MIP/MinIP/Mean & Trackball Rotation:**
@@ -26,7 +27,7 @@ A fast, native radiological DICOM viewer for Windows, macOS, and Linux, written 
   - Worker-thread 6-DOF **Normalized Cross-Correlation (NCC)** rigid registration with `FrameOfReferenceUID` identity fast path, alignment score / position-sync fallback banners, and manual **`⚓ Lock 3D Sync`** override.
 - **Horos / IsiX Regions of Interest (`IsiXROI`) & Pixel Statistics:**
   - **`Length` (`L` / `M`)**, **`Angle` (`A`)**, **`◯ Oval` (`E`)**, **`▭ Rect` (`B`)**, **`⬠ Closed Polygon` (`G`)**, **`✏ Freehand Pencil` (`F`, with cubic spline smoothing)**, and **`⌖ Point Probe` (`T`)**.
-  - Live calibrated **Area ($\text{cm}^2 / \text{mm}^2$)**, **Perimeter**, **Mean**, **SD**, **Min**, and **Max** (`HU`) reading unconvolved source pixels.
+  - Live calibrated **Area ($\text{cm}^2 / \text{mm}^2$)**, **Perimeter**, **Mean**, **SD**, **Min**, and **Max** (`HU`) reading unconvolved source pixels, with automatic per-slice persistence in SQLite (`rois` table).
 - **GPU Window/Level with Bilinear Interpolation, 31 Horos CLUTs & 22 Horos 2D Convolution Filters:**
   - Hardware-accelerated WGSL shader pipeline (`wgpu`) with post-windowing **Bilinear Interpolation** (toggleable in View), CPU fallback (`RDICOM_CPU=1`), **31 Horos CLUTs**, and **22 Horos 2D Convolution Filters**.
 - **In-App Auto-Updater:**
@@ -77,6 +78,7 @@ Every tagged release (`v*`) automatically builds **SekhmetX** (`sekhmetx`) for *
 sekhmetx --list FOLDER_OR_ZIP             # print studies and series found
 sekhmetx --check FOLDER_OR_ZIP            # decode every image and report failures
 sekhmetx --render FOLDER OUT.png [SERIES] [IMAGE] [WIDTH LEVEL]
+sekhmetx --roi FOLDER_OR_FILE [SERIES IMAGE] (ellipse|rect|length) X1 Y1 X2 Y2
 ```
 
 ---

@@ -922,4 +922,20 @@ mod tests {
         assert_eq!(olo, RoiPoint::new(16.0, 20.0));
         assert_eq!(ohi, RoiPoint::new(48.0, 44.0));
     }
+
+    #[test]
+    fn point_between_and_resampling_edges() {
+        assert_eq!(
+            RoiPlanarGeometry::point_between(
+                RoiPoint::new(0.0, 0.0),
+                RoiPoint::new(10.0, 20.0),
+                0.25
+            ),
+            RoiPoint::new(2.5, 5.0)
+        );
+        assert_eq!(
+            RoiPlanarGeometry::magnitude(RoiPoint::new(0.0, 0.0), RoiPoint::new(3.0, 4.0)),
+            5.0
+        );
+    }
 }

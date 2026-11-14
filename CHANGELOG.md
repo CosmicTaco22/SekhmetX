@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added & Improved (P1 Hardening & Parity)
+- **Managed Library & Persistent ZIP Studies (`src/db.rs`, `src/app.rs`):**
+  - Added `CopyToLibraryPolicy` (`Ask` / `Always` / `Never`) with an inline prompt when opening `.zip` archives to copy studies into `<data dir>/SekhmetX/Studies/<StudyUID>/`.
+  - Added library disk usage readout (MB), `"Clear"` library button, and managed-copy cleanup on `"Remove from library"` / `"Clear"`.
+- **SQLite Schema v2 & Missing-File Handling (`src/db.rs`, `src/dicom_index.rs`):**
+  - Added `PRAGMA user_version = 2` migration adding `modality`, `image_count`, `comments`, `date_added`, `last_opened`, `managed_dir` columns and the `rois` table.
+  - Studies whose source files moved on disk now remain visible with a `⚠ [files missing]` badge instead of disappearing silently.
+- **Persistent ROIs (`src/db.rs`, `src/app.rs`, `src/ui/toolbar.rs`):**
+  - ROIs (`Length`, `Angle`, `Oval`, `Rect`, `Polygon`, `Pencil`, `Point`) are automatically saved to and restored from SQLite per `(path, frame)` key.
+- **Complete Bilingual UI (`src/i18n.rs`, `src/ui/toolbar.rs`, `src/app.rs`):**
+  - Routed remaining toolbar, view menu, ROI, and ZIP copy prompt strings through `Strings` (`EN` / `ES`) with zero unused-field warnings and an EN/ES non-empty parity test.
+- **CLI ROI Comparison Mode & Documentation (`src/main.rs`, `DEVIATIONS.md`, `porting/map.toml`, `PORTING_MAP.md`):**
+  - Added `sekhmetx --roi` to compute area, mean, SD, min, max (for `ellipse`/`rect`) and length in mm (for `length`) for direct comparison with Horos.
+  - Added `DEVIATIONS.md`, ported additional IsiXROI edge-case tests, and updated `porting/map.toml` + `PORTING_MAP.md`.
+
+---
+
 ## [0.2.3] - 2026-11-14
 
 ### Fixed & Hardened (Correctness Pass)

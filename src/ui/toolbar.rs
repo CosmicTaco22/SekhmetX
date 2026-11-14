@@ -186,11 +186,11 @@ impl ViewerApp {
                 ui.selectable_value(&mut self.tool, Tool::Rect, "▭")
                     .on_hover_text("Rectangle ROI (B)");
                 let roi_label = match self.tool {
-                    Tool::Angle => "ROI: ∠",
-                    Tool::Polygon => "ROI: ⬠",
-                    Tool::Pencil => "ROI: ✏",
-                    Tool::Point => "ROI: ⌖",
-                    _ => "ROI ▾",
+                    Tool::Angle => format!("{}: ∠", tr.roi),
+                    Tool::Polygon => format!("{}: ⬠", tr.roi),
+                    Tool::Pencil => format!("{}: ✏", tr.roi),
+                    Tool::Point => format!("{}: ⌖", tr.roi),
+                    _ => format!("{} ▾", tr.roi),
                 };
                 ui.menu_button(roi_label, |ui| {
                     ui.selectable_value(&mut self.tool, Tool::Length, "📏 Length (L)");
@@ -206,9 +206,10 @@ impl ViewerApp {
                         .is_some_and(|m| !m.is_empty())
                     {
                         ui.separator();
-                        if ui.button("🗑 Clear ROIs on Slice").clicked() {
+                        if ui.button(format!("🗑 {}", tr.clear_rois)).clicked() {
                             if let Some(k) = self.viewport_measure_key(self.active_viewport) {
                                 self.measures.remove(&k);
+                                self.persist_measures_for(&k);
                             }
                             ui.close();
                         }
@@ -327,7 +328,7 @@ impl ViewerApp {
                 ui.add_enabled_ui(has_series || self.ortho_mpr_active, |ui| {
                     let mut ortho_on = self.ortho_mpr_active;
                     if ui
-                        .toggle_value(&mut ortho_on, "⊞ Ax·Cor·Sag")
+                        .toggle_value(&mut ortho_on, format!("⊞ {}", tr.ortho_mpr))
                         .on_hover_text("Classic Horos 3-pane Orthogonal MPR (Axial | Coronal | Sagittal) with interactive crosshairs")
                         .changed()
                     {
@@ -341,7 +342,7 @@ impl ViewerApp {
                 ui.add_enabled_ui(has_series, |ui| {
                     let mut mpr_on = self.active_cell().mpr_enabled;
                     if ui
-                        .toggle_value(&mut mpr_on, "🧊 3D")
+                        .toggle_value(&mut mpr_on, format!("🧊 {}", tr.mpr_3d))
                         .on_hover_text("In-place 3D volume slicing inside active viewport")
                         .changed()
                     {
@@ -358,8 +359,8 @@ impl ViewerApp {
                     }
                 });
 
-                ui.menu_button("View ▾", |ui| {
-                    ui.toggle_value(&mut self.active_cell_mut().invert, "Invert (I)");
+                ui.menu_button(format!("{} ▾", tr.view), |ui| {
+                    ui.toggle_value(&mut self.active_cell_mut().invert, tr.invert);
                     ui.separator();
                     if ui.button("↺ Rotate 90° CCW").clicked() {
                         let vp = self.active_cell_mut();
@@ -372,16 +373,16 @@ impl ViewerApp {
                         ui.close();
                     }
                     let mut x_flip = self.active_cell().x_flipped;
-                    if ui.toggle_value(&mut x_flip, "⇄ Flip Horizontal (H)").changed() {
+                    if ui.toggle_value(&mut x_flip, format!("⇄ {}", tr.flip_h)).changed() {
                         self.active_cell_mut().x_flipped = x_flip;
                     }
                     let mut y_flip = self.active_cell().y_flipped;
-                    if ui.toggle_value(&mut y_flip, "⇅ Flip Vertical (V)").changed() {
+                    if ui.toggle_value(&mut y_flip, format!("⇅ {}", tr.flip_v)).changed() {
                         self.active_cell_mut().y_flipped = y_flip;
                     }
                     ui.separator();
-                    ui.toggle_value(&mut self.show_reference_lines, "Reference Lines");
-                    ui.toggle_value(&mut self.show_annotations, "Annotations & Orientation");
+                    ui.toggle_value(&mut self.show_reference_lines, tr.ref_lines);
+                    ui.toggle_value(&mut self.show_annotations, tr.overlays);
                     if ui
                         .toggle_value(&mut self.gpu_bilinear, "Smooth Interpolation (Bilinear)")
                         .changed()
@@ -394,7 +395,7 @@ impl ViewerApp {
                         }
                     }
                     ui.separator();
-                    ui.label("Slice Sync Mode:");
+                    ui.label(tr.sync_label);
                     for mode in [
                         SliceSynchronization::Absolute,
                         SliceSynchronization::Location,
@@ -404,7 +405,7 @@ impl ViewerApp {
                         ui.selectable_value(&mut self.sync_mode, mode, mode.label());
                     }
                     ui.separator();
-                    if ui.button("Reset Viewport (R)").clicked() {
+                    if ui.button(tr.reset_viewport).clicked() {
                         let vp = self.active_cell_mut();
                         vp.reset_view();
                         vp.reset_clut();

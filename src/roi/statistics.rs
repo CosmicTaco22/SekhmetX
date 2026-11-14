@@ -280,4 +280,15 @@ mod tests {
         assert_eq!(s.deviation, (81.1875f64 / 3.0).sqrt());
         assert!(RoiValueStatistics::of(&[7.0]).unwrap().deviation.is_nan());
     }
+
+    #[test]
+    fn wide_range_deviation() {
+        for scale in [2e38f32, 1e-30f32] {
+            let dev = RoiPixelStatistics::compute(&[-scale, scale], true, false).deviation;
+            assert!(
+                dev.is_finite()
+                    && ((dev as f64) / (2.0f64.sqrt() * (scale as f64)) - 1.0).abs() < 1e-6
+            );
+        }
+    }
 }

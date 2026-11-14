@@ -79,6 +79,11 @@ pub struct Strings {
     pub ref_lines: &'static str,
     pub overlays: &'static str,
     pub sync_label: &'static str,
+    pub copy_zip_prompt: &'static str,
+    pub copy_btn: &'static str,
+    pub always_btn: &'static str,
+    pub no_btn: &'static str,
+    pub never_btn: &'static str,
 }
 
 pub const EN: Strings = Strings {
@@ -129,6 +134,11 @@ pub const EN: Strings = Strings {
     ref_lines: "Reference Lines",
     overlays: "Annotations / HUD",
     sync_label: "Sync:",
+    copy_zip_prompt: "Copy opened ZIP study into library?",
+    copy_btn: "Copy",
+    always_btn: "Always",
+    no_btn: "No",
+    never_btn: "Never",
 };
 
 pub const ES: Strings = Strings {
@@ -179,6 +189,11 @@ pub const ES: Strings = Strings {
     ref_lines: "Líneas de Referencia",
     overlays: "Anotaciones / HUD",
     sync_label: "Sincr.:",
+    copy_zip_prompt: "¿Copiar estudio ZIP abierto a la biblioteca?",
+    copy_btn: "Copiar",
+    always_btn: "Siempre",
+    no_btn: "No",
+    never_btn: "Nunca",
 };
 
 pub fn tr(lang: Lang) -> &'static Strings {
@@ -200,5 +215,27 @@ mod tests {
         assert_eq!(Lang::from_code("unknown"), Lang::En);
         assert_eq!(Lang::Es.code(), "es");
         assert_eq!(Lang::En.toggle(), Lang::Es);
+    }
+
+    #[test]
+    fn en_and_es_strings_are_all_non_empty() {
+        for s in [&EN, &ES] {
+            let fields = [
+                s.open, s.open_hover, s.browser_hover, s.wl, s.scroll, s.pan, s.zoom,
+                s.rot, s.orbit_3d, s.roi, s.clear_rois, s.ortho_mpr, s.mpr_3d, s.view,
+                s.search_hint, s.all, s.no_studies, s.drop_hint, s.library,
+                s.studies, s.clear, s.remove_from_library, s.compare, s.images,
+                s.force_3d_title, s.force_3d_headline, s.force_3d_body, s.force_3d_yes,
+                s.force_3d_no, s.updates_title, s.current_version, s.checking_updates,
+                s.up_to_date, s.check_again, s.new_version, s.download_install,
+                s.open_github, s.installing_update, s.restart_sekhmetx, s.retry,
+                s.reset_viewport, s.flip_h, s.flip_v, s.invert, s.ref_lines,
+                s.overlays, s.sync_label, s.copy_zip_prompt, s.copy_btn,
+                s.always_btn, s.no_btn, s.never_btn,
+            ];
+            for f in fields {
+                assert!(!f.trim().is_empty(), "empty i18n string found");
+            }
+        }
     }
 }

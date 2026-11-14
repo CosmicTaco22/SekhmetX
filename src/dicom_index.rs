@@ -123,6 +123,7 @@ pub struct Study {
     pub accession: String,
     pub series: Vec<Series>,
     pub mpr_groups: Vec<MprGroup>,
+    pub files_missing: bool,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -546,6 +547,7 @@ fn build_index(headers: Vec<Header>) -> Index {
                     accession: h.accession.clone(),
                     series: Vec::new(),
                     mpr_groups: Vec::new(),
+                    files_missing: false,
                 },
                 HashMap::new(),
             )
