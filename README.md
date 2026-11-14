@@ -19,7 +19,7 @@ A fast, native radiological DICOM viewer for Windows, macOS, and Linux, written 
   - Instant search bar (`🔍`) filtering by patient name, ID, accession, study, or series description, plus one-click modality filter pills (`All`, `CT`, `MR`, `US`, `DX/CR`, `PT/NM`).
   - Live rendered **38×38 DICOM series mini-thumbnails**, dominant anatomical plane badges (`[AX]`, `[COR]`, `[SAG]`, `[OBL]`), and **Acquisition-Time MPR Auto-Grouping** (`🧊 MPR [AX·COR·SAG]`).
 - **Exact Native-Plane & In-Place Single-Viewport 3D MPR, Thick-Slab MIP/MinIP/Mean & Trackball Rotation:**
-  - Native-plane `Thin` MPR returns bit-identical source slice voxels and source slice thickness (`Thk`).
+  - Native-plane `Thin` MPR returns bit-identical source slice voxels and source slice thickness (`Thk`), and switching `Ax` / `Cor` / `Sag` (or opening `⊞ Ax·Cor·Sag`) automatically uses the native high-definition Axial, Coronal, or Sagittal sibling series in the MPR group when present.
   - **`3D Rotate` (`O`)** trackball orbit inside any single viewport, **`⊞ Ax·Cor·Sag`** 3-pane orthogonal MPR with interactive crosshairs, **Thick-Slab Projections (`Thin / MIP / MinIP / Mean`, `1.0–50.0 mm`)**, and opt-in **Blend Siblings** mode.
   - **3D Geometry Validation & Gantry Tilt Support:** Ported `SliceIntervalRegularity` validation, full 3×3 matrix inversion in `lps_to_voxel` for tilted gantries, unverified-geometry measurement guards, and pixel-unit (`px`) fallback when `PixelSpacing` is absent.
 - **Multi-Series Comparison Layouts & Non-Blocking Cross-Study 3D Synchronization:**

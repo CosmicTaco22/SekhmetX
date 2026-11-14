@@ -676,40 +676,22 @@ impl ViewerApp {
 
             if self.active_cell().mpr_enabled {
                 ui.separator();
-                if ui.small_button("Ax").on_hover_text("Axial plane").clicked() {
-                    if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
-                        self.set_viewport_mpr_plane(
-                            vp_idx,
-                            MprPlane3D::axial(vol.center_lps),
-                            true,
-                        );
-                    }
+                if ui.small_button("Ax").on_hover_text("Axial plane (uses native Axial series if in MPR group)").clicked() {
+                    self.switch_viewport_to_plane(vp_idx, crate::dicom_index::DominantPlane::Axial);
                 }
                 if ui
                     .small_button("Cor")
-                    .on_hover_text("Coronal plane")
+                    .on_hover_text("Coronal plane (uses native Coronal series if in MPR group)")
                     .clicked()
                 {
-                    if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
-                        self.set_viewport_mpr_plane(
-                            vp_idx,
-                            MprPlane3D::coronal(vol.center_lps),
-                            true,
-                        );
-                    }
+                    self.switch_viewport_to_plane(vp_idx, crate::dicom_index::DominantPlane::Coronal);
                 }
                 if ui
                     .small_button("Sag")
-                    .on_hover_text("Sagittal plane")
+                    .on_hover_text("Sagittal plane (uses native Sagittal series if in MPR group)")
                     .clicked()
                 {
-                    if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
-                        self.set_viewport_mpr_plane(
-                            vp_idx,
-                            MprPlane3D::sagittal(vol.center_lps),
-                            true,
-                        );
-                    }
+                    self.switch_viewport_to_plane(vp_idx, crate::dicom_index::DominantPlane::Sagittal);
                 }
                 if ui
                     .small_button("Nat")

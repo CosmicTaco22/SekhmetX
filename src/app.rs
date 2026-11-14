@@ -907,6 +907,87 @@ impl ViewerApp {
         }
     }
 
+    /// Returns `(study_idx, series_idx)` for a native `plane` sibling inside `sel`'s MPR group, if present.
+    pub(crate) fn mpr_group_series_for_plane(
+        &self,
+        sel: (usize, usize),
+        plane: crate::dicom_index::DominantPlane,
+    ) -> Option<(usize, usize)> {
+        let (st_idx, se_idx) = sel;
+        let study = self.study_at(st_idx)?;
+        let gid = study.series.get(se_idx)?.mpr_group_id?;
+        let group = study.mpr_groups.get(gid)?;
+        let target_se = match plane {
+            crate::dicom_index::DominantPlane::Axial => group.axial_series,
+            crate::dicom_index::DominantPlane::Coronal => group.coronal_series,
+            crate::dicom_index::DominantPlane::Sagittal => group.sagittal_series,
+            crate::dicom_index::DominantPlane::Oblique
+            | crate::dicom_index::DominantPlane::Unknown => None,
+        }?;
+        Some((st_idx, target_se))
+    }
+
+    /// Switches `vp_idx` to `target_plane`: if the active series's MPR group already contains a
+    /// native high-definition series for `target_plane`, switches to that native series at the
+    /// matching anatomical position instead of reslicing a lower-resolution axis.
+    pub(crate) fn switch_viewport_to_plane(
+        &mut self,
+        vp_idx: usize,
+        target_plane: crate::dicom_index::DominantPlane,
+    ) {
+        let Some(cur_sel) = self.viewports.get(vp_idx).and_then(|v| v.selected) else {
+            return;
+        };
+        let current_lps = self
+            .effective_mpr_plane(vp_idx)
+            .map(|p| add3(p.center_lps, scale3(p.normal, p.offset_mm)));
+
+        if let Some(sib_sel) = self.mpr_group_series_for_plane(cur_sel, target_plane) {
+            if sib_sel != cur_sel {
+                let win = self.viewports[vp_idx].window;
+                let clut = self.viewports[vp_idx].clut_name.clone();
+                let inv = self.viewports[vp_idx].invert;
+                let conv = self.viewports[vp_idx].convolution_idx;
+                let mpr_enabled = self.viewports[vp_idx].mpr_enabled;
+
+                self.assign_series_to_viewport(vp_idx, Some(sib_sel));
+                {
+                    let vp = &mut self.viewports[vp_idx];
+                    vp.window = win;
+                    vp.clut_name = clut;
+                    vp.invert = inv;
+                    vp.convolution_idx = conv;
+                    vp.conv_cached = None;
+                    vp.mpr_enabled = mpr_enabled;
+                }
+                if let Some(sib_vol) = self.volumes.get(&sib_sel).cloned() {
+                    let mut p = MprPlane3D::from_volume_native(&sib_vol);
+                    if let Some(lps) = current_lps {
+                        p.offset_mm = dot3(sub3(lps, p.center_lps), p.normal);
+                    }
+                    self.set_viewport_mpr_plane(vp_idx, p, true);
+                } else if mpr_enabled {
+                    self.pending_mpr_activate = Some((vp_idx, sib_sel, false));
+                }
+                return;
+            }
+        }
+
+        if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
+            let mut plane = match target_plane {
+                crate::dicom_index::DominantPlane::Axial => MprPlane3D::axial(vol.center_lps),
+                crate::dicom_index::DominantPlane::Coronal => MprPlane3D::coronal(vol.center_lps),
+                crate::dicom_index::DominantPlane::Sagittal => MprPlane3D::sagittal(vol.center_lps),
+                crate::dicom_index::DominantPlane::Oblique
+                | crate::dicom_index::DominantPlane::Unknown => MprPlane3D::from_volume_native(&vol),
+            };
+            if let Some(lps) = current_lps {
+                plane.offset_mm = dot3(sub3(lps, plane.center_lps), plane.normal);
+            }
+            self.set_viewport_mpr_plane(vp_idx, plane, true);
+        }
+    }
+
     /// Toggles the classic Horos 3-pane Orthogonal MPR layout (`Axial | Coronal | Sagittal`)
     /// for the active viewport's 3D volume.
     pub(crate) fn toggle_orthogonal_mpr(&mut self) {
@@ -944,12 +1025,36 @@ impl ViewerApp {
         self.ortho_crosshair_lps = Some(center);
 
         let planes = [
-            MprPlane3D::axial(center),
-            MprPlane3D::coronal(center),
-            MprPlane3D::sagittal(center),
+            (
+                crate::dicom_index::DominantPlane::Axial,
+                MprPlane3D::axial(center),
+            ),
+            (
+                crate::dicom_index::DominantPlane::Coronal,
+                MprPlane3D::coronal(center),
+            ),
+            (
+                crate::dicom_index::DominantPlane::Sagittal,
+                MprPlane3D::sagittal(center),
+            ),
         ];
-        for (vp_idx, plane) in planes.into_iter().enumerate() {
-            self.assign_series_to_viewport(vp_idx, Some(sel));
+        for (vp_idx, (anat, fallback_plane)) in planes.into_iter().enumerate() {
+            let native_sel = self
+                .mpr_group_series_for_plane(sel, anat)
+                .filter(|&s| self.volumes.contains_key(&s));
+            let pane_sel = native_sel.unwrap_or(sel);
+            let pane_plane = if native_sel.is_some() {
+                if let Some(native_vol) = self.volumes.get(&pane_sel) {
+                    let mut p = MprPlane3D::from_volume_native(native_vol);
+                    p.offset_mm = dot3(sub3(center, p.center_lps), p.normal);
+                    p
+                } else {
+                    fallback_plane
+                }
+            } else {
+                fallback_plane
+            };
+            self.assign_series_to_viewport(vp_idx, Some(pane_sel));
             let vp = &mut self.viewports[vp_idx];
             vp.window = win;
             vp.clut_name = clut.clone();
@@ -957,7 +1062,7 @@ impl ViewerApp {
             vp.convolution_idx = conv;
             vp.conv_cached = None;
             vp.mpr_enabled = true;
-            vp.mpr_plane = Some(plane);
+            vp.mpr_plane = Some(pane_plane);
             self.sync_slice_index_from_mpr_plane(vp_idx);
         }
         self.active_viewport = 0;
@@ -2021,11 +2126,17 @@ impl ViewerApp {
                 ui.separator();
                 ui.colored_label(Color32::from_rgb(255, 180, 80), msg);
             }
-            if let Some(info) = &self.cursor_info {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.label(
+                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                        .small()
+                        .color(Color32::from_gray(150)),
+                );
+                if let Some(info) = &self.cursor_info {
+                    ui.separator();
                     ui.monospace(info);
-                });
-            }
+                }
+            });
         });
     }
 
@@ -2616,7 +2727,7 @@ impl ViewerApp {
             let text = if self.scan.is_some() {
                 "Indexing…"
             } else if vp_idx == 0 {
-                "Open a folder of DICOM files, or drop one here"
+                crate::i18n::tr(self.lang).drop_hint
             } else {
                 "Right-click a series in the browser to assign to this viewport"
             };

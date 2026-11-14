@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.6] - 2026-11-14
+
+### Improved (Native-Resolution MPR Plane Switching & Version Badge)
+- **Native High-Definition `Ax` / `Cor` / `Sag` Switching (`src/app.rs`, `src/ui/toolbar.rs`):**
+  - Clicking `Ax`, `Cor`, or `Sag` (or opening `⊞ Ax·Cor·Sag` 3-pane Orthogonal MPR) now automatically switches to the matching native Axial / Coronal / Sagittal sibling series in the MPR group when available, preserving WL/WW, CLUT, invert, convolution, and anatomical slice position — delivering full native scanner resolution instead of reslicing a thicker axis.
+- **Status Bar Version Badge (`src/app.rs`):**
+  - Added the build version (`v0.2.6`) at the bottom-right corner of the status bar, and localized the empty-viewport drop hint.
+
+---
+
 ## [0.2.5] - 2026-11-14
 
 ### Added (P2 Step 1 — Export & DICOM Anonymization)
