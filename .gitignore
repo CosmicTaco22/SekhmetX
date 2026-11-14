@@ -1,4 +1,5 @@
 /target
+/dist/
 *.png
 /.upstream/
 __pycache__/

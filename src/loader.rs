@@ -1,39 +1,51 @@
-//! Background image decoding.
+//! Background image decoding across one or more open series (for multi-series
+//! comparison viewports).
 //!
-//! Worker threads decode slices near the one on screen, closest first, so
-//! scrolling through a large CT stays smooth even with compressed files.
+//! Worker threads decode slices near the ones on screen in each visible
+//! viewport, closest first, so scrolling through multi-series CT/MRI studies
+//! stays smooth even with compressed files.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex};
 
-use crate::frame::{Frame, load_frame};
+use crate::frame::{load_frame, Frame};
+
+/// Identifies a specific slice of a specific series in the loaded index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct SliceKey {
+    pub scan_gen: u64,
+    pub study: usize,
+    pub series: usize,
+    pub slice: usize,
+}
 
 pub struct Job {
-    pub idx: usize,
+    pub key: SliceKey,
     pub path: PathBuf,
     pub frame: u32,
-    /// Decoded before anything else, wherever it is (the series' middle
-    /// image, which sets the series' default window).
+    /// Decoded before anything else (e.g. the series' middle image, which sets
+    /// the series' default window, or the slice currently on screen).
     pub urgent: bool,
+    /// Distance in slices from a visible viewport's current slice.
+    pub distance: usize,
 }
 
 struct Queue {
     generation: u64,
-    focus: usize,
     jobs: Vec<Job>,
     quit: bool,
 }
 
-type Done = (u64, usize, Result<Arc<Frame>, String>);
+type Done = (u64, SliceKey, Result<Arc<Frame>, String>);
 
 pub struct Loader {
     shared: Arc<(Mutex<Queue>, Condvar)>,
     results: Receiver<Done>,
     generation: u64,
     /// Slices queued or being decoded right now.
-    pending: HashSet<usize>,
+    pending: HashSet<SliceKey>,
 }
 
 impl Loader {
@@ -41,7 +53,6 @@ impl Loader {
         let shared = Arc::new((
             Mutex::new(Queue {
                 generation: 0,
-                focus: 0,
                 jobs: Vec::new(),
                 quit: false,
             }),
@@ -67,7 +78,7 @@ impl Loader {
         }
     }
 
-    /// Drops all queued work (call when switching series).
+    /// Drops all queued work (call when rescanning a new folder).
     pub fn reset(&mut self) {
         self.generation += 1;
         let (lock, _) = &*self.shared;
@@ -77,28 +88,39 @@ impl Loader {
         self.pending.clear();
     }
 
-    /// Tells the workers which slice is on screen, and forgets queued slices
-    /// that are now too far away.
-    pub fn set_focus(&mut self, focus: usize, radius: usize) {
+    /// Updates distances of queued jobs from the active `(study, series, focus_slice)`
+    /// viewports and drops non-urgent jobs that are now outside `radius` of all
+    /// active viewports.
+    pub fn update_focuses(&mut self, focuses: &[(usize, usize, usize)], radius: usize) {
         let (lock, _) = &*self.shared;
         let mut q = lock.lock().unwrap();
-        q.focus = focus;
         let pending = &mut self.pending;
-        q.jobs.retain(|j| {
-            let keep = j.urgent || j.idx.abs_diff(focus) <= radius;
-            if !keep {
-                pending.remove(&j.idx);
+        q.jobs.retain_mut(|j| {
+            let min_dist = focuses
+                .iter()
+                .filter(|&&(st, se, _)| st == j.key.study && se == j.key.series)
+                .map(|&(_, _, sl)| j.key.slice.abs_diff(sl))
+                .min();
+            match min_dist {
+                Some(d) if j.urgent || d <= radius => {
+                    j.distance = d;
+                    true
+                }
+                _ if j.urgent => true,
+                _ => {
+                    pending.remove(&j.key);
+                    false
+                }
             }
-            keep
         });
     }
 
-    pub fn is_pending(&self, idx: usize) -> bool {
-        self.pending.contains(&idx)
+    pub fn is_pending(&self, key: SliceKey) -> bool {
+        self.pending.contains(&key)
     }
 
     pub fn request(&mut self, job: Job) {
-        if !self.pending.insert(job.idx) {
+        if !self.pending.insert(job.key) {
             return;
         }
         let (lock, cvar) = &*self.shared;
@@ -106,13 +128,13 @@ impl Loader {
         cvar.notify_one();
     }
 
-    /// Finished slices for the current series.
-    pub fn poll(&mut self) -> Vec<(usize, Result<Arc<Frame>, String>)> {
+    /// Finished slices for the current scan generation.
+    pub fn poll(&mut self) -> Vec<(SliceKey, Result<Arc<Frame>, String>)> {
         let mut out = Vec::new();
-        while let Ok((generation, idx, result)) = self.results.try_recv() {
+        while let Ok((generation, key, result)) = self.results.try_recv() {
             if generation == self.generation {
-                self.pending.remove(&idx);
-                out.push((idx, result));
+                self.pending.remove(&key);
+                out.push((key, result));
             }
         }
         out
@@ -127,7 +149,11 @@ impl Drop for Loader {
     }
 }
 
-fn worker(shared: Arc<(Mutex<Queue>, Condvar)>, tx: Sender<Done>, repaint: Arc<dyn Fn() + Send + Sync>) {
+fn worker(
+    shared: Arc<(Mutex<Queue>, Condvar)>,
+    tx: Sender<Done>,
+    repaint: Arc<dyn Fn() + Send + Sync>,
+) {
     let (lock, cvar) = &*shared;
     loop {
         let (generation, job) = {
@@ -138,12 +164,11 @@ fn worker(shared: Arc<(Mutex<Queue>, Condvar)>, tx: Sender<Done>, repaint: Arc<d
             if q.quit {
                 return;
             }
-            let focus = q.focus;
             let best = q
                 .jobs
                 .iter()
                 .enumerate()
-                .min_by_key(|(_, j)| (!j.urgent, j.idx.abs_diff(focus)))
+                .min_by_key(|(_, j)| (!j.urgent, j.distance))
                 .map(|(i, _)| i)
                 .unwrap();
             (q.generation, q.jobs.swap_remove(best))
@@ -153,7 +178,7 @@ fn worker(shared: Arc<(Mutex<Queue>, Condvar)>, tx: Sender<Done>, repaint: Arc<d
             .unwrap_or_else(|_| Err(anyhow::anyhow!("the image decoder crashed on this file")))
             .map(Arc::new)
             .map_err(|e| format!("{e:#}"));
-        if tx.send((generation, job.idx, result)).is_err() {
+        if tx.send((generation, job.key, result)).is_err() {
             return;
         }
         repaint();

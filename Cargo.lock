@@ -3652,6 +3652,7 @@ dependencies = [
  "dicom-object",
  "dicom-pixeldata",
  "eframe",
+ "flate2",
  "image",
  "rayon",
  "rfd",

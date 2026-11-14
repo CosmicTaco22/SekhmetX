@@ -4,6 +4,9 @@
 //!
 //! Ported from IsiX commit 3e24831224b8 (13 Nov 2026).
 
+pub mod clut;
+pub mod clut_tables;
+pub mod convolution;
 pub mod defaults;
 pub mod drag;
 pub mod photometry;

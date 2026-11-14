@@ -4,9 +4,13 @@
 mod app;
 mod dicom_index;
 mod frame;
+mod geometry;
 mod gpu_view;
 mod imaging;
 mod loader;
+mod navigation;
+mod roi;
+mod volume;
 
 use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;

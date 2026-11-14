@@ -1,11 +1,9 @@
-name: Build for Windows
-
-# Builds rdicom-viewer.exe on GitHub's Windows machines.
-# Push this project to a GitHub repository, then open the "Actions" tab:
-# each run has a downloadable "rdicom-viewer-windows" zip with the .exe inside.
+name: Build & Test (Windows)
 
 on:
   push:
+    branches: [master, main]
+  pull_request:
   workflow_dispatch:
 
 jobs:
@@ -20,16 +18,20 @@ jobs:
       - name: Cache build
         uses: Swatinem/rust-cache@v2
 
+      - name: Run unit tests (release)
+        run: cargo test --release
+
       - name: Build (release)
         run: cargo build --release
 
-      - name: Self-test
+      - name: Self-test CLI
         run: target\release\rdicom-viewer.exe --help
 
-      - name: Upload the .exe
+      - name: Upload Windows artifact
         uses: actions/upload-artifact@v4
         with:
           name: rdicom-viewer-windows
           path: |
             target/release/rdicom-viewer.exe
             README.md
+            CHANGELOG.md

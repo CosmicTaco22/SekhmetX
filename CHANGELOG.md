@@ -1,0 +1,57 @@
+# Changelog
+
+All notable changes to **RDicom Viewer** are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [0.2.0] - 2026-11-14
+
+### Added
+- **In-Place Single-Viewport 3D MPR & 3D Trackball Rotation (`src/volume.rs`, `src/app.rs`):**
+  - Load and slice a 3D volume directly inside any single viewport cell (`🧊 3D MPR`) without opening three separate orthogonal sub-windows.
+  - Interactive **3D Trackball Rotation (`3D Rotate` / `O`)**: drag horizontally or vertically to orbit the 3D slicing plane through any oblique angle; hold `Shift` while dragging to roll/tilt in-plane.
+  - One-click **Axial (`Ax`)**, **Coronal (`Cor`)**, **Sagittal (`Sag`)**, and **Native (`Nat`)** plane buttons.
+  - **Thick-Slab Projections (`Slab: Thin / MIP / MinIP / Mean`)** with an interactive `1.0–50.0 mm` slab thickness slider and parallel ray-marched slab integration.
+- **Computational Cross-Study 3D Synchronization & 6-DOF Rigid Registration (`src/volume.rs`):**
+  - Automatic 3D foreground anatomical centroid detection (filtering background air) and multi-scale 6-DOF (3D translation + 3D rotation) **Normalized Cross-Correlation (NCC)** rigid registration (`RigidTransform3D`).
+  - Automatically locks two comparison studies (e.g., longitudinal brain CT/MRI scans from different dates or scanners) to the same anatomical height and 3D cut angle across Axial, Coronal, Sagittal, and Oblique 3D rotations.
+  - Manual **`⚓ Lock 3D Sync`** button in the toolbar to lock or fine-tune any custom 3D slice/angle alignment between comparison viewports.
+- **Automatic Plane Classification & Acquisition-Time MPR Auto-Grouping (`src/dicom_index.rs`):**
+  - Automatically identifies the dominant anatomical plane (`[AX]`, `[COR]`, `[SAG]`, `[OBL]`) of every series from `ImageOrientationPatient` cosines and flags 3D-capable stacks with `·MPR`.
+  - Automatically detects separated Axial, Coronal, and Sagittal reconstructions acquired at the same time (`AcquisitionTime` / `ContentTime` / `SeriesTime`) and groups them under a **`🧊 MPR [AX·COR·SAG]`** entry in the Study Browser with quick `AX`, `COR`, `SAG` buttons.
+  - **Hybrid Multi-Series Tri-Planar Resolution Fusion**: blends high-resolution in-plane data from sibling Axial, Coronal, and Sagittal stacks weighted by $\cos^4(\theta)$ during 3D oblique MPR slicing.
+- **Full Horos / IsiX Regions of Interest (`IsiXROI`) & Interior Pixel Statistics (`src/roi/`):**
+  - Ported `IsiXROI` (`ROIPlanarGeometry`, `ROIBoundingBox`, `ROIDragConstraint`, `ROISpline`, `ROIPixelStatistics`, `ROIValueStatistics`, `CalciumScoring`, `ROILengthRatio`, `ROIRasterConversion`, `ROIScanline`, `ROIPolygonClip`, `ROIPolygonFill`, `ROIMasks`) with 20 unit tests.
+  - Interactive ROI tools & shortcuts:
+    - **`Length` (`L` / `M`)**: click-drag or 2-click calibrated distance in `mm` / `cm`.
+    - **`Angle` (`A`)**: 3-click or drag-then-click angle measurement in degrees.
+    - **`◯ Oval` (`E`)** & **`▭ Rect` (`B`)**: calibrated Area ($\text{cm}^2 / \text{mm}^2$), Perimeter, Mean, SD, Min, and Max (`HU`).
+    - **`⬠ Poly` (`G`)**: multi-vertex closed polygon ROI (`Enter` or click start vertex to close).
+    - **`✏ Pencil` (`F`)**: freehand ROI with Numerical Recipes cubic spline smoothing.
+    - **`⌖ Point` (`T`)**: 2D point probe displaying calibrated intensity (`HU`) and 3D patient `XYZ` (`mm`) coordinates.
+  - Horos-style dark translucent ROI callout boxes and `🗑 Clear ROIs` toolbar action.
+- **31 Horos Colour Lookup Tables (`CLUT`) & 22 Horos 2D Spatial Convolution Filters (`src/imaging/`):**
+  - Ported `ColorLookupTable`, `ColourTableState`, `ColourTableBook`, and all **31 factory Horos CLUTs** (`PET`, `HotIron`, `NIH`, `Jet`, `Spectrum`, `Rainbow`, `BlackBody`, `French`, `Perfusion`, `GEcolor`, `PPU Viridis`, `PPU Inferno`, `PPU Magma`, `PPU Plasma`, `VR Bones`, `VR Muscles-Bones`, `VR Red Vessels`, etc.) on both GPU (`wgpu` WGSL shader) and CPU pipelines.
+  - Ported `ImageConvolution`, `SeriesConvolution`, `ConvolutionKernelBook`, and all **22 factory Horos 2D convolution presets** (`Bone Filter 3x3`, `Sharpen 3x3`, `Sharpen 5x5`, `Basic Smooth 5x5`, `Gaussian blur`, `Blur 3x3`, `Blur 5x5`, `Lowpass`, `Highpass 5x5`, `Edge 3x3`, `Laplacian`, `Hat`, `Emboss`, etc.).
+- **Multi-Series Visual Layout Picker, Navigation Controls & Horos Study Browser (`src/navigation.rs`, `src/app.rs`):**
+  - Interactive **`4 × 4` visual square-grid layout selector (`⊞ Layout`)** (`1×1` up to `4×4` / 16 viewports).
+  - Non-wheel slice & series navigation: `Scroll` drag tool (`S`), toolbar **`◀ Se` / `Se ▶`**, **`⏮ ◀ [Slice Slider] ▶ ⏭`**, and an on-viewport floating bottom scrubber bar.
+  -Ported `IsiXGeometry` (`Vector3`, `Line3`, `Plane3`, `AffineTransform3D`, `PlanarGeometry`, `PackedVectors`, `BezierCore`) and `IsiXImaging` geometry (`ImagePlaneGeometry`, `ImagePlaneCoordinates`, `PlaneGeometry`, `LineGeometry`, `ViewTransform`, `ViewportState`, `OrientationLetters`, `SliceSynchronizer`, `ReferenceLines`) with 3D cross-reference scout cut lines and `A/P/R/L/S/I` edge orientation letters.
+  - Study Browser **Search bar (`🔍`)**, **Modality filter pills (`All`, `CT`, `MR`, `US`, `DX/CR`, `PT/NM`)**, and **live rendered 38×38 DICOM series mini-thumbnails**.
+- **Non-Destructive `.zip` Archive Support (`src/dicom_index.rs`):**
+  - Open or drag-and-drop `.zip` patient archives directly; extracts into an isolated temporary folder (`%TEMP%\rdicom-zip-cache\zip-<hash>`) without modifying the original `.zip` and cleans up automatically on exit.
+
+---
+
+## [0.1.0] - 2026-11-13
+
+### Added
+- Initial release of **RDicom Viewer** for Windows (`eframe`/`egui` + `wgpu` + `dicom-rs`).
+- Recursive DICOM folder and file indexing grouped by Patient, Study, and Series (splitting sub-series by geometry/orientation).
+- Ported IsiX window/level pipeline (`window`, `voi_lut`, `defaults`, `photometry`, `drag`, `presets`) with GPU (`wgpu`) and CPU rendering paths.
+- Support for uncompressed, JPEG baseline/lossless, JPEG 2000 (OpenJPEG), JPEG-LS (CharLS), RLE, and Deflate transfer syntaxes.
+- Command-line utilities (`--list`, `--check`, `--render`) and synthetic DICOM test fixture generator (`tools/make_test_dicom.py`).
+- Upstream IsiX/Horos porting map and tracker (`porting/map.toml`, `PORTING_MAP.md`, `tools/upstream.py`).

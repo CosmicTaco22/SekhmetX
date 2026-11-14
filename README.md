@@ -1,112 +1,102 @@
 # RDicom Viewer
 
-A small, fast DICOM viewer for Windows, written in Rust. It is a from-scratch
-rewrite that uses [IsiX DICOM Viewer](https://github.com/ThalesMMS/IsiX-DICOM-Viewer-macOS)
-(and Horos/OsiriX before it) as the reference for features and behaviour.
-No IsiX code runs here: IsiX is built on macOS-only frameworks (AppKit, Metal,
-CoreData), so the logic is re-implemented in portable Rust.
+A fast, native radiological DICOM viewer for Windows (and cross-platform desktop), written in Rust (`eframe`/`egui` + `wgpu` + `dicom-rs`). It is a from-scratch rewrite modeled directly on [IsiX DICOM Viewer](https://github.com/ThalesMMS/IsiX-DICOM-Viewer-macOS) (and Horos / OsiriX before it) for its geometry, pixel pipeline, ROI statistics, and radiological workflow.
 
-> **Not a medical device.** For personal use, teaching and second looks only;
-> not for primary diagnosis.
+> **Not a medical device.** For personal use, teaching, research, and second looks only; not certified for primary clinical diagnosis.
 
-## What it does (v0.1)
+---
 
-- Open a folder (recursively), individual files, or drag them onto the window.
-- Study / series browser grouped by patient, study and series. Series are split
-  by image size and orientation, so localizers don't get mixed into a stack.
-- Slices ordered by instance number, then by position along the slice normal.
-- 2D viewing: mouse-wheel stacking, window/level, zoom, pan, invert, cine.
-- Window/level behaves as in Horos: same drag speed and direction, Horos's factory
-  presets on keys 1–5 (alphabetical, as in Horos), key 0 for the default, and a series
-  takes its default window from its middle image.
-- Window/level runs on the graphics card (DirectX 12 on Windows, Metal on Mac, Vulkan
-  on Linux); `RDICOM_CPU=1` forces the processor path.
-- VOI LUT tables (CR/DX/mammography) and MONOCHROME1 are handled as Horos does.
-- Length (mm) and angle measurements, kept per image while the app is open.
-- Live value under the cursor (HU for CT).
-- Non-square pixels displayed with the correct aspect ratio.
-- Background decoding of neighbouring slices, so large stacks scroll smoothly.
-- Compression: uncompressed, JPEG baseline and lossless, JPEG 2000, JPEG-LS,
-  RLE, deflate. Colour images (ultrasound, screen captures) and multi-frame
-  files (cine loops) are supported.
+## Key Features (v0.2.0)
 
-**Not yet supported:** 12-bit *lossy* JPEG (old JPEG Extended, some NM and
-older CT). `--check` lists any file it can't decode.
+- **Direct Folder, File & `.zip` Archive Opening:**
+  - Open folders recursively, individual DICOM files, or **`.zip` patient archives** (extracted non-destructively into an isolated `%TEMP%\rdicom-zip-cache` folder and cleaned up automatically when the app closes).
+- **Horos Study Browser with Search & Live Mini-Thumbnails:**
+  - Instant search bar (`🔍`) filtering by patient name, ID, accession, study, or series description.
+  - One-click modality filter pills (`All`, `CT`, `MR`, `US`, `DX/CR`, `PT/NM`).
+  - Live rendered **38×38 DICOM series mini-thumbnails** and dominant anatomical plane badges (`[AX]`, `[COR]`, `[SAG]`, `[OBL]`).
+  - **Acquisition-Time MPR Auto-Grouping:** Automatically identifies separated Axial, Coronal, and Sagittal reconstructions from the same acquisition and groups them under **`🧊 MPR [AX·COR·SAG]`** with quick `AX` / `COR` / `SAG` launch buttons.
+- **In-Place Single-Viewport 3D MPR, Thick-Slab MIP/MinIP/Mean & 3D Trackball Rotation:**
+  - Enable **`🧊 3D MPR`** directly inside any single viewport square—no need to open a separate 3-panel window just to rotate or compare studies.
+  - **`3D Rotate` (`O`)**: drag in any direction to orbit the 3D slicing plane through Axial, Coronal, Sagittal, or arbitrary 3D oblique angles; hold `Shift` while dragging to tilt/roll in-plane.
+  - **Hybrid Multi-Series Tri-Planar Fusion:** Blends high-resolution in-plane data from sibling Axial, Coronal, and Sagittal stacks weighted by $\cos^4(\theta)$.
+  - **Thick-Slab Projections (`Slab: Thin / MIP / MinIP / Mean`)** with a `1.0–50.0 mm` thickness slider.
+- **Multi-Series Comparison Layouts & Cross-Study 6-DOF 3D Synchronization:**
+  - Interactive **`4 × 4` visual square-grid layout picker (`⊞ Layout`)** (`1×1` up to `4×4` / 16 viewports).
+  - **Computational 6-DOF 3D Rigid Registration (`RigidTransform3D`):** Automatically aligns two studies (e.g., longitudinal brain scans from different dates or scanners) using 3D foreground anatomical centroid matching + multi-scale Normalized Cross-Correlation (NCC), locking both viewports to the same anatomical height and 3D cut angle across Axial, Coronal, Sagittal, and Oblique 3D rotations.
+  - Manual **`⚓ Lock 3D Sync`** button, 3D cross-reference scout cut lines (`Ref Lines`), and `A/P/R/L/S/I` orientation edge letters.
+- **Horos / IsiX Regions of Interest (`IsiXROI`) & Pixel Statistics:**
+  - **`Length` (`L` / `M`)**, **`Angle` (`A`)**, **`◯ Oval` (`E`)**, **`▭ Rect` (`B`)**, **`⬠ Closed Polygon` (`G`)**, **`✏ Freehand Pencil` (`F`, with cubic spline smoothing)**, and **`⌖ Point Probe` (`T`)**.
+  - Live calibrated **Area ($\text{cm}^2 / \text{mm}^2$)**, **Perimeter**, **Mean**, **SD**, **Min**, and **Max** (`HU`) in Horos-style dark callout boxes.
+- **GPU Window/Level, 31 Horos CLUTs & 22 Horos 2D Convolution Filters:**
+  - Hardware-accelerated WGSL shader pipeline (`wgpu`) with CPU fallback (`RDICOM_CPU=1`).
+  - All **31 factory Horos Colour Lookup Tables (`CLUT`)** and **22 factory Horos 2D Spatial Convolution Filters** (`Bone Filter 3x3`, `Sharpen 3x3`, `Sharpen 5x5`, `Basic Smooth 5x5`, `Gaussian blur`, `Edge 3x3`, `Laplacian`, etc.).
 
-## Mouse and keyboard
+---
+
+## Mouse and Keyboard Controls
 
 | Action | Control |
 |---|---|
-| Previous / next image | Mouse wheel, arrow keys |
-| Jump 10 images / first / last | Page Up / Page Down, Home / End |
-| Active tool (W/L, pan, zoom, length, angle) | Left drag |
-| Pan | Middle drag |
-| Zoom | Right drag, Ctrl + wheel |
-| Reset view | Double-click, R |
-| Window presets | 1 CT Abdomen · 2 CT Bone · 3 CT Brain · 4 CT Pulmonary · 5 VR Endoscopy · 0 default |
-| Invert | I |
-| Tools | W window/level · M length · A angle · Z zoom |
-| Angle | Drag the first arm toward the vertex, then click the end of the second arm |
-| Delete last measurement on this image | Delete |
-| Cine play / stop | P or Space |
+| Previous / next slice | Mouse wheel, `↑` / `↓` / `←` / `→`, `Scroll` tool (`S`), toolbar slider, or bottom viewport scrubber |
+| Jump 10 slices / first / last | `Page Up` / `Page Down`, `Home` / `End`, toolbar `⏮` / `⏭` |
+| Previous / next series | `[` / `]`, or toolbar `◀ Se` / `Se ▶` |
+| Active tool | Left click / drag |
+| Pan | Middle drag, or `Pan` tool |
+| Zoom | Right drag, `Ctrl` + wheel, or `Zoom` tool (`Z`) |
+| In-plane 2D rotate / flip | `Rotate` tool, `↺ 90°`, `↻ 90°`, `H` (Flip H), `V` (Flip V) |
+| In-place 3D MPR orbit | `3D Rotate` tool (`O`) — drag to orbit 3D plane, `Shift` + drag to roll |
+| Reset view | Double-click, `R`, or toolbar `Reset` |
+| Window presets | `1` CT Abdomen · `2` CT Bone · `3` CT Brain · `4` CT Pulmonary · `5` VR Endoscopy · `0` Default |
+| Invert greyscale | `I` |
+| ROI & measurement tools | `L`/`M` Length · `A` Angle · `E` Oval · `B` Rect · `G` Polygon (`Enter` to close) · `F` Pencil · `T` Point |
+| Delete last ROI on slice | `Delete` or `Backspace` (`🗑 Clear ROIs` clears slice) |
+| Cine play / pause | `P` or `Space` |
 
-## Getting the Windows .exe
+---
 
-### Option A — let GitHub build it (no setup on your PC)
+## Releases & Building
 
-1. Create a (private) repository on GitHub and push this folder to it.
-2. Open the repository's **Actions** tab. The *Build for Windows* workflow runs on
-   every push; open the latest run and download **rdicom-viewer-windows**.
-3. Unzip and run `rdicom-viewer.exe`. Windows SmartScreen may warn because the
-   file isn't signed: choose *More info → Run anyway*.
+### Download from GitHub Releases
+Every tagged release (`v*`) automatically builds `rdicom-viewer.exe` and `rdicom-viewer-windows-x86_64.zip` via GitHub Actions and attaches them to the [GitHub Releases](../../releases) page alongside the changelog notes from [CHANGELOG.md](CHANGELOG.md).
 
-### Option B — build it on your PC
-
-1. Install Rust from <https://rustup.rs> (`rustup-init.exe`). When it asks, let it
-   install the Visual Studio C++ Build Tools.
-2. Install CMake: `winget install Kitware.CMake` (needed for JPEG-LS; skip it and
-   build with `--no-default-features` if you don't need JPEG-LS).
-3. In a terminal inside this folder:
-
-   ```
+### Build from Source on Windows
+1. Install Rust (<https://rustup.rs>) with the Visual Studio C++ Build Tools, plus CMake (`winget install Kitware.CMake` or `scoop install cmake`).
+2. Build and run:
+   ```powershell
+   cargo test --release
    cargo build --release
-   target\release\rdicom-viewer.exe
+   .\target\release\rdicom-viewer.exe
    ```
 
-You can pin the exe to the taskbar, or associate it with folders via
-"Send to": `rdicom-viewer.exe "C:\path\to\study"` opens a folder directly.
+---
 
-## Command-line helpers
+## Command-Line Helpers
 
-```
-rdicom-viewer --list FOLDER        print the studies and series found
-rdicom-viewer --check FOLDER       decode every image and report failures
+```powershell
+rdicom-viewer --list FOLDER_OR_ZIP        # print studies and series found
+rdicom-viewer --check FOLDER_OR_ZIP       # decode every image and report failures
 rdicom-viewer --render FOLDER OUT.png [SERIES] [IMAGE] [WIDTH LEVEL]
 ```
 
-## Code layout
+---
 
-| File | Role |
+## Code Layout
+
+| Path | Role |
 |---|---|
-| `src/dicom_index.rs` | Folder scan, header parsing, study/series grouping, slice sorting |
-| `src/frame.rs` | Pixel decoding, modality LUT, VOI LUT, value readout |
-| `src/imaging/` | Windowing rules ported from IsiX, with its tests |
-| `src/gpu_view.rs` | Draws the image and applies the window on the graphics card |
-| `src/loader.rs` | Background decoding threads, nearest-slice-first |
-| `src/app.rs` | The window: browser, viewport, tools, overlays, shortcuts |
-| `src/main.rs` | Startup and command-line helpers |
-
-Built on [dicom-rs](https://github.com/Enet4/dicom-rs) for DICOM and
-[egui](https://github.com/emilk/egui) for the interface.
-
-## Porting from IsiX
-
-- `PORTING_MAP.md`: every area of IsiX/Horos, what we do with it (port, rebuild,
-  replace, skip), its priority and RDicom's progress.
-- `porting/README.md`: how the map works and how RDicom keeps up with new IsiX
-  and Horos changes (a weekly GitHub workflow opens an issue listing them).
+| `src/dicom_index.rs` | Folder & `.zip` scan, DICOM tag parsing, plane classification (`AX`/`COR`/`SAG`), MPR acquisition grouping |
+| `src/frame.rs` | Pixel decoding, modality rescale, VOI LUT, 2D convolution application, series mini-thumbnails |
+| `src/geometry/` | Ported `IsiXGeometry` & `IsiXImaging` 3D vectors, lines, planes, transforms, Bezier splines, orientation letters |
+| `src/imaging/` | Ported `IsiXImaging` window/level, VOI LUT, defaults, photometry, 31 Horos CLUTs, 22 convolution kernels |
+| `src/roi/` | Ported `IsiXROI` planar geometry, cubic splines, scanline rasterizer, Sutherland-Hodgman clipper, pixel statistics |
+| `src/volume.rs` | 3D volume assembly, in-place oblique 3D MPR reslicing, thick-slab MIP/MinIP/Mean, 6-DOF 3D rigid registration |
+| `src/navigation.rs` | Multi-series `ViewportTiling`, `SliceSynchronizer`, and `ReferenceLines` |
+| `src/gpu_view.rs` | `wgpu` hardware-accelerated window/level, CLUT, and quad UV orientation renderer |
+| `src/loader.rs` | Multi-threaded priority background slice decoder |
+| `src/app.rs` | Horos-style dark UI: Study Browser, Toolbar, Multi-Viewport Grid, 3D MPR, ROIs, and HUD overlays |
+| `CHANGELOG.md` | Release history and changelog |
+| `PORTING_MAP.md` | Full IsiX / Horos module porting map and progress tracker |
 
 ## Licence
 
-LGPL-3.0-or-later, matching IsiX, since features are ported from it. The IsiX,
-Horos and OsiriX names and icons belong to their owners and are not used here.
+LGPL-3.0-or-later, matching IsiX and Horos.

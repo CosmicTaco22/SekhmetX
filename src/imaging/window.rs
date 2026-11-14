@@ -6,6 +6,7 @@
 
 use rayon::prelude::*;
 
+use super::clut::ColorLookupTable;
 use super::Window;
 
 /// What a request for a level and width becomes, or `None` when it asks for
@@ -83,6 +84,44 @@ pub fn linear_rgba(values: &[f32], out: &mut [u8], window: Window, invert: bool)
                 px[0] = g;
                 px[1] = g;
                 px[2] = g;
+                px[3] = 255;
+            }
+        });
+}
+
+/// Grey through a straight window, mapped through an optional 256-entry RGB
+/// colour lookup table (`clut`), written into RGBA.
+pub fn linear_rgba_with_clut(
+    values: &[f32],
+    out: &mut [u8],
+    window: Window,
+    invert: bool,
+    clut: Option<&ColorLookupTable>,
+) {
+    let Some(clut) = clut else {
+        linear_rgba(values, out, window, invert);
+        return;
+    };
+    let low = window.low();
+    let span = window.high() - low;
+    let scale = if span > 0.0 { 255.0 / span } else { 0.0 };
+    out.par_chunks_mut(4 * 4096)
+        .zip(values.par_chunks(4096))
+        .for_each(|(dst, src)| {
+            for (px, &v) in dst.chunks_exact_mut(4).zip(src) {
+                let g = if span <= 0.0 {
+                    if v >= window.high() { 255 } else { 0 }
+                } else if v <= low {
+                    0
+                } else if v >= window.high() {
+                    255
+                } else {
+                    ((v - low) * scale + 0.5) as u8
+                };
+                let idx = (if invert { 255 - g } else { g }) as usize;
+                px[0] = clut.red[idx];
+                px[1] = clut.green[idx];
+                px[2] = clut.blue[idx];
                 px[3] = 255;
             }
         });
