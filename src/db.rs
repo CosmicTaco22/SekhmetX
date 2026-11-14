@@ -585,7 +585,20 @@ impl Database {
     }
 }
 
+static CUSTOM_STUDIES_DIR: std::sync::RwLock<Option<PathBuf>> = std::sync::RwLock::new(None);
+
+pub fn set_custom_studies_dir(dir: Option<PathBuf>) {
+    if let Ok(mut guard) = CUSTOM_STUDIES_DIR.write() {
+        *guard = dir.filter(|p| !p.as_os_str().is_empty());
+    }
+}
+
 pub fn managed_studies_dir() -> PathBuf {
+    if let Ok(guard) = CUSTOM_STUDIES_DIR.read() {
+        if let Some(ref custom) = *guard {
+            return custom.clone();
+        }
+    }
     default_db_dir().join("Studies")
 }
 
@@ -661,24 +674,7 @@ fn dir_size_bytes(dir: &Path) -> u64 {
 }
 
 fn default_db_dir() -> PathBuf {
-    #[cfg(windows)]
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(local).join("SekhmetX");
-    }
-    #[cfg(target_os = "macos")]
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home)
-            .join("Library")
-            .join("Application Support")
-            .join("SekhmetX");
-    }
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(xdg).join("SekhmetX");
-    }
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home).join(".local").join("share").join("SekhmetX");
-    }
-    std::env::temp_dir().join("SekhmetX")
+    crate::crash_log::app_data_dir()
 }
 
 fn plane_to_int(p: DominantPlane) -> i64 {

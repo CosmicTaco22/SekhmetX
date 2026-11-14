@@ -117,7 +117,7 @@ impl ViewerApp {
                         }
                     })
                     .response
-                    .on_hover_text("More toolbar items");
+                    .on_hover_text(crate::i18n::tr(self.lang).more_tools_hover);
                 });
             }
         });
@@ -161,17 +161,17 @@ impl ViewerApp {
             ToolbarGroup::MouseTools => {
                 let prev_tool = self.tool;
                 ui.selectable_value(&mut self.tool, Tool::WindowLevel, tr.wl)
-                    .on_hover_text("Window / Level (W)");
+                    .on_hover_text(tr.wl_hover);
                 ui.selectable_value(&mut self.tool, Tool::Scroll, tr.scroll)
-                    .on_hover_text("Stack scroll (S)");
+                    .on_hover_text(tr.scroll_hover);
                 ui.selectable_value(&mut self.tool, Tool::Pan, tr.pan)
-                    .on_hover_text("Pan (Middle mouse button)");
+                    .on_hover_text(tr.pan_hover);
                 ui.selectable_value(&mut self.tool, Tool::Zoom, tr.zoom)
-                    .on_hover_text("Zoom (Right mouse button / Ctrl+wheel) (Z)");
+                    .on_hover_text(tr.zoom_hover);
                 ui.selectable_value(&mut self.tool, Tool::Rotate, tr.rot)
-                    .on_hover_text("In-plane 2D rotation");
+                    .on_hover_text(tr.rot_hover);
                 ui.selectable_value(&mut self.tool, Tool::Orbit3D, tr.orbit_3d)
-                    .on_hover_text("3D Trackball orbit rotation (O)");
+                    .on_hover_text(tr.orbit_3d_hover);
                 if self.tool != prev_tool {
                     self.drawing.clear();
                     self.angle_pending = None;
@@ -180,11 +180,11 @@ impl ViewerApp {
             ToolbarGroup::RoiTools => {
                 let prev_tool = self.tool;
                 ui.selectable_value(&mut self.tool, Tool::Length, "📏")
-                    .on_hover_text("Length (mm) (L / M)");
+                    .on_hover_text(tr.length_hover);
                 ui.selectable_value(&mut self.tool, Tool::Oval, "◯")
-                    .on_hover_text("Oval / Ellipse ROI (E)");
+                    .on_hover_text(tr.oval_hover);
                 ui.selectable_value(&mut self.tool, Tool::Rect, "▭")
-                    .on_hover_text("Rectangle ROI (B)");
+                    .on_hover_text(tr.rect_hover);
                 let roi_label = match self.tool {
                     Tool::Angle => format!("{}: ∠", tr.roi),
                     Tool::Polygon => format!("{}: ⬠", tr.roi),
@@ -193,13 +193,13 @@ impl ViewerApp {
                     _ => format!("{} ▾", tr.roi),
                 };
                 ui.menu_button(roi_label, |ui| {
-                    ui.selectable_value(&mut self.tool, Tool::Length, "📏 Length (L)");
-                    ui.selectable_value(&mut self.tool, Tool::Angle, "∠ Angle (A)");
-                    ui.selectable_value(&mut self.tool, Tool::Oval, "◯ Oval ROI (E)");
-                    ui.selectable_value(&mut self.tool, Tool::Rect, "▭ Rect ROI (B)");
-                    ui.selectable_value(&mut self.tool, Tool::Polygon, "⬠ Polygon ROI (G)");
-                    ui.selectable_value(&mut self.tool, Tool::Pencil, "✏ Pencil ROI (F)");
-                    ui.selectable_value(&mut self.tool, Tool::Point, "⌖ Point Probe (T)");
+                    ui.selectable_value(&mut self.tool, Tool::Length, tr.roi_length);
+                    ui.selectable_value(&mut self.tool, Tool::Angle, tr.roi_angle);
+                    ui.selectable_value(&mut self.tool, Tool::Oval, tr.roi_oval);
+                    ui.selectable_value(&mut self.tool, Tool::Rect, tr.roi_rect);
+                    ui.selectable_value(&mut self.tool, Tool::Polygon, tr.roi_polygon);
+                    ui.selectable_value(&mut self.tool, Tool::Pencil, tr.roi_pencil);
+                    ui.selectable_value(&mut self.tool, Tool::Point, tr.roi_point);
                     if self
                         .viewport_measure_key(self.active_viewport)
                         .and_then(|k| self.measures.get(&k))
@@ -216,7 +216,7 @@ impl ViewerApp {
                     }
                 })
                 .response
-                .on_hover_text("Measurement & ROI tools");
+                .on_hover_text(tr.roi_menu_hover);
                 if self.tool != prev_tool {
                     self.drawing.clear();
                     self.angle_pending = None;
@@ -231,7 +231,7 @@ impl ViewerApp {
                     .width(106.0)
                     .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(active_win.is_none(), "0   Default")
+                            .selectable_label(active_win.is_none(), tr.preset_default)
                             .clicked()
                         {
                             chosen_win = Some(None);
@@ -242,8 +242,8 @@ impl ViewerApp {
                                 .selectable_label(
                                     active_win == Some(full),
                                     format!(
-                                        "~   Full dynamic   L {:.0} W {:.0}",
-                                        full.level, full.width
+                                        "~   {}   L {:.0} W {:.0}",
+                                        tr.preset_full_dyn, full.level, full.width
                                     ),
                                 )
                                 .clicked()
@@ -295,14 +295,14 @@ impl ViewerApp {
                 let conv_label = cur_conv
                     .and_then(|i| FACTORY_CONVOLUTIONS.get(i))
                     .map(|k| k.name)
-                    .unwrap_or("None");
+                    .unwrap_or(tr.filter_none);
                 let mut chosen_conv: Option<Option<usize>> = None;
                 egui::ComboBox::from_id_salt("conv_selector")
-                    .selected_text(format!("Filter: {conv_label}"))
+                    .selected_text(format!("{}: {conv_label}", tr.filter_prefix))
                     .width(100.0)
                     .show_ui(ui, |ui| {
                         if ui
-                            .selectable_label(cur_conv.is_none(), "No Filter")
+                            .selectable_label(cur_conv.is_none(), tr.filter_no_filter)
                             .clicked()
                         {
                             chosen_conv = Some(None);
@@ -329,7 +329,7 @@ impl ViewerApp {
                     let mut ortho_on = self.ortho_mpr_active;
                     if ui
                         .toggle_value(&mut ortho_on, format!("⊞ {}", tr.ortho_mpr))
-                        .on_hover_text("Classic Horos 3-pane Orthogonal MPR (Axial | Coronal | Sagittal) with interactive crosshairs")
+                        .on_hover_text(tr.ortho_mpr_hover)
                         .changed()
                     {
                         if ortho_on {
@@ -343,7 +343,7 @@ impl ViewerApp {
                     let mut mpr_on = self.active_cell().mpr_enabled;
                     if ui
                         .toggle_value(&mut mpr_on, format!("🧊 {}", tr.mpr_3d))
-                        .on_hover_text("In-place 3D volume slicing inside active viewport")
+                        .on_hover_text(tr.mpr_3d_hover)
                         .changed()
                     {
                         let vp_idx = self.active_viewport;
@@ -362,12 +362,12 @@ impl ViewerApp {
                 ui.menu_button(format!("{} ▾", tr.view), |ui| {
                     ui.toggle_value(&mut self.active_cell_mut().invert, tr.invert);
                     ui.separator();
-                    if ui.button("↺ Rotate 90° CCW").clicked() {
+                    if ui.button(tr.rotate_ccw).clicked() {
                         let vp = self.active_cell_mut();
                         vp.rotation = (vp.rotation - 90.0).rem_euclid(360.0);
                         ui.close();
                     }
-                    if ui.button("↻ Rotate 90° CW").clicked() {
+                    if ui.button(tr.rotate_cw).clicked() {
                         let vp = self.active_cell_mut();
                         vp.rotation = (vp.rotation + 90.0).rem_euclid(360.0);
                         ui.close();
@@ -384,7 +384,7 @@ impl ViewerApp {
                     ui.toggle_value(&mut self.show_reference_lines, tr.ref_lines);
                     ui.toggle_value(&mut self.show_annotations, tr.overlays);
                     if ui
-                        .toggle_value(&mut self.gpu_bilinear, "Smooth Interpolation (Bilinear)")
+                        .toggle_value(&mut self.gpu_bilinear, tr.smooth_interp)
                         .changed()
                     {
                         if let Some(ref db) = self.db {
@@ -433,12 +433,12 @@ impl ViewerApp {
                     }
                 })
                 .response
-                .on_hover_text("Orientation, Invert, Reference Lines, HUD, Sync & Reset");
+                .on_hover_text(tr.view_hover);
             }
             ToolbarGroup::Cine => {
                 let cine_label = if self.playing { "⏸" } else { "▶" };
                 ui.toggle_value(&mut self.playing, cine_label)
-                    .on_hover_text("Play / pause cine loop (Space / P)");
+                    .on_hover_text(tr.cine_hover);
                 ui.menu_button(format!("{} fps", self.fps as i32), |ui| {
                     ui.add(
                         egui::Slider::new(&mut self.fps, 1.0..=60.0)
@@ -447,7 +447,7 @@ impl ViewerApp {
                     );
                 })
                 .response
-                .on_hover_text("Cine playback speed");
+                .on_hover_text(tr.cine_speed_hover);
             }
             ToolbarGroup::App => {
                 let lang_btn = match self.lang {
@@ -456,13 +456,20 @@ impl ViewerApp {
                 };
                 if ui
                     .button(lang_btn)
-                    .on_hover_text("Switch language (English / Español)")
+                    .on_hover_text(tr.lang_hover)
                     .clicked()
                 {
                     self.lang = self.lang.toggle();
                     if let Some(db) = &self.db {
                         let _ = db.set_setting("lang", self.lang.code());
                     }
+                }
+                if ui
+                    .button("⚙")
+                    .on_hover_text(tr.settings_hover)
+                    .clicked()
+                {
+                    self.show_settings_modal = !self.show_settings_modal;
                 }
 
                 let (upd_label, upd_hover) = match &self.update_status {
@@ -580,17 +587,20 @@ impl ViewerApp {
             }
 
             ui.add_space(4.0);
+            let tr = crate::i18n::tr(self.lang);
             let disp_r = active_r + 1;
             let disp_c = active_c + 1;
             let count = disp_r * disp_c;
+            let vp_word = if count == 1 {
+                tr.viewport_singular
+            } else {
+                tr.viewport_plural
+            };
             ui.vertical_centered(|ui| {
                 ui.label(
-                    egui::RichText::new(format!(
-                        "{disp_r} × {disp_c}  ({count} viewport{})",
-                        if count == 1 { "" } else { "s" }
-                    ))
-                    .strong()
-                    .color(Color32::from_rgb(150, 210, 255)),
+                    egui::RichText::new(format!("{disp_r} × {disp_c}  ({count} {vp_word})"))
+                        .strong()
+                        .color(Color32::from_rgb(150, 210, 255)),
                 );
             });
 
@@ -602,7 +612,7 @@ impl ViewerApp {
             }
         })
         .response
-        .on_hover_text("Viewport grid layout");
+        .on_hover_text(crate::i18n::tr(self.lang).tiling_hover);
         if let Some(t) = new_tiling {
             self.ortho_mpr_active = false;
             self.ortho_crosshair_lps = None;
@@ -611,6 +621,7 @@ impl ViewerApp {
     }
 
     fn render_scrubber_and_mpr_strip(&mut self, ui: &mut egui::Ui) {
+        let tr = crate::i18n::tr(self.lang);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
 
@@ -618,14 +629,14 @@ impl ViewerApp {
             ui.add_enabled_ui(series_count > 1, |ui| {
                 if ui
                     .small_button("◀ Se")
-                    .on_hover_text("Previous series ([)")
+                    .on_hover_text(tr.prev_series)
                     .clicked()
                 {
                     self.step_active_series(-1);
                 }
                 if ui
                     .small_button("Se ▶")
-                    .on_hover_text("Next series (])")
+                    .on_hover_text(tr.next_series)
                     .clicked()
                 {
                     self.step_active_series(1);
@@ -637,14 +648,14 @@ impl ViewerApp {
             ui.add_enabled_ui(slice_count > 1, |ui| {
                 if ui
                     .small_button("⏮")
-                    .on_hover_text("First slice (Home)")
+                    .on_hover_text(tr.first_slice)
                     .clicked()
                 {
                     self.set_viewport_slice(vp_idx, 0, true);
                 }
                 if ui
                     .small_button("◀")
-                    .on_hover_text("Previous slice")
+                    .on_hover_text(tr.prev_slice)
                     .clicked()
                 {
                     self.step_viewport_slice(vp_idx, -1);
@@ -657,17 +668,17 @@ impl ViewerApp {
                             .show_value(false)
                             .trailing_fill(true),
                     )
-                    .on_hover_text(format!("Slice {cur_1based} / {slice_count}"));
+                    .on_hover_text(format!("{} {cur_1based} / {slice_count}", tr.slice_word));
                 if slider_resp.changed() {
                     self.set_viewport_slice(vp_idx, cur_1based as isize - 1, true);
                 }
                 ui.monospace(format!("{cur_1based}/{slice_count}"));
-                if ui.small_button("▶").on_hover_text("Next slice").clicked() {
+                if ui.small_button("▶").on_hover_text(tr.next_slice).clicked() {
                     self.step_viewport_slice(vp_idx, 1);
                 }
                 if ui
                     .small_button("⏭")
-                    .on_hover_text("Last slice (End)")
+                    .on_hover_text(tr.last_slice)
                     .clicked()
                 {
                     self.set_viewport_slice(vp_idx, isize::MAX, true);
@@ -676,26 +687,26 @@ impl ViewerApp {
 
             if self.active_cell().mpr_enabled {
                 ui.separator();
-                if ui.small_button("Ax").on_hover_text("Axial plane (uses native Axial series if in MPR group)").clicked() {
+                if ui.small_button("Ax").on_hover_text(tr.ax_hover).clicked() {
                     self.switch_viewport_to_plane(vp_idx, crate::dicom_index::DominantPlane::Axial);
                 }
                 if ui
                     .small_button("Cor")
-                    .on_hover_text("Coronal plane (uses native Coronal series if in MPR group)")
+                    .on_hover_text(tr.cor_hover)
                     .clicked()
                 {
                     self.switch_viewport_to_plane(vp_idx, crate::dicom_index::DominantPlane::Coronal);
                 }
                 if ui
                     .small_button("Sag")
-                    .on_hover_text("Sagittal plane (uses native Sagittal series if in MPR group)")
+                    .on_hover_text(tr.sag_hover)
                     .clicked()
                 {
                     self.switch_viewport_to_plane(vp_idx, crate::dicom_index::DominantPlane::Sagittal);
                 }
                 if ui
                     .small_button("Nat")
-                    .on_hover_text("Native orientation")
+                    .on_hover_text(tr.nat_hover)
                     .clicked()
                 {
                     if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
@@ -709,7 +720,7 @@ impl ViewerApp {
                 if let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
                     let mut changed = false;
                     egui::ComboBox::from_id_salt("mpr_slab_mode")
-                        .selected_text(format!("Slab: {}", plane.slab_mode.label()))
+                        .selected_text(format!("{} {}", tr.slab_prefix, plane.slab_mode.label()))
                         .width(82.0)
                         .show_ui(ui, |ui| {
                             for m in [
@@ -743,10 +754,8 @@ impl ViewerApp {
                 let sib_count = self.viewport_sibling_volumes(vp_idx).len();
                 if sib_count > 0 {
                     if ui
-                        .checkbox(&mut self.blend_siblings, "Blend Siblings")
-                        .on_hover_text(
-                            "Sample neighboring series to fill gaps in oblique MPR (disables ROI stats)",
-                        )
+                        .checkbox(&mut self.blend_siblings, tr.blend_siblings)
+                        .on_hover_text(tr.blend_siblings_hover)
                         .changed()
                     {
                         for vp in &mut self.viewports {
@@ -757,8 +766,10 @@ impl ViewerApp {
                         ui.colored_label(
                             Color32::from_rgb(255, 200, 80),
                             format!(
-                                "Blended from {} series (ROI stats disabled)",
-                                sib_count + 1
+                                "{} {} {}",
+                                tr.blended_from,
+                                sib_count + 1,
+                                tr.roi_stats_disabled
                             ),
                         );
                     }
@@ -768,10 +779,8 @@ impl ViewerApp {
             if self.tiling.cell_count() > 1 && !self.ortho_mpr_active {
                 ui.separator();
                 if ui
-                    .small_button("⚓ Lock 3D Sync")
-                    .on_hover_text(
-                        "Lock current slice height & 3D tilt angle between comparison viewports",
-                    )
+                    .small_button(tr.lock_3d_sync)
+                    .on_hover_text(tr.lock_3d_sync_hover)
                     .clicked()
                 {
                     self.lock_current_3d_alignment();

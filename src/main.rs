@@ -2,6 +2,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod crash_log;
 mod db;
 mod dicom_index;
 mod export;
@@ -12,6 +13,7 @@ mod i18n;
 mod imaging;
 mod loader;
 mod navigation;
+mod pacs_web;
 mod roi;
 mod ui;
 mod updater;
@@ -21,6 +23,8 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 
 use eframe::egui;
+
+pub const BUILD_VERSION: &str = "0.2.8";
 
 const USAGE: &str = "\
 SekhmetX
@@ -64,9 +68,19 @@ fn main() -> eframe::Result {
             }
             return Ok(());
         }
+        Some("--pacs-login") => {
+            crash_log::init();
+            if args.len() >= 3 {
+                let hidden = args.iter().any(|a| a == "--hidden");
+                pacs_web::run_webview_subprocess(&args[1], PathBuf::from(&args[2]), hidden);
+            }
+            return Ok(());
+        }
         _ => {}
     }
 
+    let prev_crash = crash_log::previous_run_crashed();
+    crash_log::init();
     let initial: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -76,11 +90,19 @@ fn main() -> eframe::Result {
             .with_drag_and_drop(true),
         ..Default::default()
     };
-    eframe::run_native(
+    let res = eframe::run_native(
         "SekhmetX",
         options,
-        Box::new(move |cc| Ok(Box::new(app::ViewerApp::new(cc, initial)))),
-    )
+        Box::new(move |cc| {
+            let mut app = app::ViewerApp::new(cc, initial);
+            app.previous_crash_pending = prev_crash;
+            Ok(Box::new(app))
+        }),
+    );
+    if let Err(ref e) = res {
+        crash_log::log_line("ERROR", &format!("eframe::run_native failed: {e}"));
+    }
+    res
 }
 
 fn scan(folder: &str) -> dicom_index::Index {

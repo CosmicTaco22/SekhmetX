@@ -319,6 +319,16 @@ pub struct ViewerApp {
     check_updates_on_startup: bool,
     pub(crate) copy_policy: crate::db::CopyToLibraryPolicy,
     pending_copy_prompt: bool,
+    pub(crate) pacs_web: crate::pacs_web::PacsWebController,
+    pub(crate) show_pacs_modal: bool,
+    pub(crate) show_pacs_finder: bool,
+    pub(crate) show_settings_modal: bool,
+    study_storage_zip: bool,
+    show_add_portal_note: bool,
+    pub(crate) previous_crash_pending: bool,
+    show_crash_modal: bool,
+    patient_links: HashMap<String, String>,
+    linking_source: Option<(String, Vec<String>)>,
 }
 
 #[derive(Clone, Copy)]
@@ -362,6 +372,49 @@ impl ViewerApp {
             .and_then(|d| d.get_setting("copy_to_library_policy"))
             .map(|s| crate::db::CopyToLibraryPolicy::from_str(&s))
             .unwrap_or(crate::db::CopyToLibraryPolicy::Ask);
+        let saved_pacs_inst = db
+            .as_ref()
+            .and_then(|d| d.get_setting("pacs_institution_name"))
+            .unwrap_or_default();
+        let saved_pacs_url = db
+            .as_ref()
+            .and_then(|d| d.get_setting("pacs_login_url"))
+            .unwrap_or_default();
+        let saved_custom_studies = db
+            .as_ref()
+            .and_then(|d| d.get_setting("custom_studies_dir"))
+            .filter(|s| !s.trim().is_empty())
+            .map(PathBuf::from);
+        crate::db::set_custom_studies_dir(saved_custom_studies);
+        let saved_storage_zip = db
+            .as_ref()
+            .and_then(|d| d.get_setting("study_storage_format"))
+            .as_deref()
+            == Some("zip");
+        let saved_pacs_dir = db
+            .as_ref()
+            .and_then(|d| d.get_setting("pacs_watch_dir"))
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from);
+        let mut pacs_web = crate::pacs_web::PacsWebController::new(
+            saved_pacs_inst,
+            saved_pacs_url,
+            saved_pacs_dir,
+        );
+        if let Some(ref d) = db {
+            pacs_web.remember_credentials = d.get_setting("pacs_remember_creds").as_deref() == Some("1");
+            if pacs_web.remember_credentials {
+                pacs_web.saved_username = d.get_setting("pacs_cred_user").unwrap_or_default();
+                if let Some(enc) = d.get_setting("pacs_cred_pass") {
+                    pacs_web.saved_password = crate::pacs_web::unprotect_secret(&enc).unwrap_or_default();
+                }
+            }
+        }
+        let saved_patient_links: HashMap<String, String> = db
+            .as_ref()
+            .and_then(|d| d.get_setting("patient_links"))
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default();
         let mut app = Self {
             index: None,
             scan: None,
@@ -427,6 +480,16 @@ impl ViewerApp {
             check_updates_on_startup: saved_startup_updates,
             copy_policy: saved_copy_policy,
             pending_copy_prompt: false,
+            pacs_web,
+            show_pacs_modal: false,
+            show_pacs_finder: false,
+            show_settings_modal: false,
+            study_storage_zip: saved_storage_zip,
+            show_add_portal_note: false,
+            previous_crash_pending: false,
+            show_crash_modal: false,
+            patient_links: saved_patient_links,
+            linking_source: None,
         };
         if let Some(db) = &app.db {
             if let Ok(saved_rois) = db.load_all_rois() {
@@ -437,6 +500,10 @@ impl ViewerApp {
                     }
                 }
             }
+        }
+        app.pacs_web.lang = app.lang;
+        if app.db.as_ref().and_then(|d| d.get_setting("pacs_auto_connect")).as_deref() == Some("1") {
+            app.pacs_web.try_auto_reconnect();
         }
         if app.check_updates_on_startup {
             app.start_update_check(false, &cc.egui_ctx);
@@ -1394,9 +1461,14 @@ impl ViewerApp {
     }
 
     pub(crate) fn preset_label(&self) -> String {
+        let tr = crate::i18n::tr(self.lang);
         match self.viewport_frame(self.active_viewport) {
-            Some(f) => format!("WL/WW: {}", self.window_name(self.active_viewport, f).label()),
-            None => "WL/WW Presets".into(),
+            Some(f) => format!(
+                "{} {}",
+                tr.presets_prefix,
+                self.window_name(self.active_viewport, f).label()
+            ),
+            None => tr.presets_none.into(),
         }
     }
 
@@ -1928,6 +2000,43 @@ impl ViewerApp {
         }
 
         // Cine playback on the active viewport (and synchronized followers).
+        let now_secs = ctx.input(|i| i.time);
+        self.pacs_web.lang = self.lang;
+        let new_pacs_zips = self.pacs_web.poll(now_secs);
+        if let Some(profile) = self.pacs_web.newly_trained_profile.take() {
+            if let Some(ref db) = self.db {
+                if let Ok(json) = serde_json::to_string(&profile) {
+                    let key = format!("pacs_trained_{}", profile.origin);
+                    let _ = db.set_setting(&key, &json);
+                }
+            }
+        }
+        if self.pacs_web.just_hooked {
+            self.pacs_web.just_hooked = false;
+            self.show_pacs_modal = false;
+            if let Some(ref db) = self.db {
+                let _ = db.set_setting("pacs_auto_connect", "1");
+                if self.pacs_web.institution_name.to_lowercase().contains("maip")
+                    && !self.pacs_web.login_url.trim().is_empty()
+                {
+                    let _ = db.set_setting("pacs_known_maipu_url", self.pacs_web.login_url.trim());
+                }
+            }
+        }
+        if !self.show_pacs_finder {
+            self.pacs_web.close_on_demand_webview();
+        }
+        if !new_pacs_zips.is_empty() && self.scan.is_none() {
+            if self.pacs_web.pending_open_downloaded {
+                self.pacs_web.pending_open_downloaded = false;
+                self.show_pacs_finder = false;
+            }
+            self.start_scan(new_pacs_zips);
+        }
+        if self.pacs_web.watch_dir.is_some() {
+            ctx.request_repaint_after(std::time::Duration::from_secs(2));
+        }
+
         let active_count = self.viewport_slice_count(self.active_viewport);
         if self.playing && active_count > 1 {
             let now = ctx.input(|i| i.time);
@@ -2128,27 +2237,72 @@ impl ViewerApp {
     // ----------------------------------------------------------------- UI
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
+        let tr = crate::i18n::tr(self.lang);
         ui.horizontal(|ui| {
+            // Bottom-left: Institution Login (turns green with institution name once hooked) + Search PACS
+            let is_hooked = matches!(
+                self.pacs_web.state,
+                crate::pacs_web::PacsHookState::Hooked { .. }
+            );
+            let inst_label = if is_hooked {
+                let name = self.pacs_web.institution_name.trim();
+                if name.is_empty() {
+                    tr.pacs_connected.to_string()
+                } else {
+                    format!("● {name}")
+                }
+            } else {
+                tr.pacs_login_btn.to_string()
+            };
+            let login_btn = if is_hooked {
+                egui::Button::new(egui::RichText::new(inst_label).small().color(Color32::WHITE))
+                    .fill(Color32::from_rgb(38, 132, 68))
+            } else {
+                egui::Button::new(egui::RichText::new(inst_label).small())
+            };
+            if ui
+                .add(login_btn)
+                .on_hover_text(tr.pacs_login_hover)
+                .clicked()
+            {
+                self.show_pacs_modal = !self.show_pacs_modal;
+            }
+            if ui
+                .add_enabled(
+                    is_hooked,
+                    egui::Button::new(egui::RichText::new(tr.pacs_search_btn).small()),
+                )
+                .on_hover_text(tr.pacs_search_hover)
+                .clicked()
+            {
+                self.show_pacs_finder = !self.show_pacs_finder;
+            }
+            ui.separator();
+
         if let Some(scan) = &self.scan {
                 let done = scan.done.load(Ordering::Relaxed);
                 let total = scan.total.load(Ordering::Relaxed);
                 ui.spinner();
                 if total == 0 {
-                    ui.label("Looking for files…");
+                    ui.label(tr.refreshing_db);
                 } else {
                     ui.add(
                         egui::ProgressBar::new(done as f32 / total as f32)
                             .desired_width(200.0)
-                            .text(format!("Indexing {done} / {total} files")),
+                            .text(format!("{} {done} / {total} {}", tr.indexing_files, tr.files_word)),
                     );
                 }
             } else if let Some(index) = &self.index {
                 ui.label(format!(
-                    "{} studies · {} images · {} other files skipped · {} pipeline",
+                    "{} {} · {} {} · {} {} · {} {}",
                     index.studies.len(),
+                    tr.studies,
                     index.image_count(),
+                    tr.images,
                     index.files_skipped,
-                    if self.gpu.is_some() { "GPU" } else { "CPU" }
+                    tr.other_files_skipped,
+                    if self.gpu.is_some() { "GPU" } else { "CPU" },
+                    tr.pipeline_word,
                 ));
             }
             if let Some(msg) = &self.message {
@@ -2157,10 +2311,27 @@ impl ViewerApp {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 ui.label(
-                    egui::RichText::new(format!("v{}", env!("CARGO_PKG_VERSION")))
+                    egui::RichText::new(format!("v{}", crate::BUILD_VERSION))
                         .small()
                         .color(Color32::from_gray(150)),
                 );
+                if self.previous_crash_pending {
+                    let lbl = match self.lang {
+                        crate::i18n::Lang::Es => "⚠ Registro de Fallo",
+                        crate::i18n::Lang::En => "⚠ Crash Log",
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(lbl).small().color(Color32::WHITE),
+                            )
+                            .fill(Color32::from_rgb(175, 65, 50)),
+                        )
+                        .clicked()
+                    {
+                        self.show_crash_modal = true;
+                    }
+                }
                 if let Some(info) = &self.cursor_info {
                     ui.separator();
                     ui.monospace(info);
@@ -2246,55 +2417,140 @@ impl ViewerApp {
         });
         ui.add_space(2.0);
 
+        // Pre-group matching studies by Patient (manual link override -> Patient ID -> normalized Patient Name).
+        struct BrowserPatientGroup {
+            key: String,
+            display_name: String,
+            display_id: String,
+            studies: Vec<(usize, Vec<usize>)>,
+        }
+        let mut patient_groups: Vec<BrowserPatientGroup> = Vec::new();
+        let mut group_idx_by_key: HashMap<String, usize> = HashMap::new();
+        for (si, study) in index.studies.iter().enumerate() {
+            let study_matches_query = query.is_empty()
+                || study.patient_name.to_ascii_lowercase().contains(&query)
+                || study.patient_id.to_ascii_lowercase().contains(&query)
+                || study.description.to_ascii_lowercase().contains(&query)
+                || study.accession.to_ascii_lowercase().contains(&query)
+                || study.date.to_ascii_lowercase().contains(&query);
+
+            let matching_series: Vec<usize> = study
+                .series
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    let mod_ok = match mod_filter.as_str() {
+                        "ALL" => true,
+                        "DX" => matches!(s.modality.as_str(), "DX" | "CR" | "RG" | "MG"),
+                        "PT" => matches!(s.modality.as_str(), "PT" | "NM" | "ST"),
+                        m => s.modality.eq_ignore_ascii_case(m),
+                    };
+                    if !mod_ok {
+                        return false;
+                    }
+                    study_matches_query
+                        || s.description.to_ascii_lowercase().contains(&query)
+                        || s.modality.to_ascii_lowercase().contains(&query)
+                        || s.dominant_plane
+                            .badge()
+                            .to_ascii_lowercase()
+                            .contains(&query)
+                })
+                .map(|(ri, _)| ri)
+                .collect();
+
+            if matching_series.is_empty() {
+                continue;
+            }
+
+            let key = if let Some(over) = self.patient_links.get(&study.uid) {
+                over.clone()
+            } else {
+                let pid = study.patient_id.trim();
+                if !pid.is_empty() {
+                    format!("id:{}", pid.to_ascii_uppercase())
+                } else {
+                    let norm_name = study
+                        .patient_name
+                        .replace('^', " ")
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                        .to_ascii_uppercase();
+                    format!("name:{norm_name}")
+                }
+            };
+
+            if let Some(&gi) = group_idx_by_key.get(&key) {
+                patient_groups[gi].studies.push((si, matching_series));
+            } else {
+                let gi = patient_groups.len();
+                group_idx_by_key.insert(key.clone(), gi);
+                patient_groups.push(BrowserPatientGroup {
+                    key,
+                    display_name: study.patient_name.replace('^', " "),
+                    display_id: study.patient_id.trim().to_string(),
+                    studies: vec![(si, matching_series)],
+                });
+            }
+        }
+
+        let mut start_link: Option<(String, Vec<String>)> = None;
+        let mut commit_link_target: Option<String> = None;
+        let mut unlink_study_uid: Option<String> = None;
+        let mut cancel_linking = false;
+
+        if let Some((ref src_name, _)) = self.linking_source {
+            ui.group(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.colored_label(
+                        Color32::from_rgb(255, 210, 100),
+                        format!("{} {src_name}", tr.linking_banner),
+                    );
+                    if ui.small_button(tr.cancel_link).clicked() {
+                        cancel_linking = true;
+                    }
+                });
+            });
+            ui.add_space(2.0);
+        }
+
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
             .show(ui, |ui| {
-                for (si, study) in index.studies.iter().enumerate() {
-                    let study_matches_query = query.is_empty()
-                        || study.patient_name.to_ascii_lowercase().contains(&query)
-                        || study.patient_id.to_ascii_lowercase().contains(&query)
-                        || study.description.to_ascii_lowercase().contains(&query)
-                        || study.accession.to_ascii_lowercase().contains(&query)
-                        || study.date.to_ascii_lowercase().contains(&query);
-
-                    let matching_series: Vec<usize> = study
-                        .series
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, s)| {
-                            let mod_ok = match mod_filter.as_str() {
-                                "ALL" => true,
-                                "DX" => matches!(s.modality.as_str(), "DX" | "CR" | "RG" | "MG"),
-                                "PT" => matches!(s.modality.as_str(), "PT" | "NM" | "ST"),
-                                m => s.modality.eq_ignore_ascii_case(m),
-                            };
-                            if !mod_ok {
-                                return false;
-                            }
-                            study_matches_query
-                                || s.description.to_ascii_lowercase().contains(&query)
-                                || s.modality.to_ascii_lowercase().contains(&query)
-                                || s.dominant_plane
-                                    .badge()
-                                    .to_ascii_lowercase()
-                                    .contains(&query)
-                        })
-                        .map(|(ri, _)| ri)
-                        .collect();
-
-                    if matching_series.is_empty() {
-                        continue;
+                for pg in &patient_groups {
+                    let mut pt_label = pg.display_name.clone();
+                    if !pg.display_id.is_empty() {
+                        pt_label.push_str(&format!(" · ID {}", pg.display_id));
                     }
+                    pt_label.push_str(&format!(" ({})", pg.studies.len()));
 
-                    let title = if study.files_missing {
-                        format!("⚠ [files missing] {}   {}", study.patient_name, study.date)
-                    } else {
-                        format!("{}   {}", study.patient_name, study.date)
-                    };
-                    let hdr_resp = egui::CollapsingHeader::new(egui::RichText::new(title).strong())
-                        .id_salt(&study.uid)
-                        .default_open(true)
+                    let is_linking = self.linking_source.is_some();
+                    let pg_resp = ui.horizontal(|ui| {
+                        let resp = egui::CollapsingHeader::new(
+                            egui::RichText::new(&pt_label).strong(),
+                        )
+                        .id_salt(format!("pt_{}", pg.key))
+                        .default_open(false)
                         .show(ui, |ui| {
+                            for (si, matching_series) in &pg.studies {
+                                let si = *si;
+                                let study = &index.studies[si];
+                                let desc = if study.description.trim().is_empty() {
+                                    "Study"
+                                } else {
+                                    study.description.trim()
+                                };
+                                let title = if study.files_missing {
+                                    format!("⚠ [files missing] {desc} — {}", study.date)
+                                } else {
+                                    format!("{desc} — {}", study.date)
+                                };
+                                let hdr_resp =
+                                    egui::CollapsingHeader::new(egui::RichText::new(title))
+                                        .id_salt(&study.uid)
+                                        .default_open(false)
+                                        .show(ui, |ui| {
                             let mut sub = Vec::new();
                             if !study.description.is_empty() {
                                 sub.push(study.description.clone());
@@ -2447,7 +2703,7 @@ impl ViewerApp {
                             // Render series in list order, grouping multi-plane AX/COR/SAG reconstructions
                             // into a compact Horos-style block (no duplicate rows outside the block).
                             let mut rendered_series = std::collections::HashSet::new();
-                            for &ri in &matching_series {
+                            for &ri in matching_series {
                                 if rendered_series.contains(&ri) {
                                     continue;
                                 }
@@ -2550,14 +2806,74 @@ impl ViewerApp {
                                 }
                             }
                         });
-                    hdr_resp.header_response.context_menu(|ui| {
-                        if ui.button(tr.remove_from_library).clicked() {
-                            remove_study_uid = Some(study.uid.clone());
+                                    hdr_resp.header_response.context_menu(|ui| {
+                                        if pg.studies.len() > 1
+                                            || self.patient_links.contains_key(&study.uid)
+                                        {
+                                            if ui.button(tr.unlink_study).clicked() {
+                                                unlink_study_uid = Some(study.uid.clone());
+                                                ui.close();
+                                            }
+                                        }
+                                        if ui.button(tr.link_patient).clicked() {
+                                            start_link = Some((
+                                                format!("{} ({})", study.patient_name, study.date),
+                                                vec![study.uid.clone()],
+                                            ));
+                                            ui.close();
+                                        }
+                                        if ui.button(tr.remove_from_library).clicked() {
+                                            remove_study_uid = Some(study.uid.clone());
+                                            ui.close();
+                                        }
+                                    });
+                                }
+                        });
+                        if is_linking && ui.small_button(tr.link_here).clicked() {
+                            commit_link_target = Some(pg.key.clone());
+                        }
+                        resp
+                    });
+                    pg_resp.inner.header_response.context_menu(|ui| {
+                        if ui.button(tr.link_patient).clicked() {
+                            let uids = pg
+                                .studies
+                                .iter()
+                                .map(|(si, _)| index.studies[*si].uid.clone())
+                                .collect();
+                            start_link = Some((pg.display_name.clone(), uids));
                             ui.close();
                         }
                     });
                 }
             });
+
+        if cancel_linking {
+            self.linking_source = None;
+        }
+        if let Some(src) = start_link {
+            self.linking_source = Some(src);
+        }
+        if let Some(target_key) = commit_link_target {
+            if let Some((_, uids)) = self.linking_source.take() {
+                for uid in uids {
+                    self.patient_links.insert(uid, target_key.clone());
+                }
+                if let Some(ref db) = self.db {
+                    if let Ok(json) = serde_json::to_string(&self.patient_links) {
+                        let _ = db.set_setting("patient_links", &json);
+                    }
+                }
+            }
+        }
+        if let Some(uid) = unlink_study_uid {
+            self.patient_links.insert(uid.clone(), format!("solo:{uid}"));
+            if let Some(ref db) = self.db {
+                if let Ok(json) = serde_json::to_string(&self.patient_links) {
+                    let _ = db.set_setting("patient_links", &json);
+                }
+            }
+        }
 
         if self.pending_copy_prompt {
             ui.add_space(4.0);
@@ -2753,12 +3069,13 @@ impl ViewerApp {
         painter.rect_filled(view, 0.0, Color32::BLACK);
 
         if self.viewport_series(vp_idx).is_none() {
+            let tr = crate::i18n::tr(self.lang);
             let text = if self.scan.is_some() {
-                "Indexing…"
+                tr.indexing_short
             } else if vp_idx == 0 {
-                crate::i18n::tr(self.lang).drop_hint
+                tr.drop_hint
             } else {
-                "Right-click a series in the browser to assign to this viewport"
+                tr.assign_vp_hint
             };
             painter.text(
                 view.center(),
@@ -4882,6 +5199,647 @@ impl ViewerApp {
             }
         }
     }
+
+    fn draw_pacs_modal(&mut self, ctx: &egui::Context) {
+        let tr = crate::i18n::tr(self.lang);
+        if self.show_pacs_modal {
+            let mut open = true;
+            egui::Window::new(tr.pacs_modal_title)
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(false)
+                .default_width(480.0)
+                .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(tr.pacs_known_portals);
+                        let selected_label = if self.pacs_web.institution_name.to_lowercase().contains("maip") {
+                            "Diagnóstico Maipú"
+                        } else {
+                            tr.pacs_select_portal
+                        };
+                        egui::ComboBox::from_id_salt("pacs_known_portals_cb")
+                            .selected_text(selected_label)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(
+                                        self.pacs_web.institution_name.to_lowercase().contains("maip"),
+                                        "Diagnóstico Maipú",
+                                    )
+                                    .clicked()
+                                {
+                                    self.show_add_portal_note = false;
+                                    self.pacs_web.institution_name = "Diagnóstico Maipú".into();
+                                    if let Some(ref db) = self.db {
+                                        let _ = db.set_setting("pacs_institution_name", "Diagnóstico Maipú");
+                                        if let Some(url) = db.get_setting("pacs_known_maipu_url") {
+                                            if !url.trim().is_empty() {
+                                                self.pacs_web.login_url = url.clone();
+                                                let _ = db.set_setting("pacs_login_url", &url);
+                                            }
+                                        }
+                                    }
+                                }
+                                if ui.selectable_label(false, tr.pacs_add_portal).clicked() {
+                                    self.show_add_portal_note = true;
+                                }
+                            });
+                    });
+                    if self.show_add_portal_note {
+                        ui.label(
+                            egui::RichText::new(tr.pacs_add_portal_note)
+                                .small()
+                                .color(Color32::from_rgb(175, 200, 235)),
+                        );
+                    }
+                    ui.add_space(4.0);
+                    ui.label(tr.pacs_inst_name);
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.pacs_web.institution_name)
+                                .desired_width(440.0)
+                                .hint_text(tr.pacs_inst_hint),
+                        )
+                        .changed()
+                    {
+                        if let Some(ref db) = self.db {
+                            let _ = db.set_setting(
+                                "pacs_institution_name",
+                                &self.pacs_web.institution_name,
+                            );
+                        }
+                    }
+
+                    ui.add_space(4.0);
+                    ui.label(tr.pacs_login_url);
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut self.pacs_web.login_url)
+                                .desired_width(440.0)
+                                .hint_text("https://pacs.example.com/login"),
+                        )
+                        .changed()
+                    {
+                        if let Some(ref db) = self.db {
+                            let _ =
+                                db.set_setting("pacs_login_url", &self.pacs_web.login_url);
+                        }
+                    }
+
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.label(tr.pacs_username);
+                            if ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut self.pacs_web.saved_username)
+                                        .desired_width(210.0),
+                                )
+                                .changed()
+                                && self.pacs_web.remember_credentials
+                            {
+                                if let Some(ref db) = self.db {
+                                    let _ = db.set_setting(
+                                        "pacs_cred_user",
+                                        self.pacs_web.saved_username.trim(),
+                                    );
+                                }
+                            }
+                        });
+                        ui.vertical(|ui| {
+                            ui.label(tr.pacs_password);
+                            if ui
+                                .add(
+                                    egui::TextEdit::singleline(&mut self.pacs_web.saved_password)
+                                        .password(true)
+                                        .desired_width(210.0),
+                                )
+                                .changed()
+                                && self.pacs_web.remember_credentials
+                            {
+                                if let Some(ref db) = self.db {
+                                    let enc = crate::pacs_web::protect_secret(
+                                        &self.pacs_web.saved_password,
+                                    );
+                                    let _ = db.set_setting("pacs_cred_pass", &enc);
+                                }
+                            }
+                        });
+                    });
+                    if ui
+                        .checkbox(
+                            &mut self.pacs_web.remember_credentials,
+                            tr.pacs_remember_creds,
+                        )
+                        .changed()
+                    {
+                        if let Some(ref db) = self.db {
+                            if self.pacs_web.remember_credentials {
+                                let _ = db.set_setting("pacs_remember_creds", "1");
+                                let _ = db.set_setting(
+                                    "pacs_cred_user",
+                                    self.pacs_web.saved_username.trim(),
+                                );
+                                let enc = crate::pacs_web::protect_secret(
+                                    &self.pacs_web.saved_password,
+                                );
+                                let _ = db.set_setting("pacs_cred_pass", &enc);
+                            } else {
+                                let _ = db.set_setting("pacs_remember_creds", "0");
+                                let _ = db.set_setting("pacs_cred_user", "");
+                                let _ = db.set_setting("pacs_cred_pass", "");
+                            }
+                        }
+                    }
+
+                    ui.add_space(4.0);
+                    ui.label(tr.pacs_watch_folder);
+                    ui.horizontal(|ui| {
+                        let dir_text = self
+                            .pacs_web
+                            .watch_dir
+                            .as_ref()
+                            .map(|p| p.display().to_string())
+                            .unwrap_or_else(|| tr.pacs_none_selected.into());
+                        ui.monospace(dir_text);
+                        if ui.button(tr.pacs_choose_folder).clicked() {
+                            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                                if let Some(ref db) = self.db {
+                                    let _ = db.set_setting(
+                                        "pacs_watch_dir",
+                                        &dir.to_string_lossy(),
+                                    );
+                                }
+                                self.pacs_web.watch_dir = Some(dir);
+                                self.pacs_web.reload_watch_cache();
+                            }
+                        }
+                    });
+
+                    ui.add_space(8.0);
+                    let is_hooked = matches!(
+                        self.pacs_web.state,
+                        crate::pacs_web::PacsHookState::Hooked { .. }
+                    );
+                    ui.horizontal(|ui| {
+                        if is_hooked {
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(tr.pacs_disconnect)
+                                            .color(Color32::WHITE),
+                                    )
+                                    .fill(Color32::from_rgb(165, 55, 55)),
+                                )
+                                .clicked()
+                            {
+                                self.pacs_web.disconnect();
+                                self.show_pacs_finder = false;
+                                if let Some(ref db) = self.db {
+                                    let _ = db.set_setting("pacs_auto_connect", "");
+                                }
+                            }
+                        } else if ui.button(tr.pacs_open_login).clicked() {
+                            self.pacs_web.open_login_webview(ctx.clone());
+                        }
+                        if self.pacs_web.is_webview_open() {
+                            if ui.button(tr.pacs_hook_session).clicked() {
+                                self.pacs_web.trigger_hook_session();
+                            }
+                            if ui.button(tr.pacs_train_portal).clicked() {
+                                self.pacs_web.start_training();
+                            }
+                            if ui.button(tr.pacs_close_login).clicked() {
+                                self.pacs_web.close_webview();
+                            }
+                        }
+                    });
+
+                    if self.pacs_web.is_webview_open()
+                        && self.pacs_web.training_step != crate::pacs_web::TrainingStep::Idle
+                    {
+                        ui.add_space(6.0);
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            use crate::pacs_web::TrainingStep;
+                            match self.pacs_web.training_step {
+                                TrainingStep::PickSearchInput => {
+                                    if ui.button(tr.pacs_pick_search).clicked() {
+                                        self.pacs_web.trigger_pick_step(TrainingStep::PickSearchInput);
+                                    }
+                                }
+                                TrainingStep::PickResultsRow => {
+                                    if ui.button(tr.pacs_pick_row).clicked() {
+                                        self.pacs_web.trigger_pick_step(TrainingStep::PickResultsRow);
+                                    }
+                                }
+                                TrainingStep::PickDownloadBtn => {
+                                    if ui.button(tr.pacs_pick_dl).clicked() {
+                                        self.pacs_web.trigger_pick_step(TrainingStep::PickDownloadBtn);
+                                    }
+                                    if !self.pacs_web.training_draft.download_steps.is_empty()
+                                        && ui.button(tr.pacs_done_picking).clicked()
+                                    {
+                                        self.pacs_web.finish_download_picking();
+                                    }
+                                }
+                                TrainingStep::PickAnonBtn => {
+                                    if ui.button(tr.pacs_pick_anon).clicked() {
+                                        self.pacs_web.trigger_pick_step(TrainingStep::PickAnonBtn);
+                                    }
+                                    if !self.pacs_web.training_draft.anon_steps.is_empty()
+                                        && ui.button(tr.pacs_done_picking).clicked()
+                                    {
+                                        self.pacs_web.finish_training();
+                                    }
+                                    if ui.button(tr.pacs_skip_finish).clicked() {
+                                        self.pacs_web.finish_training();
+                                    }
+                                }
+                                TrainingStep::Idle => {}
+                            }
+                            if ui.button(tr.pacs_cancel).clicked() {
+                                self.pacs_web.training_step = TrainingStep::Idle;
+                            }
+                        });
+                        if matches!(
+                            self.pacs_web.training_step,
+                            crate::pacs_web::TrainingStep::PickDownloadBtn
+                                | crate::pacs_web::TrainingStep::PickAnonBtn
+                        ) {
+                            ui.label(
+                                egui::RichText::new(tr.pacs_ctrl_click_hint)
+                                    .small()
+                                    .color(Color32::from_gray(170)),
+                            );
+                        }
+                    }
+
+                    if let Some(ref msg) = self.pacs_web.status_msg {
+                        ui.add_space(6.0);
+                        let color = match self.pacs_web.state {
+                            crate::pacs_web::PacsHookState::Hooked { .. } => {
+                                Color32::from_rgb(130, 220, 140)
+                            }
+                            crate::pacs_web::PacsHookState::Incompatible(_) => {
+                                Color32::from_rgb(255, 130, 130)
+                            }
+                            _ => Color32::from_rgb(240, 200, 110),
+                        };
+                        ui.colored_label(color, msg);
+                    }
+                });
+            if !open {
+                self.show_pacs_modal = false;
+            }
+        }
+
+        if self.show_pacs_finder
+            && matches!(
+                self.pacs_web.state,
+                crate::pacs_web::PacsHookState::Hooked { .. }
+            )
+        {
+            let mut open = true;
+            let finder_title = {
+                let name = self.pacs_web.institution_name.trim();
+                if name.is_empty() {
+                    tr.pacs_finder_default_title.to_string()
+                } else {
+                    format!("{} {name}", tr.pacs_finder_prefix)
+                }
+            };
+            egui::Window::new(finder_title)
+                .open(&mut open)
+                .collapsible(false)
+                .resizable(true)
+                .default_width(540.0)
+                .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        let enter = ui
+                            .add(
+                                egui::TextEdit::singleline(&mut self.pacs_web.search_query)
+                                    .desired_width(360.0)
+                                    .hint_text(tr.pacs_search_input_hint),
+                            )
+                            .lost_focus()
+                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (ui.button(tr.pacs_search_action).clicked() || enter)
+                            && !self.pacs_web.searching
+                        {
+                            self.pacs_web.start_search(ctx.clone());
+                        }
+                        if self.pacs_web.searching {
+                            ui.spinner();
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.checkbox(
+                            &mut self.pacs_web.download_anonymized,
+                            tr.pacs_download_anon,
+                        );
+                        if let Some(ref dl) = self.pacs_web.downloading {
+                            ui.separator();
+                            ui.spinner();
+                            ui.label(format!("{} {dl}…", tr.pacs_downloading));
+                        }
+                    });
+
+                    ui.separator();
+                    let selected_patient = self.pacs_web.selected_patient.clone();
+                    let patient_results = self.pacs_web.patient_results.clone();
+                    let results = self.pacs_web.results.clone();
+                    let mut open_patient_target: Option<crate::pacs_web::PacsPatientResult> = None;
+                    let mut go_back = false;
+                    let mut download_target: Option<crate::pacs_web::PacsStudyResult> = None;
+
+                    if let Some(ref pt) = selected_patient {
+                        ui.horizontal(|ui| {
+                            if ui.small_button(tr.pacs_back_patients).clicked() {
+                                go_back = true;
+                            }
+                            ui.strong(format!("{} {}", tr.pacs_studies_for, pt.name));
+                            if self.pacs_web.loading_studies {
+                                ui.spinner();
+                                ui.small(tr.pacs_loading_studies);
+                            }
+                        });
+                        ui.add_space(4.0);
+                    }
+
+                    egui::ScrollArea::vertical()
+                        .max_height(300.0)
+                        .show(ui, |ui| {
+                            if selected_patient.is_none() && !patient_results.is_empty() {
+                                for pt in patient_results.iter().take(50) {
+                                    let row_text = format!("👤 {}  ·  {}", pt.name, pt.summary);
+                                    if ui
+                                        .add_enabled(
+                                            !self.pacs_web.loading_studies,
+                                            egui::Button::new(row_text)
+                                                .wrap_mode(egui::TextWrapMode::Truncate),
+                                        )
+                                        .clicked()
+                                    {
+                                        open_patient_target = Some(pt.clone());
+                                    }
+                                }
+                            } else {
+                                if results.is_empty()
+                                    && !self.pacs_web.searching
+                                    && !self.pacs_web.loading_studies
+                                {
+                                    ui.label(
+                                        egui::RichText::new(tr.pacs_results_hint)
+                                            .small()
+                                            .color(Color32::from_gray(150)),
+                                    );
+                                }
+                                for st in results.iter().take(50) {
+                                    let mod_tag = if st.modality.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!("[{}] ", st.modality)
+                                    };
+                                    let row_text = if selected_patient.is_some() {
+                                        let rep = if st.has_report {
+                                            format!("📄 {}", tr.pacs_has_report)
+                                        } else {
+                                            format!("🖼 {}", tr.pacs_images_only)
+                                        };
+                                        format!(
+                                            "{mod_tag}{}  ·  {}  ·  {rep}",
+                                            st.description, st.study_date
+                                        )
+                                    } else {
+                                        let title = if st.patient_name.is_empty() {
+                                            st.study_uid.clone()
+                                        } else {
+                                            st.patient_name.clone()
+                                        };
+                                        format!(
+                                            "{title} {mod_tag} · ID: {} · {} · {}",
+                                            st.patient_id, st.study_date, st.description
+                                        )
+                                    };
+                                    if ui
+                                        .add_enabled(
+                                            self.pacs_web.downloading.is_none(),
+                                            egui::Button::new(row_text)
+                                                .wrap_mode(egui::TextWrapMode::Truncate),
+                                        )
+                                        .clicked()
+                                    {
+                                        download_target = Some(st.clone());
+                                    }
+                                }
+                            }
+                        });
+                    if go_back {
+                        self.pacs_web.back_to_patients();
+                    }
+                    if let Some(pt) = open_patient_target {
+                        self.pacs_web.open_patient(&pt, ctx.clone());
+                    }
+                    if let Some(st) = download_target {
+                        self.pacs_web.start_download(&st, ctx.clone());
+                    }
+                });
+            if !open {
+                self.show_pacs_finder = false;
+            }
+        }
+    }
+
+    fn draw_crash_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_crash_modal {
+            return;
+        }
+        let mut open = true;
+        let title = match self.lang {
+            crate::i18n::Lang::Es => "Registro de Fallo Anterior",
+            crate::i18n::Lang::En => "Previous Crash Log",
+        };
+        egui::Window::new(title)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(520.0)
+            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                let desc = match self.lang {
+                    crate::i18n::Lang::Es => "SekhmetX se cerró inesperadamente en la sesión anterior. Puede guardar el registro para diagnosticarlo; luego se eliminará automáticamente.",
+                    crate::i18n::Lang::En => "SekhmetX closed unexpectedly on the previous run. Save the crash log to inspect or share it; it will be deleted automatically afterward.",
+                };
+                ui.label(desc);
+                ui.add_space(6.0);
+                if let Some(log_text) = crate::crash_log::read_log() {
+                    egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                        ui.monospace(log_text.lines().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"));
+                    });
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let tr = crate::i18n::tr(self.lang);
+                    if ui.button(tr.crash_report_github).clicked() {
+                        if let Some(text) = crate::crash_log::read_log() {
+                            let url = crate::crash_log::github_issue_url(&text);
+                            ctx.open_url(egui::OpenUrl::new_tab(url));
+                        }
+                        crate::crash_log::delete_log();
+                        self.previous_crash_pending = false;
+                        self.show_crash_modal = false;
+                    }
+                    let save_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "Guardar Registro y Eliminar…",
+                        crate::i18n::Lang::En => "Save Crash Log & Delete…",
+                    };
+                    if ui.button(save_lbl).clicked() {
+                        if let Some(dest) = rfd::FileDialog::new()
+                            .set_file_name("sekhmetx-crash.log")
+                            .save_file()
+                        {
+                            if let Some(text) = crate::crash_log::read_log() {
+                                let _ = std::fs::write(dest, text);
+                            }
+                            crate::crash_log::delete_log();
+                            self.previous_crash_pending = false;
+                            self.show_crash_modal = false;
+                        }
+                    }
+                    let dismiss_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "Descartar y Eliminar",
+                        crate::i18n::Lang::En => "Dismiss & Delete",
+                    };
+                    if ui.button(dismiss_lbl).clicked() {
+                        crate::crash_log::delete_log();
+                        self.previous_crash_pending = false;
+                        self.show_crash_modal = false;
+                    }
+                });
+            });
+        if !open {
+            self.show_crash_modal = false;
+        }
+    }
+
+    fn draw_settings_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_settings_modal {
+            return;
+        }
+        let tr = crate::i18n::tr(self.lang);
+        let mut open = true;
+        egui::Window::new(tr.settings_title)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(480.0)
+            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(tr.settings_language);
+                    if ui
+                        .selectable_label(self.lang == crate::i18n::Lang::En, "English")
+                        .clicked()
+                    {
+                        self.lang = crate::i18n::Lang::En;
+                        if let Some(ref db) = self.db {
+                            let _ = db.set_setting("lang", "en");
+                        }
+                    }
+                    if ui
+                        .selectable_label(self.lang == crate::i18n::Lang::Es, "Español")
+                        .clicked()
+                    {
+                        self.lang = crate::i18n::Lang::Es;
+                        if let Some(ref db) = self.db {
+                            let _ = db.set_setting("lang", "es");
+                        }
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.label(tr.settings_studies_folder);
+                ui.horizontal(|ui| {
+                    let cur = crate::db::managed_studies_dir();
+                    ui.monospace(cur.display().to_string());
+                    if ui.button(tr.pacs_choose_folder).clicked() {
+                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                            if let Some(ref db) = self.db {
+                                let _ = db.set_setting(
+                                    "custom_studies_dir",
+                                    &dir.to_string_lossy(),
+                                );
+                            }
+                            crate::db::set_custom_studies_dir(Some(dir));
+                        }
+                    }
+                    if ui.button(tr.settings_reset_default).clicked() {
+                        if let Some(ref db) = self.db {
+                            let _ = db.set_setting("custom_studies_dir", "");
+                        }
+                        crate::db::set_custom_studies_dir(None);
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.separator();
+                ui.strong(tr.settings_on_open);
+                ui.horizontal(|ui| {
+                    ui.label(tr.settings_add_to_db);
+                    for (policy, label) in [
+                        (crate::db::CopyToLibraryPolicy::Ask, tr.settings_policy_ask),
+                        (crate::db::CopyToLibraryPolicy::Always, tr.settings_policy_always),
+                        (crate::db::CopyToLibraryPolicy::Never, tr.settings_policy_never),
+                    ] {
+                        if ui.selectable_label(self.copy_policy == policy, label).clicked() {
+                            self.set_copy_policy(policy);
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label(tr.settings_storage_format);
+                    if ui
+                        .selectable_label(!self.study_storage_zip, tr.settings_format_unzip)
+                        .clicked()
+                    {
+                        self.study_storage_zip = false;
+                        if let Some(ref db) = self.db {
+                            let _ = db.set_setting("study_storage_format", "unzip");
+                        }
+                    }
+                    if ui
+                        .selectable_label(self.study_storage_zip, tr.settings_format_zip)
+                        .clicked()
+                    {
+                        self.study_storage_zip = true;
+                        if let Some(ref db) = self.db {
+                            let _ = db.set_setting("study_storage_format", "zip");
+                        }
+                    }
+                });
+
+                ui.add_space(6.0);
+                ui.separator();
+                if ui
+                    .checkbox(&mut self.check_updates_on_startup, tr.settings_check_updates)
+                    .changed()
+                {
+                    if let Some(ref db) = self.db {
+                        let _ = db.set_setting(
+                            "check_updates_on_startup",
+                            if self.check_updates_on_startup { "1" } else { "0" },
+                        );
+                    }
+                }
+            });
+        if !open {
+            self.show_settings_modal = false;
+        }
+    }
 }
 
 impl eframe::App for ViewerApp {
@@ -4902,11 +5860,15 @@ impl eframe::App for ViewerApp {
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport_grid(ui));
         self.draw_force_mpr_modal(&ctx);
         self.draw_update_modal(&ctx);
+        self.draw_pacs_modal(&ctx);
+        self.draw_settings_modal(&ctx);
+        self.draw_crash_modal(&ctx);
     }
 }
 
 impl Drop for ViewerApp {
     fn drop(&mut self) {
         dicom_index::cleanup_zip_cache();
+        crate::crash_log::cleanup_on_clean_exit(self.previous_crash_pending);
     }
 }
