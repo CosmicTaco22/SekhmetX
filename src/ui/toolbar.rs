@@ -405,6 +405,21 @@ impl ViewerApp {
                         ui.selectable_value(&mut self.sync_mode, mode, mode.label());
                     }
                     ui.separator();
+                    ui.menu_button(tr.export_menu, |ui| {
+                        if ui.button(tr.export_png).clicked() {
+                            self.export_active_png();
+                            ui.close();
+                        }
+                        if ui.button(tr.export_series_png).clicked() {
+                            self.export_active_series_png();
+                            ui.close();
+                        }
+                        if ui.button(tr.export_anon_dicom).clicked() {
+                            self.export_active_anonymized_dicom();
+                            ui.close();
+                        }
+                    });
+                    ui.separator();
                     if ui.button(tr.reset_viewport).clicked() {
                         let vp = self.active_cell_mut();
                         vp.reset_view();

@@ -32,6 +32,8 @@ A fast, native radiological DICOM viewer for Windows, macOS, and Linux, written 
   - Hardware-accelerated WGSL shader pipeline (`wgpu`) with post-windowing **Bilinear Interpolation** (toggleable in View), CPU fallback (`RDICOM_CPU=1`), **31 Horos CLUTs**, and **22 Horos 2D Convolution Filters**.
 - **In-App Auto-Updater:**
   - Checks GitHub Releases (`CosmicTaco22/SekhmetX`), displays release notes, verifies `SHA256SUMS` before replacing the binary in-place, and supports a startup-check toggle.
+- **Export & DICOM De-Identification:**
+  - Export individual slices or entire series to PNG (preserving active WL/WW, CLUT, invert, and convolution filter) or export anonymized DICOM series with private tags stripped, patient/institution identifiers scrubbed, and UIDs consistently remapped.
 
 ---
 

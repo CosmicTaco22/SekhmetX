@@ -4,6 +4,7 @@
 mod app;
 mod db;
 mod dicom_index;
+mod export;
 mod frame;
 mod geometry;
 mod gpu_view;

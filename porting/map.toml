@@ -344,7 +344,10 @@ id = "anonymize-export"
 name = "Anonymization and export (DICOM, images, movies)"
 decision = "port"
 priority = 2
-progress = "todo"
+progress = "partial"
+ported_from = "3e24831224b8"
+rdicom = "src/export.rs, src/ui/toolbar.rs, src/app.rs"
+notes = "PNG slice/series export with active presentation (WL/CLUT/invert/convolution) and Horos-aligned DICOM de-identification (private tag stripping, identifier scrubbing, consistent UID remapping)."
 paths = ['^Modules/IsiXImaging/(Sources|Tests)/ViewerExport/']
 names = ['Anonymiz.*', 'HorosAnonymizationSafety', 'HorosGDCMAnonymizer', 'IsiXDCMTKAnonymizer', 'HorosSelectedAnonymizationCatalog',
          'DICOMExport', 'DICOMFolderExport', 'Export.*', 'ImageExportPath', 'ViewerImageExporter', 'ViewerMovieExport',

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.5] - 2026-11-14
+
+### Added (P2 Step 1 — Export & DICOM Anonymization)
+- **Image, Series & Anonymized DICOM Export (`src/export.rs`, `src/ui/toolbar.rs`, `src/app.rs`):**
+  - Added **Export Image (PNG)**, **Export Series (PNGs)**, and **Export Anonymized DICOM** under `View ▾ -> Export` (localized in English & Spanish).
+  - De-identification strips private tags (odd DICOM groups), removes sensitive address/telephone/comment tags, replaces patient/institution/accession identifiers, clears study/birth dates, and remaps `StudyInstanceUID`, `SeriesInstanceUID`, `SOPInstanceUID`, and `FrameOfReferenceUID` consistently across exported series.
+
+---
+
 ## [0.2.4] - 2026-11-14
 
 ### Added & Improved (P1 Hardening & Parity)

@@ -1321,6 +1321,73 @@ impl ViewerApp {
         }
     }
 
+    pub(crate) fn export_active_png(&self) {
+        let vp_idx = self.active_viewport;
+        let Some(frame) = self.viewport_frame(vp_idx) else {
+            return;
+        };
+        let vp = &self.viewports[vp_idx];
+        let win = vp
+            .window
+            .and_then(|w| frame.requested(w))
+            .unwrap_or_else(|| frame.default_window());
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name("sekhmetx_export.png")
+            .add_filter("PNG Image", &["png"])
+            .save_file()
+        {
+            let _ = crate::export::export_frame_png(
+                frame,
+                win,
+                vp.effective_invert(),
+                &vp.clut_name,
+                vp.convolution_idx,
+                &path,
+            );
+        }
+    }
+
+    pub(crate) fn export_active_series_png(&self) {
+        let vp_idx = self.active_viewport;
+        let Some((si, ri)) = self.viewports[vp_idx].selected else {
+            return;
+        };
+        let Some(ref idx) = self.index else {
+            return;
+        };
+        let Some(se) = idx.studies.get(si).and_then(|st| st.series.get(ri)) else {
+            return;
+        };
+        let vp = &self.viewports[vp_idx];
+        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+            let _ = crate::export::export_series_png(
+                &se.slices,
+                vp.window,
+                vp.effective_invert(),
+                &vp.clut_name,
+                vp.convolution_idx,
+                &dir,
+            );
+        }
+    }
+
+    pub(crate) fn export_active_anonymized_dicom(&self) {
+        let vp_idx = self.active_viewport;
+        let Some((si, ri)) = self.viewports[vp_idx].selected else {
+            return;
+        };
+        let Some(ref idx) = self.index else {
+            return;
+        };
+        let Some(se) = idx.studies.get(si).and_then(|st| st.series.get(ri)) else {
+            return;
+        };
+        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+            let opts = crate::export::AnonymizeOptions::default();
+            let _ = crate::export::anonymize_series(&se.slices, &dir, &opts);
+        }
+    }
+
     fn set_copy_policy(&mut self, policy: crate::db::CopyToLibraryPolicy) {
         self.copy_policy = policy;
         if let Some(ref db) = self.db {

@@ -26,7 +26,7 @@ Generated from `porting/map.toml` by `python3 tools/upstream.py render-map isix`
 | **MPR: orthogonal and oblique reslicing, thick slab MIP/MinIP**<br>`mpr` | Rebuild | started | — | src/volume.rs, src/app.rs | wgpu, rayon | In-place single-viewport 3D MPR (Axial/Coronal/Sagittal/Oblique 3D trackball rotation), hybrid multi-series (AX/COR/SAG) tri-planar resolution fusion, and Thick-Slab MIP/MinIP/Mean ray-marched projections. |
 | **PET-CT fusion and SUV**<br>`fusion-pet` | Port | not started | — | — | — |  |
 | **Presentation states (GSPS), key images, structured reports**<br>`annotations-sr` | Port | not started | — | — | — |  |
-| **Anonymization and export (DICOM, images, movies)**<br>`anonymize-export` | Port | not started | — | — | — |  |
+| **Anonymization and export (DICOM, images, movies)**<br>`anonymize-export` | Port | started | — | src/export.rs, src/ui/toolbar.rs, src/app.rs | — | PNG slice/series export with active presentation (WL/CLUT/invert/convolution) and Horos-aligned DICOM de-identification (private tag stripping, identifier scrubbing, consistent UID remapping). |
 | **Preferences, presets, shortcuts**<br>`preferences` | Rebuild | started | — | src/app.rs (PRESETS); src/settings.rs (planned) | — | Port the preference values and defaults (IsiXPreferences); rebuild only the settings screens that matter. |
 | **App shell: startup, menus, activity/progress, logging, updates, keychain**<br>`app-shell` | Rebuild | started | — | src/main.rs | — |  |
 

@@ -84,6 +84,10 @@ pub struct Strings {
     pub always_btn: &'static str,
     pub no_btn: &'static str,
     pub never_btn: &'static str,
+    pub export_menu: &'static str,
+    pub export_png: &'static str,
+    pub export_series_png: &'static str,
+    pub export_anon_dicom: &'static str,
 }
 
 pub const EN: Strings = Strings {
@@ -139,6 +143,10 @@ pub const EN: Strings = Strings {
     always_btn: "Always",
     no_btn: "No",
     never_btn: "Never",
+    export_menu: "Export",
+    export_png: "Export Image (PNG)…",
+    export_series_png: "Export Series (PNGs)…",
+    export_anon_dicom: "Export Anonymized DICOM…",
 };
 
 pub const ES: Strings = Strings {
@@ -194,6 +202,10 @@ pub const ES: Strings = Strings {
     always_btn: "Siempre",
     no_btn: "No",
     never_btn: "Nunca",
+    export_menu: "Exportar",
+    export_png: "Exportar Imagen (PNG)…",
+    export_series_png: "Exportar Serie (PNGs)…",
+    export_anon_dicom: "Exportar DICOM Anonimizado…",
 };
 
 pub fn tr(lang: Lang) -> &'static Strings {
@@ -231,7 +243,8 @@ mod tests {
                 s.open_github, s.installing_update, s.restart_sekhmetx, s.retry,
                 s.reset_viewport, s.flip_h, s.flip_v, s.invert, s.ref_lines,
                 s.overlays, s.sync_label, s.copy_zip_prompt, s.copy_btn,
-                s.always_btn, s.no_btn, s.never_btn,
+                s.always_btn, s.no_btn, s.never_btn, s.export_menu, s.export_png,
+                s.export_series_png, s.export_anon_dicom,
             ];
             for f in fields {
                 assert!(!f.trim().is_empty(), "empty i18n string found");
