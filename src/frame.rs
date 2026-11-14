@@ -388,3 +388,43 @@ pub fn load_frame(path: &Path, frame: u32) -> Result<Frame> {
         value_unit: if modality == "CT" { "HU" } else { "" },
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::imaging::convolution::FACTORY_CONVOLUTIONS;
+
+    #[test]
+    fn convolution_is_presentation_only_and_source_retains_original_values() {
+        let mut pixels = vec![0.0_f32; 5 * 5];
+        pixels[2 * 5 + 2] = 1000.0;
+        let source = Frame {
+            width: 5,
+            height: 5,
+            pixels: Pixels::Gray(pixels),
+            stored_window: None,
+            full_window: Window { level: 0.0, width: 1000.0 },
+            bits_window: None,
+            inverts: false,
+            voi_lut_applied: false,
+            slope: 1.0,
+            spacing: Some((1.0, 1.0)),
+            pixel_ratio: 1.0,
+            origin: None,
+            orientation: ImagePlaneGeometry::DEFAULT_ORIENTATION,
+            is_3d_plane: false,
+            frame_of_reference_uid: None,
+            slice_thickness: None,
+            slice_location: None,
+            value_unit: "HU",
+        };
+        let conv = FACTORY_CONVOLUTIONS[0].to_convolution();
+        let presentation = source.with_convolution(&conv);
+
+        assert_eq!(source.value_at(2, 2).as_deref(), Some("1000 HU"));
+        let Pixels::Gray(ref p_vals) = presentation.pixels else {
+            panic!("expected gray");
+        };
+        assert_ne!(p_vals[2 * 5 + 2], 1000.0);
+    }
+}

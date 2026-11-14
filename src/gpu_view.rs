@@ -33,7 +33,7 @@ struct Uniforms {
     width: u32,
     height: u32,
     use_clut: u32,
-    _pad0: u32,
+    bilinear: u32,
     rect_min: vec2<f32>,
     rect_size: vec2<f32>,
     uv_origin: vec2<f32>,
@@ -54,19 +54,10 @@ fn vs_main(@builtin(vertex_index) idx: u32) -> @builtin(position) vec4<f32> {
     return vec4<f32>(x, y, 0.0, 1.0);
 }
 
-@fragment
-fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
-    let rel = (frag.xy - u.rect_min) / u.rect_size;
-    if rel.x < 0.0 || rel.x >= 1.0 || rel.y < 0.0 || rel.y >= 1.0 {
-        discard;
-    }
-    let tc = u.uv_origin + rel.x * u.uv_u + rel.y * u.uv_v;
-    if tc.x < 0.0 || tc.x >= 1.0 || tc.y < 0.0 || tc.y >= 1.0 {
-        discard;
-    }
-    let x = clamp(i32(tc.x * f32(u.width)), 0, i32(u.width) - 1);
-    let y = clamp(i32(tc.y * f32(u.height)), 0, i32(u.height) - 1);
-    let v = textureLoad(t_slice, vec2<i32>(x, y), 0).r;
+fn sample_windowed(coord: vec2<i32>) -> vec4<f32> {
+    let cx = clamp(coord.x, 0, i32(u.width) - 1);
+    let cy = clamp(coord.y, 0, i32(u.height) - 1);
+    let v = textureLoad(t_slice, vec2<i32>(cx, cy), 0).r;
 
     var g: f32;
     if u.inv_span <= 0.0 {
@@ -84,6 +75,31 @@ fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(g, g, g, 1.0);
 }
+
+@fragment
+fn fs_main(@builtin(position) frag: vec4<f32>) -> @location(0) vec4<f32> {
+    let rel = (frag.xy - u.rect_min) / u.rect_size;
+    if rel.x < 0.0 || rel.x >= 1.0 || rel.y < 0.0 || rel.y >= 1.0 {
+        discard;
+    }
+    let tc = u.uv_origin + rel.x * u.uv_u + rel.y * u.uv_v;
+    if tc.x < 0.0 || tc.x >= 1.0 || tc.y < 0.0 || tc.y >= 1.0 {
+        discard;
+    }
+    if u.bilinear != 0u {
+        let p = tc * vec2<f32>(f32(u.width), f32(u.height)) - vec2<f32>(0.5, 0.5);
+        let p0 = vec2<i32>(floor(p));
+        let f = fract(p);
+        let c00 = sample_windowed(p0);
+        let c10 = sample_windowed(p0 + vec2<i32>(1, 0));
+        let c01 = sample_windowed(p0 + vec2<i32>(0, 1));
+        let c11 = sample_windowed(p0 + vec2<i32>(1, 1));
+        return mix(mix(c00, c10, f.x), mix(c01, c11, f.x), f.y);
+    }
+    let x = clamp(i32(tc.x * f32(u.width)), 0, i32(u.width) - 1);
+    let y = clamp(i32(tc.y * f32(u.height)), 0, i32(u.height) - 1);
+    return sample_windowed(vec2<i32>(x, y));
+}
 "#;
 
 #[repr(C)]
@@ -96,7 +112,7 @@ struct Uniforms {
     width: u32,
     height: u32,
     use_clut: u32,
-    _pad0: u32,
+    bilinear: u32,
     rect_min: [f32; 2],
     rect_size: [f32; 2],
     uv_origin: [f32; 2],
@@ -336,6 +352,7 @@ pub struct ImageCallback {
     pub invert: bool,
     pub clut: Option<ColorLookupTable>,
     pub uv_map: QuadUvMapping,
+    pub bilinear: bool,
 }
 
 impl ImageCallback {
@@ -469,7 +486,7 @@ impl egui_wgpu::CallbackTrait for ImageCallback {
             width: self.frame.width,
             height: self.frame.height,
             use_clut: u32::from(self.clut.is_some()),
-            _pad0: 0,
+            bilinear: u32::from(self.bilinear),
             rect_min: [self.image_rect_px.min.x, self.image_rect_px.min.y],
             rect_size: [
                 self.image_rect_px.width().max(1.0),

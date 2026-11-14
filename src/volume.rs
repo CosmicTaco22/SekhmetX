@@ -43,25 +43,169 @@ pub struct Volume3D {
     pub value_unit: &'static str,
     /// Background air threshold estimated from the volume intensity distribution.
     pub foreground_threshold: f32,
+    /// `true` when slice spacing, orientation, and dimensions passed validation without forcing.
+    pub geometry_verified: bool,
+    /// `true` when `PixelSpacing` was missing (measurements must use pixels, not mm).
+    pub uncalibrated: bool,
+}
+
+/// Port of IsiX `SliceIntervalRegularity` (measured along the slice normal).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SliceRegularity {
+    pub minimum_interval: f64,
+    pub maximum_interval: f64,
+    pub mean_interval: f64,
+    pub largest_grid_deviation: f64,
+    pub is_irregular: bool,
+}
+
+impl SliceRegularity {
+    const RELATIVE_TOLERANCE: f64 = 0.10;
+
+    pub fn evaluate(origins: &[[f64; 3]], normal: [f64; 3], pixel_spacing: f64) -> Self {
+        let count = origins.len();
+        if count < 2 {
+            return Self {
+                minimum_interval: 0.0,
+                maximum_interval: 0.0,
+                mean_interval: 0.0,
+                largest_grid_deviation: 0.0,
+                is_irregular: false,
+            };
+        }
+        let mut n = normal;
+        let mut length = len3(n);
+        if length < 0.5 {
+            n = sub3(origins[count - 1], origins[0]);
+            length = len3(n);
+        }
+        if length <= 0.0 {
+            return Self {
+                minimum_interval: 0.0,
+                maximum_interval: 0.0,
+                mean_interval: 0.0,
+                largest_grid_deviation: 0.0,
+                is_irregular: false,
+            };
+        }
+        n = scale3(n, 1.0 / length);
+        let positions: Vec<f64> = origins.iter().map(|&o| dot3(o, n)).collect();
+        let intervals: Vec<f64> = (1..count)
+            .map(|i| (positions[i] - positions[i - 1]).abs())
+            .collect();
+        let minimum = intervals.iter().copied().fold(f64::INFINITY, f64::min);
+        let maximum = intervals.iter().copied().fold(0.0_f64, f64::max);
+        let span = positions[count - 1] - positions[0];
+        let mean = span.abs() / (count - 1) as f64;
+        if mean <= 1e-6 {
+            return Self {
+                minimum_interval: minimum,
+                maximum_interval: maximum,
+                mean_interval: mean,
+                largest_grid_deviation: 0.0,
+                is_irregular: maximum > 1e-3,
+            };
+        }
+        let step = span / (count - 1) as f64;
+        let deviation = (0..count)
+            .map(|i| (positions[i] - (positions[0] + step * (i as f64))).abs())
+            .fold(0.0_f64, f64::max);
+        let uneven = intervals
+            .iter()
+            .any(|&iv| (iv - mean).abs() > Self::RELATIVE_TOLERANCE * mean);
+        let off_grid = pixel_spacing > 0.0 && deviation > pixel_spacing / 2.0;
+        Self {
+            minimum_interval: minimum,
+            maximum_interval: maximum,
+            mean_interval: mean,
+            largest_grid_deviation: deviation,
+            is_irregular: uneven || off_grid,
+        }
+    }
+}
+
+/// Specific reason a series failed strict 3D volume validation.
+#[derive(Clone, Debug, PartialEq)]
+pub enum VolumeError {
+    TooFewSlices { count: usize },
+    IncompleteFrames { loaded: usize, expected: usize },
+    EmptyDimensions,
+    DimensionMismatch { slice: usize, expected: (u32, u32), got: (u32, u32) },
+    NonGrayscale { slice: usize },
+    MissingGeometry,
+    IrregularSpacing {
+        reason: String,
+        min_mm: f64,
+        max_mm: f64,
+        mean_mm: f64,
+        max_deviation_mm: f64,
+    },
+}
+
+impl VolumeError {
+    pub fn reason(&self) -> String {
+        match self {
+            Self::TooFewSlices { count } => {
+                format!("Series has only {count} slice(s); at least 3 slices are required for 3D.")
+            }
+            Self::IncompleteFrames { loaded, expected } => {
+                format!("Only {loaded} of {expected} slices are loaded.")
+            }
+            Self::EmptyDimensions => "Image dimensions are 0×0.".to_string(),
+            Self::DimensionMismatch { slice, expected, got } => format!(
+                "Slice {} has dimensions {}×{}, expected {}×{}.",
+                slice + 1,
+                got.0,
+                got.1,
+                expected.0,
+                expected.1
+            ),
+            Self::NonGrayscale { slice } => {
+                format!("Slice {} is RGB/color rather than calibrated greyscale.", slice + 1)
+            }
+            Self::MissingGeometry => {
+                "Slices are missing 3D ImagePositionPatient / ImageOrientationPatient metadata."
+                    .to_string()
+            }
+            Self::IrregularSpacing { reason, .. } => reason.clone(),
+        }
+    }
 }
 
 impl Volume3D {
     /// Builds a `Volume3D` from a `Series` and its decoded `Frame`s (one per slice).
     pub fn from_series(series: &Series, frames: &[Arc<Frame>]) -> Option<Arc<Self>> {
-        Self::from_series_with_force(series, frames, false)
+        Self::from_series_checked(series, frames, false).ok()
     }
 
     /// Builds a `Volume3D` from a `Series` and its decoded `Frame`s.
-    /// When `force` is `true`, even 1-2 slice stacks or RGB/non-standard series are
-    /// promoted into a 3D volume using fallback slice thickness / orientation.
+    /// When `force` is `true`, even 1-2 slice stacks or RGB/irregular series are
+    /// promoted into a 3D volume using fallback slice thickness / orientation,
+    /// with `geometry_verified = false`.
     pub fn from_series_with_force(
         series: &Series,
         frames: &[Arc<Frame>],
         force: bool,
     ) -> Option<Arc<Self>> {
+        Self::from_series_checked(series, frames, force).ok()
+    }
+
+    pub fn from_series_checked(
+        series: &Series,
+        frames: &[Arc<Frame>],
+        force: bool,
+    ) -> Result<Arc<Self>, VolumeError> {
         let min_frames = if force { 1 } else { 3 };
-        if frames.len() < min_frames || frames.len() != series.slices.len() {
-            return None;
+        if frames.len() != series.slices.len() {
+            return Err(VolumeError::IncompleteFrames {
+                loaded: frames.len(),
+                expected: series.slices.len(),
+            });
+        }
+        if frames.len() < min_frames {
+            return Err(VolumeError::TooFewSlices {
+                count: frames.len(),
+            });
         }
         let first = &frames[0];
         let last = &frames[frames.len() - 1];
@@ -69,18 +213,27 @@ impl Volume3D {
         let h = first.height as usize;
         let d = frames.len();
         if w == 0 || h == 0 {
-            return None;
+            return Err(VolumeError::EmptyDimensions);
         }
         // Verify all slices have matching dimensions (and greyscale unless forced).
-        for f in frames {
+        let mut has_non_gray = false;
+        for (i, f) in frames.iter().enumerate() {
             if f.width as usize != w || f.height as usize != h {
-                return None;
+                return Err(VolumeError::DimensionMismatch {
+                    slice: i,
+                    expected: (w as u32, h as u32),
+                    got: (f.width, f.height),
+                });
             }
-            if !force && !matches!(f.pixels, Pixels::Gray(_)) {
-                return None;
+            if !matches!(f.pixels, Pixels::Gray(_)) {
+                if !force {
+                    return Err(VolumeError::NonGrayscale { slice: i });
+                }
+                has_non_gray = true;
             }
         }
 
+        let uncalibrated = frames.iter().any(|f| f.spacing.is_none());
         let (row_sp, col_sp) = first.spacing.unwrap_or((1.0, 1.0));
         let dx = col_sp.max(0.1);
         let dy = row_sp.max(0.1);
@@ -104,6 +257,58 @@ impl Volume3D {
         } else {
             [0.0, 0.0, 1.0]
         };
+
+        let mut missing_geom = false;
+        let origins: Vec<[f64; 3]> = frames
+            .iter()
+            .enumerate()
+            .map(|(i, f)| {
+                f.origin
+                    .or_else(|| series.slices.get(i).and_then(|s| s.position))
+                    .unwrap_or_else(|| {
+                        missing_geom = true;
+                        [0.0, 0.0, i as f64]
+                    })
+            })
+            .collect();
+        if missing_geom || frames.iter().any(|f| !f.is_3d_plane) {
+            missing_geom = true;
+            if !force {
+                return Err(VolumeError::MissingGeometry);
+            }
+        }
+
+        let mut irregular_geom = false;
+        if d >= 2 && !missing_geom {
+            let min_px_sp = dx.min(dy);
+            let reg = SliceRegularity::evaluate(&origins, normal, min_px_sp);
+            if reg.is_irregular {
+                irregular_geom = true;
+                if !force {
+                    let reason = if reg.mean_interval <= 1e-6 {
+                        "Duplicate or coincident slice positions detected.".to_string()
+                    } else if reg.maximum_interval > reg.mean_interval * 1.5 {
+                        format!(
+                            "Missing slice or gap detected (interval {:.2}–{:.2} mm, mean {:.2} mm).",
+                            reg.minimum_interval, reg.maximum_interval, reg.mean_interval
+                        )
+                    } else {
+                        format!(
+                            "Variable slice intervals ({:.2}–{:.2} mm, max grid deviation {:.2} mm).",
+                            reg.minimum_interval, reg.maximum_interval, reg.largest_grid_deviation
+                        )
+                    };
+                    return Err(VolumeError::IrregularSpacing {
+                        reason,
+                        min_mm: reg.minimum_interval,
+                        max_mm: reg.maximum_interval,
+                        mean_mm: reg.mean_interval,
+                        max_deviation_mm: reg.largest_grid_deviation,
+                    });
+                }
+            }
+        }
+        let geometry_verified = !missing_geom && !irregular_geom && !has_non_gray && d >= 3;
 
         let origin0 = first
             .origin
@@ -229,7 +434,7 @@ impl Volume3D {
             width: (max_val - min_val).max(1.0),
         };
 
-        Some(Arc::new(Self {
+        Ok(Arc::new(Self {
             width: w,
             height: h,
             depth: d,
@@ -261,18 +466,38 @@ impl Volume3D {
             frame_of_reference_uid: series.frame_of_reference_uid.clone(),
             value_unit: ref_frame.value_unit,
             foreground_threshold: fg_thresh,
+            geometry_verified,
+            uncalibrated,
         }))
     }
 
     /// Converts a 3D point in patient LPS coordinates (mm) to continuous voxel coordinates `(fx, fy, fz)`.
+    /// Uses full 3×3 matrix inversion of `(row_dir*sx, col_dir*sy, slice_dir*sz)` so tilted gantries
+    /// round-trip accurately with `voxel_to_lps`.
     #[inline]
     pub fn lps_to_voxel(&self, pt_lps: [f64; 3]) -> [f64; 3] {
         let rel = sub3(pt_lps, self.origin_lps);
-        [
-            dot3(rel, self.row_dir) / self.spacing[0],
-            dot3(rel, self.col_dir) / self.spacing[1],
-            dot3(rel, self.slice_dir) / self.spacing[2],
-        ]
+        let a = scale3(self.row_dir, self.spacing[0]);
+        let b = scale3(self.col_dir, self.spacing[1]);
+        let c = scale3(self.slice_dir, self.spacing[2]);
+        let b_x_c = cross3(b, c);
+        let det = dot3(a, b_x_c);
+        if det.abs() > 1e-12 {
+            let inv_det = 1.0 / det;
+            let c_x_a = cross3(c, a);
+            let a_x_b = cross3(a, b);
+            [
+                dot3(rel, b_x_c) * inv_det,
+                dot3(rel, c_x_a) * inv_det,
+                dot3(rel, a_x_b) * inv_det,
+            ]
+        } else {
+            [
+                dot3(rel, self.row_dir) / self.spacing[0],
+                dot3(rel, self.col_dir) / self.spacing[1],
+                dot3(rel, self.slice_dir) / self.spacing[2],
+            ]
+        }
     }
 
     /// Converts continuous voxel coordinates `(fx, fy, fz)` to patient LPS coordinates (mm).
@@ -403,40 +628,22 @@ impl Volume3D {
         let v_step = scale3(plane.v_axis, out_sp_v);
         let bg = self.background_value();
 
-        // Compute resolution weights for this volume and any sibling orthogonal volumes (AX/COR/SAG).
-        // A stack with thick through-plane spacing `dz` has high resolution when `plane.normal`
-        // aligns with `vol.slice_dir`, and lower resolution when viewed edge-on.
-        let mut sources: Vec<(&Volume3D, f32)> = Vec::with_capacity(1 + siblings.len());
-        let weight_for = |v: &Volume3D| -> f32 {
-            let align = dot3(v.slice_dir, plane.normal).abs();
-            let eff_sp = (1.0 - align) * v.spacing[2] + align * v.spacing[0].min(v.spacing[1]);
-            (1.0 / (eff_sp * eff_sp).max(0.05)) as f32
-        };
-        sources.push((self, weight_for(self)));
-        for sib in siblings {
-            if !std::ptr::eq(sib.as_ref(), self) {
-                sources.push((sib.as_ref(), weight_for(sib)));
-            }
-        }
-
-        let sample_hybrid = |pt: [f64; 3]| -> Option<f32> {
-            if sources.len() == 1 {
-                self.sample_lps(pt)
+        // Fast exact path (A1): when the plane is native-aligned, Thin-slab, and sits on a
+        // source slice position, return the source slice's calibrated values bit-identically
+        // with zero trilinear resampling and zero sibling blending.
+        let exact_native_slice = if native_aligned && plane.slab_mode == SlabMode::Thin {
+            let vox = self.lps_to_voxel(slice_center);
+            let z_round = vox[2].round();
+            if (vox[2] - z_round).abs() < 1e-3
+                && z_round >= 0.0
+                && (z_round as usize) < self.depth
+            {
+                Some(z_round as usize)
             } else {
-                let mut w_sum = 0.0f32;
-                let mut v_sum = 0.0f32;
-                for &(vol, w) in &sources {
-                    if let Some(val) = vol.sample_lps(pt) {
-                        v_sum += val * w;
-                        w_sum += w;
-                    }
-                }
-                if w_sum > 0.0 {
-                    Some(v_sum / w_sum)
-                } else {
-                    None
-                }
+                None
             }
+        } else {
+            None
         };
 
         // Precompute thick-slab normal offsets when `slab_mode != Thin` and `slab_thickness_mm > out_sp`.
@@ -459,78 +666,120 @@ impl Volume3D {
                 Vec::new()
             };
 
-        let mut pixels = vec![bg; out_w * out_h];
-        let slab_mode = plane.slab_mode;
-        pixels
-            .par_chunks_mut(out_w)
-            .enumerate()
-            .for_each(|(y, row_buf)| {
-                let row_start = add3(top_left_lps, scale3(v_step, y as f64));
-                for (x, dst) in row_buf.iter_mut().enumerate() {
-                    let pt = add3(row_start, scale3(u_step, x as f64));
-                    if slab_offsets.is_empty() {
-                        if let Some(val) = sample_hybrid(pt) {
-                            *dst = val;
+        let pixels = if let Some(z_idx) = exact_native_slice {
+            let slice_len = self.width * self.height;
+            self.voxels[z_idx * slice_len..(z_idx + 1) * slice_len].to_vec()
+        } else {
+            // Compute resolution weights for this volume and any explicitly passed sibling volumes.
+            let mut sources: Vec<(&Volume3D, f32)> = Vec::with_capacity(1 + siblings.len());
+            let weight_for = |v: &Volume3D| -> f32 {
+                let align = dot3(v.slice_dir, plane.normal).abs();
+                let eff_sp =
+                    (1.0 - align) * v.spacing[2] + align * v.spacing[0].min(v.spacing[1]);
+                (1.0 / (eff_sp * eff_sp).max(0.05)) as f32
+            };
+            sources.push((self, weight_for(self)));
+            for sib in siblings {
+                if !std::ptr::eq(sib.as_ref(), self) {
+                    sources.push((sib.as_ref(), weight_for(sib)));
+                }
+            }
+
+            let sample_hybrid = |pt: [f64; 3]| -> Option<f32> {
+                if sources.len() == 1 {
+                    self.sample_lps(pt)
+                } else {
+                    let mut w_sum = 0.0f32;
+                    let mut v_sum = 0.0f32;
+                    for &(vol, w) in &sources {
+                        if let Some(val) = vol.sample_lps(pt) {
+                            v_sum += val * w;
+                            w_sum += w;
                         }
+                    }
+                    if w_sum > 0.0 {
+                        Some(v_sum / w_sum)
                     } else {
-                        match slab_mode {
-                            SlabMode::Thin => {
-                                if let Some(val) = sample_hybrid(pt) {
-                                    *dst = val;
-                                }
+                        None
+                    }
+                }
+            };
+
+            let mut buf = vec![bg; out_w * out_h];
+            let slab_mode = plane.slab_mode;
+            buf.par_chunks_mut(out_w)
+                .enumerate()
+                .for_each(|(y, row_buf)| {
+                    let row_start = add3(top_left_lps, scale3(v_step, y as f64));
+                    for (x, dst) in row_buf.iter_mut().enumerate() {
+                        let pt = add3(row_start, scale3(u_step, x as f64));
+                        if slab_offsets.is_empty() {
+                            if let Some(val) = sample_hybrid(pt) {
+                                *dst = val;
                             }
-                            SlabMode::Mip => {
-                                let mut best = f32::MIN;
-                                let mut any = false;
-                                for &off in &slab_offsets {
-                                    if let Some(val) = sample_hybrid(add3(pt, off)) {
-                                        if val > best {
-                                            best = val;
+                        } else {
+                            match slab_mode {
+                                SlabMode::Thin => {
+                                    if let Some(val) = sample_hybrid(pt) {
+                                        *dst = val;
+                                    }
+                                }
+                                SlabMode::Mip => {
+                                    let mut best = f32::MIN;
+                                    let mut any = false;
+                                    for &off in &slab_offsets {
+                                        if let Some(val) = sample_hybrid(add3(pt, off)) {
+                                            if val > best {
+                                                best = val;
+                                            }
+                                            any = true;
                                         }
-                                        any = true;
+                                    }
+                                    if any {
+                                        *dst = best;
                                     }
                                 }
-                                if any {
-                                    *dst = best;
-                                }
-                            }
-                            SlabMode::MinIp => {
-                                let mut best = f32::MAX;
-                                let mut any = false;
-                                for &off in &slab_offsets {
-                                    if let Some(val) = sample_hybrid(add3(pt, off)) {
-                                        if val < best {
-                                            best = val;
+                                SlabMode::MinIp => {
+                                    let mut best = f32::MAX;
+                                    let mut any = false;
+                                    for &off in &slab_offsets {
+                                        if let Some(val) = sample_hybrid(add3(pt, off)) {
+                                            if val < best {
+                                                best = val;
+                                            }
+                                            any = true;
                                         }
-                                        any = true;
+                                    }
+                                    if any {
+                                        *dst = best;
                                     }
                                 }
-                                if any {
-                                    *dst = best;
-                                }
-                            }
-                            SlabMode::Mean => {
-                                let mut sum = 0.0f32;
-                                let mut cnt = 0u32;
-                                for &off in &slab_offsets {
-                                    if let Some(val) = sample_hybrid(add3(pt, off)) {
-                                        sum += val;
-                                        cnt += 1;
+                                SlabMode::Mean => {
+                                    let mut sum = 0.0f32;
+                                    let mut cnt = 0u32;
+                                    for &off in &slab_offsets {
+                                        if let Some(val) = sample_hybrid(add3(pt, off)) {
+                                            sum += val;
+                                            cnt += 1;
+                                        }
                                     }
-                                }
-                                if cnt > 0 {
-                                    *dst = sum / (cnt as f32);
+                                    if cnt > 0 {
+                                        *dst = sum / (cnt as f32);
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            });
+                });
+            buf
+        };
 
-        let eff_thickness = if slab_offsets.is_empty() {
-            out_sp
-        } else {
+        let eff_thickness = if !slab_offsets.is_empty() {
             plane.slab_thickness_mm
+        } else if native_aligned {
+            self.spacing[2]
+        } else {
+            out_sp
         };
 
         let orientation = [
@@ -556,7 +805,11 @@ impl Volume3D {
             inverts: self.inverts,
             voi_lut_applied: false,
             slope: self.slope,
-            spacing: Some((out_sp_v, out_sp_u)),
+            spacing: if self.uncalibrated {
+                None
+            } else {
+                Some((out_sp_v, out_sp_u))
+            },
             pixel_ratio: 1.0,
             origin: Some(top_left_lps),
             orientation,
@@ -714,6 +967,36 @@ pub struct RigidTransform3D {
 }
 
 impl RigidTransform3D {
+    /// Exact identity transform (e.g., when both volumes share `FrameOfReferenceUID`).
+    pub fn identity(correlation: f64) -> Self {
+        Self {
+            pivot_source_lps: [0.0, 0.0, 0.0],
+            pivot_target_lps: [0.0, 0.0, 0.0],
+            rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            correlation,
+        }
+    }
+
+    /// Exact inverse transform (`target -> source`) using transpose of the orthogonal rotation.
+    pub fn inverse(&self) -> Self {
+        let r = self.rotation;
+        Self {
+            pivot_source_lps: self.pivot_target_lps,
+            pivot_target_lps: self.pivot_source_lps,
+            rotation: [
+                [r[0][0], r[1][0], r[2][0]],
+                [r[0][1], r[1][1], r[2][1]],
+                [r[0][2], r[1][2], r[2][2]],
+            ],
+            correlation: self.correlation,
+        }
+    }
+
+    /// Returns `true` when the registration score is high enough to trust 3D alignment.
+    pub fn is_reliable(&self) -> bool {
+        self.correlation >= 0.45
+    }
+
     /// Identity alignment around the volumes' foreground centroids (translation-only baseline).
     pub fn centroid_only(source: &Volume3D, target: &Volume3D) -> Self {
         Self {
@@ -728,6 +1011,14 @@ impl RigidTransform3D {
     /// by optimizing 3D translation `(dx, dy, dz)` and 3D rotation `(rx, ry, rz)`
     /// to maximize Normalized Cross-Correlation (NCC) of foreground voxels.
     pub fn register(source: &Volume3D, target: &Volume3D) -> Self {
+        if let (Some(a), Some(b)) = (
+            source.frame_of_reference_uid.as_deref(),
+            target.frame_of_reference_uid.as_deref(),
+        ) {
+            if !a.is_empty() && a == b {
+                return Self::identity(1.0);
+            }
+        }
         let pivot_a = source.foreground_centroid_lps;
         let pivot_b_init = target.foreground_centroid_lps;
 
@@ -1044,5 +1335,208 @@ mod tests {
         assert_eq!(forced.depth, 1);
         assert_eq!(forced.width, 4);
         assert_eq!(forced.height, 4);
+    }
+
+    #[test]
+    fn native_plane_mpr_is_bit_identical_to_source_slices_even_with_siblings() {
+        let make_frame = |z: usize, val_offset: f32| {
+            let pixels = (0..16)
+                .map(|i| val_offset + (z * 100 + i) as f32)
+                .collect::<Vec<_>>();
+            Arc::new(Frame {
+                width: 4,
+                height: 4,
+                pixels: Pixels::Gray(pixels),
+                stored_window: None,
+                full_window: Window {
+                    level: 50.0,
+                    width: 400.0,
+                },
+                bits_window: None,
+                inverts: false,
+                voi_lut_applied: false,
+                slope: 1.0,
+                spacing: Some((0.7, 0.7)),
+                pixel_ratio: 1.0,
+                origin: Some([0.0, 0.0, z as f64 * 1.5]),
+                orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                is_3d_plane: true,
+                frame_of_reference_uid: None,
+                slice_thickness: Some(1.5),
+                slice_location: Some(z as f64 * 1.5),
+                value_unit: "HU",
+            })
+        };
+        let frames: Vec<Arc<Frame>> = (0..4).map(|z| make_frame(z, 0.0)).collect();
+        let sib_frames: Vec<Arc<Frame>> = (0..4).map(|z| make_frame(z, 5000.0)).collect();
+        let make_series = |fs: &[Arc<Frame>]| Series {
+            uid: "1.2.3".into(),
+            number: 1,
+            description: "Test".into(),
+            modality: "CT".into(),
+            rows: 4,
+            columns: 4,
+            normal: Some([0.0, 0.0, 1.0]),
+            dominant_plane: crate::dicom_index::DominantPlane::Axial,
+            frame_of_reference_uid: None,
+            acquisition_time_secs: None,
+            acquisition_number: None,
+            convolution_kernel: None,
+            window_center: None,
+            window_width: None,
+            mpr_group_id: None,
+            slices: fs
+                .iter()
+                .enumerate()
+                .map(|(z, f)| crate::dicom_index::SliceRef {
+                    path: std::path::PathBuf::from(format!("s{z}.dcm")),
+                    frame: 0,
+                    instance: z as i64 + 1,
+                    position: f.origin,
+                    orientation: f.orientation,
+                    is_3d_plane: true,
+                    spacing: f.spacing,
+                    slice_location: f.slice_location,
+                    frame_of_reference_uid: None,
+                })
+                .collect(),
+        };
+        let vol = Volume3D::from_series(&make_series(&frames), &frames).unwrap();
+        let sib = Volume3D::from_series(&make_series(&sib_frames), &sib_frames).unwrap();
+
+        for k in 0..4 {
+            let mut plane = MprPlane3D::from_volume_native(&vol);
+            let z_lps = vol.voxel_to_lps([2.0, 2.0, k as f64]);
+            plane.offset_mm = dot3(sub3(z_lps, plane.center_lps), plane.normal);
+            let resliced = vol.reslice_plane(&[sib.clone()], &plane);
+            let Pixels::Gray(out) = &resliced.pixels else {
+                panic!("expected gray");
+            };
+            let Pixels::Gray(src) = &frames[k].pixels else {
+                panic!("expected gray");
+            };
+            assert_eq!(out, src, "slice {k} must be bit-identical");
+            assert_eq!(resliced.slice_thickness, Some(1.5));
+        }
+
+        let mut oblique = MprPlane3D::from_volume_native(&vol);
+        oblique.orbit_3d(25.0, 15.0, 0.0);
+        let no_sib = vol.reslice_plane(&[], &oblique);
+        let with_empty = vol.reslice_plane(&[], &oblique);
+        let (Pixels::Gray(a), Pixels::Gray(b)) = (&no_sib.pixels, &with_empty.pixels) else {
+            panic!("expected gray");
+        };
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn lps_to_voxel_round_trips_under_15_degree_gantry_tilt() {
+        let tilt = 15.0_f64.to_radians();
+        let slice_dir = [0.0, tilt.sin(), tilt.cos()];
+        let origins = [
+            [0.0, 0.0, 0.0],
+            [0.0, slice_dir[1] * 2.0, slice_dir[2] * 2.0],
+            [0.0, slice_dir[1] * 4.0, slice_dir[2] * 4.0],
+        ];
+        let mut frames = Vec::new();
+        let mut slices = Vec::new();
+        for (i, &orig) in origins.iter().enumerate() {
+            frames.push(Arc::new(Frame {
+                width: 8,
+                height: 8,
+                pixels: Pixels::Gray(vec![0.0; 64]),
+                stored_window: None,
+                full_window: Window { level: 0.0, width: 100.0 },
+                bits_window: None,
+                inverts: false,
+                voi_lut_applied: false,
+                slope: 1.0,
+                spacing: Some((0.5, 0.5)),
+                pixel_ratio: 1.0,
+                origin: Some(orig),
+                orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                is_3d_plane: true,
+                frame_of_reference_uid: None,
+                slice_thickness: Some(2.0),
+                slice_location: Some(orig[2]),
+                value_unit: "HU",
+            }));
+            slices.push(crate::dicom_index::SliceRef {
+                path: std::path::PathBuf::from(format!("tilt_{i}.dcm")),
+                frame: 0,
+                instance: (i + 1) as i64,
+                position: Some(orig),
+                orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                is_3d_plane: true,
+                spacing: Some((0.5, 0.5)),
+                slice_location: Some(orig[2]),
+                frame_of_reference_uid: None,
+            });
+        }
+        let series = Series {
+            uid: "tilt".into(),
+            number: 1,
+            description: "Tilted".into(),
+            modality: "CT".into(),
+            rows: 8,
+            columns: 8,
+            slices,
+            normal: Some([0.0, 0.0, 1.0]),
+            dominant_plane: crate::dicom_index::DominantPlane::Axial,
+            frame_of_reference_uid: None,
+            acquisition_time_secs: None,
+            acquisition_number: None,
+            convolution_kernel: None,
+            window_center: None,
+            window_width: None,
+            mpr_group_id: None,
+        };
+        let vol = Volume3D::from_series(&series, &frames).expect("tilted regular stack");
+        for target in [[1.25, 3.5, 0.75], [6.0, 2.0, 1.9], [0.0, 0.0, 2.0]] {
+            let lps = vol.voxel_to_lps(target);
+            let round = vol.lps_to_voxel(lps);
+            for axis in 0..3 {
+                assert!(
+                    (round[axis] - target[axis]).abs() < 1e-6,
+                    "axis {axis}: expected {}, got {}",
+                    target[axis],
+                    round[axis]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn regularity_detects_missing_and_duplicate_slices_and_allows_tilted_gantry() {
+        let regular_tilted = [
+            [0.0, 0.0, 0.0],
+            [0.0, 0.5, 1.9],
+            [0.0, 1.0, 3.8],
+            [0.0, 1.5, 5.7],
+        ];
+        assert!(!SliceRegularity::evaluate(&regular_tilted, [0.0, 0.0, 1.0], 0.5).is_irregular);
+
+        let missing_slice = [[0.0, 0.0, 0.0], [0.0, 0.0, 2.0], [0.0, 0.0, 6.0]];
+        assert!(SliceRegularity::evaluate(&missing_slice, [0.0, 0.0, 1.0], 0.5).is_irregular);
+
+        let duplicate_slice = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 2.0]];
+        assert!(SliceRegularity::evaluate(&duplicate_slice, [0.0, 0.0, 1.0], 0.5).is_irregular);
+    }
+
+    #[test]
+    fn rigid_transform_inverse_round_trips_points() {
+        let t = RigidTransform3D {
+            pivot_source_lps: [10.0, -5.0, 20.0],
+            pivot_target_lps: [-3.0, 12.0, 40.0],
+            rotation: euler_deg_to_matrix(12.0, -7.0, 23.0),
+            correlation: 0.88,
+        };
+        let inv = t.inverse();
+        let pt = [25.0, 14.0, -8.0];
+        let fwd = t.transform_point(pt);
+        let back = inv.transform_point(fwd);
+        for axis in 0..3 {
+            assert!((back[axis] - pt[axis]).abs() < 1e-9);
+        }
     }
 }

@@ -218,7 +218,11 @@ pub struct ViewerApp {
     failed: HashMap<SliceKey, String>,
     keep_radius: usize,
     volumes: HashMap<(usize, usize), Arc<Volume3D>>,
+    volume_errors: HashMap<(usize, usize), crate::volume::VolumeError>,
     registrations: HashMap<((usize, usize), (usize, usize)), RigidTransform3D>,
+    registrations_in_flight: std::collections::HashSet<((usize, usize), (usize, usize))>,
+    reg_tx: std::sync::mpsc::Sender<(((usize, usize), (usize, usize)), RigidTransform3D)>,
+    reg_rx: Receiver<(((usize, usize), (usize, usize)), RigidTransform3D)>,
     thumbnails: HashMap<(u64, usize, usize), TextureHandle>,
     thumbnails_queued: std::collections::HashSet<(u64, usize, usize)>,
     browser_search: String,
@@ -263,6 +267,9 @@ pub struct ViewerApp {
     show_update_modal: bool,
     db: Option<crate::db::Database>,
     lang: crate::i18n::Lang,
+    blend_siblings: bool,
+    gpu_bilinear: bool,
+    check_updates_on_startup: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -282,13 +289,25 @@ impl ViewerApp {
         visuals.selection.bg_fill = Color32::from_rgb(52, 130, 225);
         cc.egui_ctx.set_visuals(visuals);
         let ctx = cc.egui_ctx.clone();
+        dicom_index::cleanup_stale_zip_caches();
         let viewports = (0..MAX_VIEWPORTS).map(ViewportCell::new).collect();
         let db = crate::db::Database::open_default().ok();
+        let (reg_tx, reg_rx) = std::sync::mpsc::channel();
         let saved_lang = db
             .as_ref()
             .and_then(|d| d.get_setting("lang"))
             .map(|s| crate::i18n::Lang::from_code(&s))
             .unwrap_or(crate::i18n::Lang::En);
+        let saved_bilinear = db
+            .as_ref()
+            .and_then(|d| d.get_setting("gpu_bilinear"))
+            .map(|s| s != "0")
+            .unwrap_or(true);
+        let saved_startup_updates = db
+            .as_ref()
+            .and_then(|d| d.get_setting("check_updates_on_startup"))
+            .map(|s| s != "0")
+            .unwrap_or(true);
         let mut app = Self {
             index: None,
             scan: None,
@@ -305,7 +324,11 @@ impl ViewerApp {
             failed: HashMap::new(),
             keep_radius: 600,
             volumes: HashMap::new(),
+            volume_errors: HashMap::new(),
             registrations: HashMap::new(),
+            registrations_in_flight: std::collections::HashSet::new(),
+            reg_tx,
+            reg_rx,
             thumbnails: HashMap::new(),
             thumbnails_queued: std::collections::HashSet::new(),
             browser_search: String::new(),
@@ -345,8 +368,13 @@ impl ViewerApp {
             show_update_modal: false,
             db,
             lang: saved_lang,
+            blend_siblings: false,
+            gpu_bilinear: saved_bilinear,
+            check_updates_on_startup: saved_startup_updates,
         };
-        app.start_update_check(false, &cc.egui_ctx);
+        if app.check_updates_on_startup {
+            app.start_update_check(false, &cc.egui_ctx);
+        }
         if !initial.is_empty() {
             app.start_scan(initial);
         } else if let Some(db) = &app.db {
@@ -562,7 +590,11 @@ impl ViewerApp {
                 return Some((cached_f.clone(), cached_k));
             }
         }
-        let siblings = self.viewport_sibling_volumes(vp_idx);
+        let siblings = if self.blend_siblings {
+            self.viewport_sibling_volumes(vp_idx)
+        } else {
+            Vec::new()
+        };
         let frame = vol.reslice_plane(&siblings, &plane);
         let vp = &mut self.viewports[vp_idx];
         vp.mpr_seq = vp.mpr_seq.wrapping_add(1);
@@ -659,7 +691,11 @@ impl ViewerApp {
                 continue;
             }
             if let Some(reg) = self.registrations.get(&(leader_sel, other_sel)) {
-                let target_plane = reg.transform_plane(&leader_plane);
+                let target_plane = if reg.is_reliable() {
+                    reg.transform_plane(&leader_plane)
+                } else {
+                    leader_plane.clone()
+                };
                 if leader_mpr || other_mpr {
                     updates.push((other_idx, target_plane));
                 } else if let Some(vol) = self.volumes.get(&other_sel) {
@@ -1252,6 +1288,7 @@ impl ViewerApp {
                     self.failed.clear();
                     self.volumes.clear();
                     self.registrations.clear();
+                    self.registrations_in_flight.clear();
                     self.thumbnails.clear();
                     self.thumbnails_queued.clear();
                     for vp in &mut self.viewports {
@@ -1467,9 +1504,15 @@ impl ViewerApp {
                 }
             }
             if all_ready {
-                if let Some(vol) = Volume3D::from_series_with_force(&se, &frames, forced) {
-                    self.volumes.insert((study, series), vol);
-                    newly_built_volume = true;
+                match Volume3D::from_series_checked(&se, &frames, forced) {
+                    Ok(vol) => {
+                        self.volume_errors.remove(&(study, series));
+                        self.volumes.insert((study, series), vol);
+                        newly_built_volume = true;
+                    }
+                    Err(err) => {
+                        self.volume_errors.insert((study, series), err);
+                    }
                 }
             }
         }
@@ -1487,19 +1530,32 @@ impl ViewerApp {
                 } else if let Some(p) = self.effective_mpr_plane(vp_idx) {
                     self.set_viewport_mpr_plane(vp_idx, p, true);
                 }
+            } else if !self.forced_mpr_series.contains(&key) && self.volume_errors.contains_key(&key) {
+                self.pending_mpr_activate = None;
+                self.pending_force_mpr = Some(PendingForceMpr { vp_idx, key, ortho });
             }
         }
 
+        // Drain completed background 3D registrations (one direction + exact inverse).
+        let mut completed_reg = false;
+        while let Ok((pair, reg)) = self.reg_rx.try_recv() {
+            let inv = reg.inverse();
+            self.registrations_in_flight.remove(&pair);
+            self.registrations_in_flight.remove(&(pair.1, pair.0));
+            self.registrations.insert(pair, reg);
+            self.registrations.insert((pair.1, pair.0), inv);
+            completed_reg = true;
+        }
+
         // Automatically compute 3D Rigid Registration between the active viewport's volume
-        // and any other visible viewport's volume so cross-study comparisons lock in 3D!
-        if cell_count > 1 {
-            let leader_idx = self.active_viewport;
+        // and any other visible viewport's volume on a worker thread so the UI never freezes.
+        if !self.ortho_mpr_active && cell_count > 1 {
+            let leader_idx = self.active_viewport.min(cell_count - 1);
             if let (Some(leader_sel), Some(vol_a)) = (
                 self.viewports[leader_idx].selected,
                 self.viewport_volume(leader_idx).cloned(),
             ) {
-                let mut new_regs = Vec::new();
-                let mut auto_sync_needed = newly_built_volume;
+                let mut auto_sync_needed = newly_built_volume || completed_reg;
                 for other_idx in 0..cell_count {
                     if other_idx == leader_idx {
                         continue;
@@ -1510,17 +1566,32 @@ impl ViewerApp {
                     ) {
                         if other_sel != leader_sel
                             && !self.registrations.contains_key(&(leader_sel, other_sel))
+                            && !self.registrations_in_flight.contains(&(leader_sel, other_sel))
                         {
-                            let reg_ab = RigidTransform3D::register(&vol_a, &vol_b);
-                            let reg_ba = RigidTransform3D::register(&vol_b, &vol_a);
-                            new_regs.push(((leader_sel, other_sel), reg_ab));
-                            new_regs.push(((other_sel, leader_sel), reg_ba));
-                            auto_sync_needed = true;
+                            let same_for = matches!(
+                                (&vol_a.frame_of_reference_uid, &vol_b.frame_of_reference_uid),
+                                (Some(a), Some(b)) if !a.is_empty() && a == b
+                            );
+                            if same_for {
+                                let id = RigidTransform3D::identity(1.0);
+                                self.registrations.insert((leader_sel, other_sel), id.clone());
+                                self.registrations.insert((other_sel, leader_sel), id);
+                                auto_sync_needed = true;
+                            } else {
+                                self.registrations_in_flight.insert((leader_sel, other_sel));
+                                self.registrations_in_flight.insert((other_sel, leader_sel));
+                                let va = vol_a.clone();
+                                let vb = vol_b.clone();
+                                let tx = self.reg_tx.clone();
+                                let ctx_clone = ctx.clone();
+                                std::thread::spawn(move || {
+                                    let reg = RigidTransform3D::register(&va, &vb);
+                                    let _ = tx.send(((leader_sel, other_sel), reg));
+                                    ctx_clone.request_repaint();
+                                });
+                            }
                         }
                     }
-                }
-                for (pair, reg) in new_regs {
-                    self.registrations.insert(pair, reg);
                 }
                 if auto_sync_needed && self.sync_mode == SliceSynchronization::Absolute {
                     self.synchronize_mpr_followers(leader_idx);
@@ -1981,6 +2052,17 @@ impl ViewerApp {
                         ui.separator();
                         ui.toggle_value(&mut self.show_reference_lines, "Reference Lines");
                         ui.toggle_value(&mut self.show_annotations, "Annotations & Orientation");
+                        if ui
+                            .toggle_value(&mut self.gpu_bilinear, "Smooth Interpolation (Bilinear)")
+                            .changed()
+                        {
+                            if let Some(ref db) = self.db {
+                                let _ = db.set_setting(
+                                    "gpu_bilinear",
+                                    if self.gpu_bilinear { "1" } else { "0" },
+                                );
+                            }
+                        }
                         ui.separator();
                         ui.label("Slice Sync Mode:");
                         for mode in [
@@ -2277,6 +2359,24 @@ impl ViewerApp {
                     }
                     if changed {
                         self.set_viewport_mpr_plane(vp_idx, plane, true);
+                    }
+                }
+                let sib_count = self.viewport_sibling_volumes(vp_idx).len();
+                if sib_count > 0 {
+                    if ui
+                        .checkbox(&mut self.blend_siblings, "Blend Siblings")
+                        .on_hover_text("Sample neighboring series to fill gaps in oblique MPR (disables ROI stats)")
+                        .changed()
+                    {
+                        for vp in &mut self.viewports {
+                            vp.mpr_cached = None;
+                        }
+                    }
+                    if self.blend_siblings {
+                        ui.colored_label(
+                            Color32::from_rgb(255, 200, 80),
+                            format!("Blended from {} series (ROI stats disabled)", sib_count + 1),
+                        );
                     }
                 }
             }
@@ -2991,6 +3091,10 @@ impl ViewerApp {
             }
         }
 
+        // Preserve the unconvolved source frame for pixel value readout & ROI statistics
+        // (matching IsiX DCMPix+DisplaySource: convolution is presentation-only).
+        let source_frame = frame.clone();
+
         // Apply 2D Spatial Convolution Filter if active on this viewport (cached per slice & filter).
         if let (Some(conv_idx), Some(base_key)) = (self.viewports[vp_idx].convolution_idx, cur_key)
         {
@@ -3042,18 +3146,13 @@ impl ViewerApp {
             }
             if px.x >= 0.0 && px.y >= 0.0 {
                 let (x, y) = (px.x as u32, px.y as u32);
-                if let Some(val_str) = frame.value_at(x, y) {
-                    let modality = self
-                        .viewport_series(vp_idx)
-                        .map(|s| s.modality.as_str())
-                        .unwrap_or("");
-                    let unit = if modality == "CT" { " HU" } else { "" };
-                    let coords_3d = frame
+                if let Some(val_str) = source_frame.value_at(x, y) {
+                    let coords_3d = source_frame
                         .patient_coords_at(px.x as f64, px.y as f64)
                         .map(|[cx, cy, cz]| format!("   XYZ: ({cx:.1}, {cy:.1}, {cz:.1}) mm"))
                         .unwrap_or_default();
                     self.cursor_info =
-                        Some(format!("X: {x}  Y: {y}   Val: {val_str}{unit}{coords_3d}"));
+                        Some(format!("X: {x}  Y: {y}   Val: {val_str}{coords_3d}"));
                 }
             }
         } else if vp_idx == self.active_viewport {
@@ -3088,7 +3187,69 @@ impl ViewerApp {
             }
         }
 
-        self.draw_measures(&painter, vp_idx, img, &frame);
+        let unverified_geom = self.viewports.get(vp_idx).is_some_and(|v| v.mpr_enabled)
+            && self
+                .viewport_volume(vp_idx)
+                .is_some_and(|v| !v.geometry_verified);
+        if unverified_geom {
+            painter.text(
+                pos2(view.center().x, view.max.y - 26.0),
+                Align2::CENTER_BOTTOM,
+                "Geometry not verified: measurements disabled",
+                FontId::proportional(11.5),
+                Color32::from_rgb(255, 195, 80),
+            );
+        }
+        if self.tiling.cell_count() > 1 && !self.ortho_mpr_active {
+            let leader_idx = self.active_viewport.min(self.tiling.cell_count() - 1);
+            if let (Some(leader_sel), Some(cur_sel)) = (
+                self.viewports[leader_idx].selected,
+                self.viewports[vp_idx].selected,
+            ) {
+                if leader_sel != cur_sel {
+                    let align_text = if self.registrations_in_flight.contains(&(leader_sel, cur_sel))
+                    {
+                        Some(("Aligning…".to_string(), Color32::from_rgb(130, 210, 255)))
+                    } else if let Some(reg) = self.registrations.get(&(leader_sel, cur_sel)) {
+                        let same_for = matches!(
+                            (
+                                self.volumes.get(&leader_sel).and_then(|v| v.frame_of_reference_uid.as_deref()),
+                                self.volumes.get(&cur_sel).and_then(|v| v.frame_of_reference_uid.as_deref()),
+                            ),
+                            (Some(a), Some(b)) if !a.is_empty() && a == b
+                        );
+                        if same_for {
+                            Some((
+                                "Same Frame of Reference".to_string(),
+                                Color32::from_rgb(130, 220, 155),
+                            ))
+                        } else if reg.is_reliable() {
+                            Some((
+                                format!("Auto-aligned (approximate) · score {:.2}", reg.correlation),
+                                Color32::from_rgb(130, 220, 155),
+                            ))
+                        } else {
+                            Some((
+                                "Not aligned: synced by position".to_string(),
+                                Color32::from_rgb(255, 200, 80),
+                            ))
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some((txt, col)) = align_text {
+                        painter.text(
+                            pos2(view.center().x, view.min.y + 42.0),
+                            Align2::CENTER_TOP,
+                            txt,
+                            FontId::proportional(11.0),
+                            col,
+                        );
+                    }
+                }
+            }
+        }
+        self.draw_measures(&painter, vp_idx, img, &source_frame);
         if self.show_annotations {
             self.draw_scale_bar(&painter, vp_idx, view, img, &frame);
             self.draw_orientation_letters(&painter, vp_idx, view, &frame);
@@ -3230,7 +3391,7 @@ impl ViewerApp {
         }
         clipped.circle_stroke(c, 4.0, Stroke::new(1.25, badge_color));
         clipped.text(
-            pos2(view.center().x, view.min.y + 8.0),
+            pos2(view.center().x, view.min.y + 26.0),
             Align2::CENTER_TOP,
             badge,
             FontId::proportional(12.0),
@@ -3349,6 +3510,7 @@ impl ViewerApp {
             invert,
             clut,
             uv_map,
+            bilinear: self.gpu_bilinear,
         }
     }
 
@@ -4273,6 +4435,15 @@ impl ViewerApp {
             );
         };
 
+        let unverified_geom = self.viewports.get(vp_idx).is_some_and(|v| v.mpr_enabled)
+            && self
+                .viewport_volume(vp_idx)
+                .is_some_and(|v| !v.geometry_verified);
+        let roi_stats_disabled = unverified_geom
+            || (self.blend_siblings
+                && self.viewports.get(vp_idx).is_some_and(|v| v.mpr_enabled)
+                && !self.viewport_sibling_volumes(vp_idx).is_empty());
+
         let unit = self
             .viewport_series(vp_idx)
             .map(|se| {
@@ -4339,12 +4510,16 @@ impl ViewerApp {
                     painter.line_segment([s(a), s(b)], stroke);
                     painter.circle_filled(s(a), 2.5, color);
                     painter.circle_filled(s(b), 2.5, color);
-                    let eval = roi::evaluate_length(
-                        f,
-                        RoiPoint::new(a.x as f64, a.y as f64),
-                        RoiPoint::new(b.x as f64, b.y as f64),
-                    );
-                    let lines = eval.format_callout(RoiKind::Length, unit, "");
+                    let lines = if unverified_geom {
+                        vec!["Measurements disabled (unverified 3D geometry)".to_string()]
+                    } else {
+                        let eval = roi::evaluate_length(
+                            f,
+                            RoiPoint::new(a.x as f64, a.y as f64),
+                            RoiPoint::new(b.x as f64, b.y as f64),
+                        );
+                        eval.format_callout(RoiKind::Length, unit, "")
+                    };
                     draw_callout(s(b), &lines, color);
                 }
                 &Measure::Angle(a, v, b) => {
@@ -4353,13 +4528,17 @@ impl ViewerApp {
                     painter.circle_filled(s(a), 2.5, color);
                     painter.circle_filled(s(v), 3.0, color);
                     painter.circle_filled(s(b), 2.5, color);
-                    let eval = roi::evaluate_angle(
-                        f,
-                        RoiPoint::new(a.x as f64, a.y as f64),
-                        RoiPoint::new(v.x as f64, v.y as f64),
-                        RoiPoint::new(b.x as f64, b.y as f64),
-                    );
-                    let lines = eval.format_callout(RoiKind::Angle, unit, "");
+                    let lines = if unverified_geom {
+                        vec!["Measurements disabled (unverified 3D geometry)".to_string()]
+                    } else {
+                        let eval = roi::evaluate_angle(
+                            f,
+                            RoiPoint::new(a.x as f64, a.y as f64),
+                            RoiPoint::new(v.x as f64, v.y as f64),
+                            RoiPoint::new(b.x as f64, b.y as f64),
+                        );
+                        eval.format_callout(RoiKind::Angle, unit, "")
+                    };
                     draw_callout(s(v), &lines, color);
                 }
                 &Measure::Oval(a, b) => {
@@ -4378,13 +4557,17 @@ impl ViewerApp {
                     }
                     painter.circle_filled(s(a), 2.5, roi_color);
                     painter.circle_filled(s(b), 2.5, roi_color);
-                    let eval = roi::evaluate_region(
-                        f,
-                        RoiKind::Oval,
-                        &outline,
-                        Some(RoiSize::new(roi_rect.size.width, roi_rect.size.height)),
-                    );
-                    let lines = eval.format_callout(RoiKind::Oval, unit, "");
+                    let lines = if roi_stats_disabled {
+                        vec!["ROI stats disabled (blended)".to_string()]
+                    } else {
+                        let eval = roi::evaluate_region(
+                            f,
+                            RoiKind::Oval,
+                            &outline,
+                            Some(RoiSize::new(roi_rect.size.width, roi_rect.size.height)),
+                        );
+                        eval.format_callout(RoiKind::Oval, unit, "")
+                    };
                     let anchor = pos2(
                         (roi_rect.origin.x + roi_rect.size.width) as f32,
                         roi_rect.origin.y as f32,
@@ -4410,8 +4593,12 @@ impl ViewerApp {
                             roi_color,
                         );
                     }
-                    let eval = roi::evaluate_region(f, RoiKind::Rectangle, &outline, None);
-                    let lines = eval.format_callout(RoiKind::Rectangle, unit, "");
+                    let lines = if roi_stats_disabled {
+                        vec!["ROI stats disabled (blended)".to_string()]
+                    } else {
+                        let eval = roi::evaluate_region(f, RoiKind::Rectangle, &outline, None);
+                        eval.format_callout(RoiKind::Rectangle, unit, "")
+                    };
                     let anchor = pos2(roi_rect.max_x() as f32, roi_rect.min_y() as f32);
                     draw_callout(s(anchor), &lines, roi_color);
                 }
@@ -4426,8 +4613,12 @@ impl ViewerApp {
                         for &pt in pts {
                             painter.circle_filled(s(pt), 2.5, roi_color);
                         }
-                        let eval = roi::evaluate_region(f, RoiKind::ClosedPolygon, &outline, None);
-                        let lines = eval.format_callout(RoiKind::ClosedPolygon, unit, "");
+                        let lines = if roi_stats_disabled {
+                            vec!["ROI stats disabled (blended)".to_string()]
+                        } else {
+                            let eval = roi::evaluate_region(f, RoiKind::ClosedPolygon, &outline, None);
+                            eval.format_callout(RoiKind::ClosedPolygon, unit, "")
+                        };
                         draw_callout(s(pts[0]), &lines, roi_color);
                     }
                 }
@@ -4449,9 +4640,13 @@ impl ViewerApp {
                             .collect();
                         painter.add(egui::Shape::closed_line(scr_pts, roi_stroke));
                         if active_outline.len() >= 3 {
-                            let eval =
-                                roi::evaluate_region(f, RoiKind::Pencil, active_outline, None);
-                            let lines = eval.format_callout(RoiKind::Pencil, unit, "");
+                            let lines = if roi_stats_disabled {
+                                vec!["ROI stats disabled (blended)".to_string()]
+                            } else {
+                                let eval =
+                                    roi::evaluate_region(f, RoiKind::Pencil, active_outline, None);
+                                eval.format_callout(RoiKind::Pencil, unit, "")
+                            };
                             draw_callout(s(pts[0]), &lines, roi_color);
                         }
                     }
@@ -4462,8 +4657,12 @@ impl ViewerApp {
                     painter.line_segment([sp - vec2(r, 0.0), sp + vec2(r, 0.0)], stroke);
                     painter.line_segment([sp - vec2(0.0, r), sp + vec2(0.0, r)], stroke);
                     painter.circle_stroke(sp, 3.0, stroke);
-                    let eval = roi::evaluate_point(f, RoiPoint::new(pt.x as f64, pt.y as f64));
-                    let lines = eval.format_callout(RoiKind::Point, unit, "");
+                    let lines = if roi_stats_disabled {
+                        vec!["ROI stats disabled (blended)".to_string()]
+                    } else {
+                        let eval = roi::evaluate_point(f, RoiPoint::new(pt.x as f64, pt.y as f64));
+                        eval.format_callout(RoiKind::Point, unit, "")
+                    };
                     draw_callout(sp, &lines, color);
                 }
             }
@@ -4649,7 +4848,8 @@ impl ViewerApp {
         let Some(key) = self.viewports[vp_idx].selected else {
             return;
         };
-        let is_capable = self.series_at(key).is_some_and(|s| s.is_mpr_capable());
+        let is_capable = self.series_at(key).is_some_and(|s| s.is_mpr_capable())
+            && !self.volume_errors.contains_key(&key);
         let already_forced = self.forced_mpr_series.contains(&key);
         let has_vol = self.viewport_volume(vp_idx).is_some();
 
@@ -4689,6 +4889,10 @@ impl ViewerApp {
                 ui.set_max_width(420.0);
                 ui.label(egui::RichText::new(tr.force_3d_headline).strong());
                 ui.add_space(6.0);
+                if let Some(err) = self.volume_errors.get(&req.key) {
+                    ui.colored_label(Color32::from_rgb(255, 200, 80), err.reason());
+                    ui.add_space(6.0);
+                }
                 ui.label(tr.force_3d_body);
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
@@ -4740,7 +4944,7 @@ impl ViewerApp {
         let mut open = true;
         let status = self.update_status.clone();
         let mut action_check = false;
-        let mut action_install: Option<(String, String)> = None;
+        let mut action_install: Option<(String, Option<String>, Option<String>, String)> = None;
         let mut action_restart = false;
 
         egui::Window::new(tr.updates_title)
@@ -4802,11 +5006,24 @@ impl ViewerApp {
                                     .button(egui::RichText::new(tr.download_install).strong())
                                     .clicked()
                                 {
-                                    action_install = Some((url.clone(), info.tag_name.clone()));
+                                    action_install = Some((
+                                        url.clone(),
+                                        info.asset_name.clone(),
+                                        info.sha256sums_url.clone(),
+                                        info.tag_name.clone(),
+                                    ));
                                 }
                             }
                             ui.hyperlink_to(tr.open_github, &info.html_url);
                         });
+                        ui.add_space(6.0);
+                        ui.label(
+                            egui::RichText::new(
+                                "Note: Release binaries are unsigned; integrity is verified via SHA256SUMS.",
+                            )
+                            .small()
+                            .color(Color32::from_gray(160)),
+                        );
                     }
                     crate::updater::UpdateStatus::Installing => {
                         ui.horizontal(|ui| {
@@ -4841,6 +5058,19 @@ impl ViewerApp {
                         }
                     }
                 }
+                ui.add_space(8.0);
+                ui.separator();
+                if ui
+                    .checkbox(&mut self.check_updates_on_startup, "Check for updates on startup")
+                    .changed()
+                {
+                    if let Some(ref db) = self.db {
+                        let _ = db.set_setting(
+                            "check_updates_on_startup",
+                            if self.check_updates_on_startup { "1" } else { "0" },
+                        );
+                    }
+                }
             });
 
         if !open {
@@ -4849,12 +5079,18 @@ impl ViewerApp {
         if action_check {
             self.start_update_check(true, ctx);
         }
-        if let Some((url, tag)) = action_install {
+        if let Some((url, asset_name, sha256sums_url, tag)) = action_install {
             self.update_status = crate::updater::UpdateStatus::Installing;
             let ctx_clone = ctx.clone();
-            self.install_rx = Some(crate::updater::spawn_install(url, tag, move || {
-                ctx_clone.request_repaint();
-            }));
+            self.install_rx = Some(crate::updater::spawn_install(
+                url,
+                asset_name,
+                sha256sums_url,
+                tag,
+                move || {
+                    ctx_clone.request_repaint();
+                },
+            ));
         }
         if action_restart {
             if let Err(e) = crate::updater::restart_application() {

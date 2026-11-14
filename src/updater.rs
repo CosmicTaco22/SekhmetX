@@ -1,10 +1,11 @@
 //! In-app GitHub Releases update checker and self-updater for SekhmetX.
 
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::mpsc::{channel, Receiver};
 
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
 const REPO_LATEST_URL: &str =
     "https://api.github.com/repos/CosmicTaco22/SekhmetX/releases/latest";
@@ -15,6 +16,8 @@ pub struct ReleaseInfo {
     pub html_url: String,
     pub notes: String,
     pub download_url: Option<String>,
+    pub asset_name: Option<String>,
+    pub sha256sums_url: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -106,13 +109,19 @@ pub fn check_latest_release() -> Result<Option<ReleaseInfo>> {
     }
 
     let suffix = platform_asset_suffix();
-    let download_url = if suffix.is_empty() {
+    let sha256sums_url = rel
+        .assets
+        .iter()
+        .find(|a| a.name == "SHA256SUMS")
+        .map(|a| a.browser_download_url.clone());
+    let matched_asset = if suffix.is_empty() {
         None
     } else {
-        rel.assets
-            .into_iter()
-            .find(|a| a.name.ends_with(suffix))
-            .map(|a| a.browser_download_url)
+        rel.assets.into_iter().find(|a| a.name.ends_with(suffix))
+    };
+    let (asset_name, download_url) = match matched_asset {
+        Some(a) => (Some(a.name), Some(a.browser_download_url)),
+        None => (None, None),
     };
 
     Ok(Some(ReleaseInfo {
@@ -120,6 +129,8 @@ pub fn check_latest_release() -> Result<Option<ReleaseInfo>> {
         html_url: rel.html_url,
         notes: rel.body,
         download_url,
+        asset_name,
+        sha256sums_url,
     }))
 }
 
@@ -135,47 +146,122 @@ pub fn spawn_check(
     rx
 }
 
-pub fn download_and_install(url: &str) -> Result<()> {
+pub fn parse_sha256sum(contents: &str, asset_name: &str) -> Option<String> {
+    for line in contents.lines() {
+        let mut parts = line.split_whitespace();
+        let Some(hash) = parts.next() else { continue };
+        let Some(name) = parts.next() else { continue };
+        let clean_name = name.trim_start_matches('*');
+        if clean_name == asset_name
+            || clean_name.rsplit(['/', '\\']).next() == Some(asset_name)
+        {
+            if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Some(hash.to_ascii_lowercase());
+            }
+        }
+    }
+    None
+}
+
+fn fetch_expected_sha256(
+    agent: &ureq::Agent,
+    user_agent: &str,
+    sha256sums_url: &str,
+    asset_name: &str,
+) -> Result<String> {
+    let body = agent
+        .get(sha256sums_url)
+        .header("User-Agent", user_agent)
+        .call()
+        .context("Failed to download SHA256SUMS")?
+        .body_mut()
+        .read_to_string()
+        .context("Failed to read SHA256SUMS")?;
+    parse_sha256sum(&body, asset_name)
+        .with_context(|| format!("No SHA-256 entry found for `{asset_name}` in SHA256SUMS"))
+}
+
+pub fn download_and_install(
+    url: &str,
+    asset_name: Option<&str>,
+    sha256sums_url: Option<&str>,
+) -> Result<()> {
     let agent = ureq::Agent::new_with_defaults();
     let user_agent = format!("SekhmetX/{}", env!("CARGO_PKG_VERSION"));
+
+    let expected_sha256 = match (sha256sums_url, asset_name) {
+        (Some(sums_url), Some(name)) => {
+            Some(fetch_expected_sha256(&agent, &user_agent, sums_url, name)?)
+        }
+        _ => bail!("Release is missing SHA256SUMS checksum verification"),
+    };
+
     let mut resp = agent
         .get(url)
         .header("User-Agent", &user_agent)
         .call()
         .context("Failed to download release archive")?;
 
-    let mut archive_bytes = Vec::new();
-    resp.body_mut()
-        .as_reader()
-        .take(200 * 1024 * 1024)
-        .read_to_end(&mut archive_bytes)
-        .context("Failed to read release archive")?;
-
     let bin_name = target_binary_name();
     let tmp_dir = std::env::temp_dir().join(format!("sekhmetx-update-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp_dir);
     std::fs::create_dir_all(&tmp_dir)?;
+    let archive_path = tmp_dir.join("release-archive");
     let tmp_bin = tmp_dir.join(bin_name);
 
+    const MAX_ARCHIVE_BYTES: u64 = 200 * 1024 * 1024;
+    let mut reader = resp.body_mut().as_reader().take(MAX_ARCHIVE_BYTES + 1);
+    let mut out_archive = std::fs::File::create(&archive_path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = reader.read(&mut buf).context("Failed to stream release archive")?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > MAX_ARCHIVE_BYTES {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            bail!("Release archive exceeds 200 MiB safety limit");
+        }
+        hasher.update(&buf[..n]);
+        out_archive.write_all(&buf[..n])?;
+    }
+    out_archive.flush()?;
+    drop(out_archive);
+
+    let actual_sha256 = format!("{:x}", hasher.finalize());
+    if let Some(expected) = expected_sha256 {
+        if actual_sha256 != expected {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
+            bail!(
+                "SHA-256 checksum mismatch for update archive (expected {expected}, got {actual_sha256})"
+            );
+        }
+    }
+
     if url.ends_with(".zip") {
-        let cursor = std::io::Cursor::new(&archive_bytes);
-        let mut zip = zip::ZipArchive::new(cursor).context("Invalid .zip release archive")?;
+        let file = std::fs::File::open(&archive_path)?;
+        let mut zip = zip::ZipArchive::new(file).context("Invalid .zip release archive")?;
         let mut found = false;
         for i in 0..zip.len() {
-            let mut file = zip.by_index(i)?;
-            let name = file.name().rsplit('/').next().unwrap_or(file.name());
+            let mut entry = zip.by_index(i)?;
+            let name = entry.name().rsplit('/').next().unwrap_or(entry.name());
             if name.eq_ignore_ascii_case(bin_name) {
                 let mut out = std::fs::File::create(&tmp_bin)?;
-                std::io::copy(&mut file, &mut out)?;
+                std::io::copy(&mut entry, &mut out)?;
                 found = true;
                 break;
             }
         }
         if !found {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
             bail!("Binary `{bin_name}` not found inside release archive");
         }
     } else if url.ends_with(".tar.gz") {
-        let gz = flate2::read::GzDecoder::new(std::io::Cursor::new(&archive_bytes));
+        let file = std::fs::File::open(&archive_path)?;
+        let gz = flate2::read::GzDecoder::new(file);
         let mut tar = tar::Archive::new(gz);
         let mut found = false;
         for entry in tar.entries()? {
@@ -189,9 +275,11 @@ pub fn download_and_install(url: &str) -> Result<()> {
             }
         }
         if !found {
+            let _ = std::fs::remove_dir_all(&tmp_dir);
             bail!("Binary `{bin_name}` not found inside release archive");
         }
     } else {
+        let _ = std::fs::remove_dir_all(&tmp_dir);
         bail!("Unsupported release archive format: {url}");
     }
 
@@ -210,12 +298,19 @@ pub fn download_and_install(url: &str) -> Result<()> {
 
 pub fn spawn_install(
     url: String,
+    asset_name: Option<String>,
+    sha256sums_url: Option<String>,
     tag: String,
     on_done: impl Fn() + Send + 'static,
 ) -> Receiver<Result<String>> {
     let (tx, rx) = channel();
     std::thread::spawn(move || {
-        let res = download_and_install(&url).map(|()| tag);
+        let res = download_and_install(
+            &url,
+            asset_name.as_deref(),
+            sha256sums_url.as_deref(),
+        )
+        .map(|()| tag);
         let _ = tx.send(res);
         on_done();
     });
@@ -242,5 +337,17 @@ mod tests {
         assert!(is_newer("v0.3.0", "0.2.1"));
         assert!(!is_newer("v0.2.1", "0.2.1"));
         assert!(!is_newer("v0.2.0", "0.2.1"));
+    }
+
+    #[test]
+    fn parse_sha256sum_extracts_matching_asset_digest() {
+        let sums = "\
+aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  sekhmetx-v0.2.3-linux-x86_64.tar.gz\n\
+BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB *sekhmetx-v0.2.3-windows-x86_64.zip\n";
+        assert_eq!(
+            parse_sha256sum(sums, "sekhmetx-v0.2.3-windows-x86_64.zip").as_deref(),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        );
+        assert_eq!(parse_sha256sum(sums, "missing.zip"), None);
     }
 }

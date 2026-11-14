@@ -172,6 +172,11 @@ jobs:
           open("RELEASE_NOTES.md", "w", encoding="utf-8").write(text + "\n")
           PY
 
+      - name: Generate SHA256SUMS
+        run: |
+          cd artifacts
+          sha256sum *.zip *.tar.gz > SHA256SUMS
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -182,3 +187,4 @@ jobs:
           files: |
             artifacts/*.zip
             artifacts/*.tar.gz
+            artifacts/SHA256SUMS

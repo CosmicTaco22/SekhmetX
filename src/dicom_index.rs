@@ -371,16 +371,53 @@ fn is_zip_file(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
 }
 
-/// Removes temporary directories created while opening `.zip` archives.
-pub fn cleanup_zip_cache() {
-    let primary = std::env::temp_dir().join("rdicom-zip-cache");
-    let _ = std::fs::remove_dir_all(primary);
-    let fallback = PathBuf::from(".rdicom-zip-cache");
-    let _ = std::fs::remove_dir_all(fallback);
+const MAX_ZIP_ENTRIES: usize = 20_000;
+const MAX_ZIP_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
+const MAX_ZIP_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+fn process_zip_cache_dir() -> PathBuf {
+    std::env::temp_dir().join(format!("sekhmetx-zip-{}", std::process::id()))
 }
 
-/// Extracts a `.zip` archive into a deterministic temporary directory under `std::env::temp_dir()`
-/// so all extracted DICOM slices can be indexed and decoded on demand.
+/// Removes temporary directories created while opening `.zip` archives (current process + legacy/stale).
+pub fn cleanup_zip_cache() {
+    let _ = std::fs::remove_dir_all(process_zip_cache_dir());
+    let _ = std::fs::remove_dir_all(std::env::temp_dir().join("rdicom-zip-cache"));
+    let _ = std::fs::remove_dir_all(PathBuf::from(".rdicom-zip-cache"));
+}
+
+/// Cleans up stale `sekhmetx-zip-*` directories left behind by previous crashed runs (older than 24h)
+/// as well as legacy `rdicom-zip-cache` directories.
+pub fn cleanup_stale_zip_caches() {
+    let _ = std::fs::remove_dir_all(std::env::temp_dir().join("rdicom-zip-cache"));
+    let _ = std::fs::remove_dir_all(PathBuf::from(".rdicom-zip-cache"));
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let own_name = format!("sekhmetx-zip-{}", std::process::id());
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name_str) = name.to_str() else {
+            continue;
+        };
+        if !name_str.starts_with("sekhmetx-zip-") || name_str == own_name {
+            continue;
+        }
+        let is_old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age.as_secs() >= 86_400);
+        if is_old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Extracts a `.zip` archive into a per-process temporary directory under `std::env::temp_dir()`
+/// using streaming `zip::ZipArchive` with path-traversal and size/entry caps.
 fn extract_zip_to_temp(zip_path: &Path) -> Option<PathBuf> {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
@@ -393,165 +430,78 @@ fn extract_zip_to_temp(zip_path: &Path) -> Option<PathBuf> {
         modified.hash(&mut hasher);
     }
     let hash = hasher.finish();
-    let sub = format!("zip-{hash:016x}");
-    let primary = std::env::temp_dir().join("rdicom-zip-cache").join(&sub);
-    let dest_dir = if std::fs::create_dir_all(&primary).is_ok() {
-        primary
-    } else {
-        let fallback = PathBuf::from(".rdicom-zip-cache").join(&sub);
-        std::fs::create_dir_all(&fallback).ok()?;
-        fallback
-    };
+    let dest_dir = process_zip_cache_dir().join(format!("zip-{hash:016x}"));
     let marker = dest_dir.join(".extracted_ok");
     if marker.exists() {
         return Some(dest_dir);
     }
+    std::fs::create_dir_all(&dest_dir).ok()?;
 
-    let data = std::fs::read(zip_path).ok()?;
-    // Parse ZIP local file headers or End of Central Directory (EOCD).
-    if extract_zip_bytes(&data, &dest_dir).is_ok() {
+    if extract_zip_streaming(
+        zip_path,
+        &dest_dir,
+        MAX_ZIP_ENTRIES,
+        MAX_ZIP_ENTRY_BYTES,
+        MAX_ZIP_TOTAL_BYTES,
+    )
+    .is_ok()
+    {
         let _ = std::fs::write(&marker, b"ok");
-        return Some(dest_dir);
+        Some(dest_dir)
+    } else {
+        let _ = std::fs::remove_dir_all(&dest_dir);
+        None
     }
-
-    // Fallback to system `tar -xf` (available on Windows 10/11, macOS, and Linux) for ZIP64/unusual archives.
-    let status = std::process::Command::new("tar")
-        .arg("-xf")
-        .arg(zip_path)
-        .arg("-C")
-        .arg(&dest_dir)
-        .status()
-        .ok()?;
-    if status.success() {
-        let _ = std::fs::write(&marker, b"ok");
-        return Some(dest_dir);
-    }
-    None
 }
 
-fn extract_zip_bytes(data: &[u8], dest_dir: &Path) -> anyhow::Result<()> {
-    use flate2::read::DeflateDecoder;
-    use std::io::Read;
+fn extract_zip_streaming(
+    zip_path: &Path,
+    dest_dir: &Path,
+    max_entries: usize,
+    max_entry_bytes: u64,
+    max_total_bytes: u64,
+) -> anyhow::Result<()> {
+    use std::io::{BufReader, Read};
 
-    // Locate End of Central Directory (PK\x05\x06) scanning backwards from the end.
-    let min_eocd = 22usize;
-    if data.len() < min_eocd {
-        anyhow::bail!("zip too short");
-    }
-    let search_start = data.len().saturating_sub(65557);
-    let mut eocd_pos = None;
-    for i in (search_start..=data.len() - min_eocd).rev() {
-        if &data[i..i + 4] == b"PK\x05\x06" {
-            eocd_pos = Some(i);
-            break;
-        }
-    }
-    let eocd = eocd_pos.ok_or_else(|| anyhow::anyhow!("EOCD not found"))?;
-    let total_entries = u16::from_le_bytes([data[eocd + 10], data[eocd + 11]]) as usize;
-    let cd_size = u32::from_le_bytes([
-        data[eocd + 12],
-        data[eocd + 13],
-        data[eocd + 14],
-        data[eocd + 15],
-    ]) as usize;
-    let cd_offset = u32::from_le_bytes([
-        data[eocd + 16],
-        data[eocd + 17],
-        data[eocd + 18],
-        data[eocd + 19],
-    ]) as usize;
-    if cd_offset == 0xFFFF_FFFF || cd_size == 0xFFFF_FFFF {
-        anyhow::bail!("ZIP64 requires tar fallback");
-    }
-    if cd_offset.saturating_add(cd_size) > data.len() {
-        anyhow::bail!("invalid central directory bounds");
+    let file = std::fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(BufReader::new(file))?;
+    if archive.len() > max_entries {
+        anyhow::bail!("zip archive exceeds maximum entry count ({max_entries})");
     }
 
-    let mut pos = cd_offset;
-    for _ in 0..total_entries {
-        if pos + 46 > data.len() || &data[pos..pos + 4] != b"PK\x01\x02" {
-            anyhow::bail!("invalid central directory entry");
-        }
-        let method = u16::from_le_bytes([data[pos + 10], data[pos + 11]]);
-        let comp_size = u32::from_le_bytes([
-            data[pos + 20],
-            data[pos + 21],
-            data[pos + 22],
-            data[pos + 23],
-        ]) as usize;
-        let uncomp_size = u32::from_le_bytes([
-            data[pos + 24],
-            data[pos + 25],
-            data[pos + 26],
-            data[pos + 27],
-        ]) as usize;
-        let name_len = u16::from_le_bytes([data[pos + 28], data[pos + 29]]) as usize;
-        let extra_len = u16::from_le_bytes([data[pos + 30], data[pos + 31]]) as usize;
-        let comment_len = u16::from_le_bytes([data[pos + 32], data[pos + 33]]) as usize;
-        let lfh_offset = u32::from_le_bytes([
-            data[pos + 42],
-            data[pos + 43],
-            data[pos + 44],
-            data[pos + 45],
-        ]) as usize;
-
-        let name_bytes = &data[pos + 46..pos + 46 + name_len];
-        let raw_name = String::from_utf8_lossy(name_bytes);
-        pos += 46 + name_len + extra_len + comment_len;
-
-        if raw_name.ends_with('/')
-            || raw_name.ends_with('\\')
-            || raw_name.contains("__MACOSX")
-            || raw_name.contains("/.git/")
-            || raw_name.contains("\\.git\\")
-        {
+    let mut total_written: u64 = 0;
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i)?;
+        if entry.is_dir() {
             continue;
         }
-
-        // Sanitize relative path components to prevent path traversal.
-        let mut rel = PathBuf::new();
-        for part in raw_name.split(['/', '\\']) {
-            if part.is_empty() || part == "." || part == ".." || part.contains(':') {
-                continue;
-            }
-            rel.push(part);
-        }
-        if rel.as_os_str().is_empty() {
+        let Some(safe_rel) = entry.enclosed_name() else {
+            anyhow::bail!("unsafe zip entry path rejected: {}", entry.name());
+        };
+        let rel_str = safe_rel.to_string_lossy();
+        if rel_str.contains("__MACOSX") || rel_str.contains(".git") {
             continue;
         }
-
-        if lfh_offset + 30 > data.len() || &data[lfh_offset..lfh_offset + 4] != b"PK\x03\x04" {
-            anyhow::bail!("invalid local file header");
+        if entry.size() > max_entry_bytes {
+            anyhow::bail!("zip entry `{}` exceeds per-file size limit", entry.name());
         }
-        let lfh_name_len =
-            u16::from_le_bytes([data[lfh_offset + 26], data[lfh_offset + 27]]) as usize;
-        let lfh_extra_len =
-            u16::from_le_bytes([data[lfh_offset + 28], data[lfh_offset + 29]]) as usize;
-        let payload_start = lfh_offset + 30 + lfh_name_len + lfh_extra_len;
-        let payload_end = payload_start.saturating_add(comp_size);
-        if payload_end > data.len() {
-            anyhow::bail!("truncated zip entry");
+        if total_written.saturating_add(entry.size()) > max_total_bytes {
+            anyhow::bail!("zip archive exceeds total extracted size limit");
         }
-        let payload = &data[payload_start..payload_end];
 
-        let out_path = dest_dir.join(rel);
+        let out_path = dest_dir.join(&safe_rel);
         if let Some(parent) = out_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
+            std::fs::create_dir_all(parent)?;
         }
-
-        match method {
-            0 => {
-                // Stored (uncompressed)
-                std::fs::write(&out_path, payload)?;
-            }
-            8 => {
-                // Deflate
-                let mut decoder = DeflateDecoder::new(payload);
-                let mut out_buf = Vec::with_capacity(uncomp_size);
-                decoder.read_to_end(&mut out_buf)?;
-                std::fs::write(&out_path, &out_buf)?;
-            }
-            _ => anyhow::bail!("unsupported zip compression method {method}"),
+        let mut out = std::fs::File::create(&out_path)?;
+        let mut limited = entry.take(max_entry_bytes + 1);
+        let copied = std::io::copy(&mut limited, &mut out)?;
+        if copied > max_entry_bytes {
+            anyhow::bail!("zip entry stream exceeded per-file size limit");
+        }
+        total_written = total_written.saturating_add(copied);
+        if total_written > max_total_bytes {
+            anyhow::bail!("zip archive stream exceeded total extracted size limit");
         }
     }
     Ok(())
@@ -1176,5 +1126,51 @@ mod tests {
         assert_eq!(groups[0].series_indices, vec![0]);
         // MIP AX/COR/SAG group cleanly together.
         assert_eq!(groups[1].series_indices, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn zip_extraction_rejects_traversal_enforces_caps_and_extracts_valid_entries() {
+        use std::io::Write;
+        use zip::write::SimpleFileOptions;
+
+        let base = std::env::temp_dir().join(format!("sekhmetx-zip-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        // 1. Path traversal must be rejected.
+        let trav_zip = base.join("traversal.zip");
+        {
+            let f = std::fs::File::create(&trav_zip).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            zw.start_file("../evil.dcm", SimpleFileOptions::default()).unwrap();
+            zw.write_all(b"bad").unwrap();
+            zw.finish().unwrap();
+        }
+        let out_trav = base.join("out_trav");
+        assert!(extract_zip_streaming(&trav_zip, &out_trav, 100, 1024, 4096).is_err());
+
+        // 2. Entry count and size caps must be enforced.
+        let valid_zip = base.join("valid.zip");
+        {
+            let f = std::fs::File::create(&valid_zip).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            zw.start_file("study/s1.dcm", SimpleFileOptions::default()).unwrap();
+            zw.write_all(b"DICM_DATA_1").unwrap();
+            zw.start_file("study/s2.dcm", SimpleFileOptions::default()).unwrap();
+            zw.write_all(b"DICM_DATA_2").unwrap();
+            zw.finish().unwrap();
+        }
+        let out_cap = base.join("out_cap");
+        assert!(extract_zip_streaming(&valid_zip, &out_cap, 1, 1024, 4096).is_err());
+        assert!(extract_zip_streaming(&valid_zip, &out_cap, 100, 5, 4096).is_err());
+        assert!(extract_zip_streaming(&valid_zip, &out_cap, 100, 1024, 15).is_err());
+
+        // 3. Valid extraction succeeds.
+        let out_ok = base.join("out_ok");
+        extract_zip_streaming(&valid_zip, &out_ok, 100, 1024, 4096).unwrap();
+        assert_eq!(std::fs::read(out_ok.join("study/s1.dcm")).unwrap(), b"DICM_DATA_1");
+        assert_eq!(std::fs::read(out_ok.join("study/s2.dcm")).unwrap(), b"DICM_DATA_2");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

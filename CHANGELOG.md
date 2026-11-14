@@ -1,9 +1,50 @@
 # Changelog
 
-All notable changes to **RDicom Viewer** are documented in this file.
+All notable changes to **SekhmetX** (formerly RDicom Viewer) are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+---
+
+## [0.2.3] - 2026-11-14
+
+### Fixed & Hardened (Correctness Pass)
+- **Native-Plane MPR & Sibling Blending (`src/volume.rs`, `src/app.rs`):**
+  - Native-plane MPR (`SlabMode::Thin`) now returns exact bit-identical source slice voxels and source slice thickness (`Thk`), eliminating resampling blur ("3D loses detail").
+  - Oblique MPR now samples only the viewport's own volume by default; multi-series sibling blending moved behind an explicit off-by-default `Blend Siblings` toggle that displays `"Blended from N series (ROI stats disabled)"` and disables ROI pixel statistics while active.
+- **On-Screen Readouts & GPU Interpolation (`src/app.rs`, `src/gpu_view.rs`, `src/frame.rs`):**
+  - Fixed duplicate `"HU HU"` suffix in status bar cursor readout and shifted the `AXIAL`/`CORONAL`/`SAGITTAL` plane badge below the top orientation letter.
+  - Restored Horos-style post-windowing bilinear interpolation in the WGSL fragment shader with a View-menu toggle (`Smooth Interpolation (Bilinear)`).
+  - Kept 2D spatial convolution presentation-only so cursor readouts and ROI statistics always read the unconvolved source pixels (matching IsiX `DCMPix+DisplaySource`).
+- **3D Volume Validation & Tilted Gantry (`src/volume.rs`, `src/app.rs`):**
+  - Ported IsiX `SliceIntervalRegularity` into `Volume3D::from_series_checked` (`Result<Arc<Self>, VolumeError>`) to detect missing slices, duplicates, variable intervals, dimension mismatches, and missing geometry while allowing regular tilted-gantry stacks.
+  - Inverted the full 3×3 `(row·dx, col·dy, slice·dz)` basis matrix in `Volume3D::lps_to_voxel` for exact round-trip accuracy under gantry tilt.
+  - Surfaced exact irregularity reasons in the Force-3D warning dialog, added `"Geometry not verified: measurements disabled"` banner when forced on unverified geometry, and kept uncalibrated (`PixelSpacing`-less) images in `px` rather than `mm`.
+- **Non-Blocking Cross-Study Registration (`src/app.rs`, `src/volume.rs`):**
+  - Moved `RigidTransform3D::register` onto a worker thread (`"Aligning…"` status), short-circuited matching `FrameOfReferenceUID` to identity, computed one transform + exact inverse, and displayed alignment score / position-sync fallback banners.
+- **Hardened Auto-Updater & ZIP Import (`src/updater.rs`, `src/dicom_index.rs`, `.github/workflows/release.yml`):**
+  - Added `SHA256SUMS` generation in CI and streaming-to-disk SHA-256 verification before `self_replace`, plus a startup-check toggle and unsigned-build notice in the Update modal.
+  - Replaced the hand-written ZIP parser and `tar` fallback with streaming `zip::ZipArchive` (`enclosed_name()`, ZIP64, entry/size caps, per-process temp dir, and stale cache cleanup).
+
+---
+
+## [0.2.2] - 2026-11-14
+
+### Added
+- Rebranded project, binary (`sekhmetx`), and GitHub repository (`CosmicTaco22/SekhmetX`) to **SekhmetX**.
+- Added crash-safe SQLite database (`src/db.rs`, WAL mode) for study/series indexing and user settings.
+- Added English / Spanish (`EN` / `ES`) localization (`src/i18n.rs`).
+- Added in-app GitHub Releases auto-updater (`src/updater.rs`).
+
+---
+
+## [0.2.1] - 2026-11-14
+
+### Fixed
+- Fixed 686-image Angio stack missing 3D MPR & jumping slices (`max_focus_len.max(512)` queue radius, native normal alignment).
+- Locked native-aligned MPR to exact native dimensions and in-plane spacing.
+- Separated MIP vs non-MIP stacks in Study Browser MPR grouping.
 
 ---
 
