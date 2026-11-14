@@ -1,0 +1,184 @@
+name: Release (macOS, Windows, Linux)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag (e.g. v0.2.0)"
+        required: true
+        default: "v0.2.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    name: Build ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS ARM64 (Apple Silicon)
+            os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_slug: macos-arm64
+            cross: false
+          - label: Windows x86_64
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_slug: windows-x86_64
+            cross: false
+          - label: Windows ARM64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            artifact_slug: windows-arm64
+            cross: true
+          - label: Linux x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_slug: linux-x86_64
+            cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config libgtk-3-dev libxkbcommon-dev libwayland-dev \
+            libgl-dev libegl1-mesa-dev libvulkan-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Set up MSVC for Windows ARM64 cross-compile
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: amd64_arm64
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Run unit tests (release)
+        if: ${{ !matrix.cross }}
+        run: cargo test --release --target ${{ matrix.target }}
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event.inputs.tag }}" -ne "") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
+          $ProgressPreference = 'SilentlyContinue'
+          New-Item -ItemType Directory -Force -Path dist/rdicom-viewer | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/rdicom-viewer.exe" dist/rdicom-viewer/
+          Copy-Item README.md dist/rdicom-viewer/
+          Copy-Item CHANGELOG.md dist/rdicom-viewer/
+          Compress-Archive -Path dist/rdicom-viewer/* -DestinationPath "dist/rdicom-viewer-${tag}-${{ matrix.artifact_slug }}.zip" -Force
+
+      - name: Package macOS .app & tar.gz
+        if: runner.os == 'macOS'
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG="${{ github.ref_name }}"; fi
+          mkdir -p dist/rdicom-viewer
+          cp "target/${{ matrix.target }}/release/rdicom-viewer" dist/rdicom-viewer/
+          cp README.md CHANGELOG.md dist/rdicom-viewer/
+          tar -C dist -czf "dist/rdicom-viewer-${TAG}-${{ matrix.artifact_slug }}.tar.gz" rdicom-viewer
+
+          APP_DIR="dist/RDicom Viewer.app"
+          mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+          cp "target/${{ matrix.target }}/release/rdicom-viewer" "$APP_DIR/Contents/MacOS/rdicom-viewer"
+          cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>rdicom-viewer</string>
+            <key>CFBundleIdentifier</key><string>com.rdicom.viewer</string>
+            <key>CFBundleName</key><string>RDicom Viewer</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict>
+          </plist>
+          PLIST
+          ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "dist/rdicom-viewer-${TAG}-macos-arm64-app.zip"
+
+      - name: Package Linux tar.gz
+        if: runner.os == 'Linux'
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG="${{ github.ref_name }}"; fi
+          mkdir -p dist/rdicom-viewer
+          cp "target/${{ matrix.target }}/release/rdicom-viewer" dist/rdicom-viewer/
+          cp README.md CHANGELOG.md dist/rdicom-viewer/
+          tar -C dist -czf "dist/rdicom-viewer-${TAG}-${{ matrix.artifact_slug }}.tar.gz" rdicom-viewer
+
+      - name: Upload packaged release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.artifact_slug }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract changelog notes
+        run: |
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then TAG="${{ github.ref_name }}"; fi
+          VER="${TAG#v}"
+          python3 - "$VER" "$TAG" << 'PY'
+          import re, sys
+          ver, tag = sys.argv[1], sys.argv[2]
+          lines = open("CHANGELOG.md", encoding="utf-8").read().splitlines()
+          in_sec, out = False, []
+          pat = re.compile(rf"^## \[{re.escape(ver)}\]")
+          for ln in lines:
+              if pat.match(ln):
+                  in_sec = True
+                  continue
+              if in_sec and ln.startswith("## ["):
+                  break
+              if in_sec:
+                  out.append(ln)
+          text = "\n".join(out).strip() or f"Release {tag} of RDicom Viewer."
+          open("RELEASE_NOTES.md", "w", encoding="utf-8").write(text + "\n")
+          PY
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: RDicom Viewer ${{ github.event.inputs.tag || github.ref_name }}
+          body_path: RELEASE_NOTES.md
+          generate_release_notes: true
+          files: |
+            artifacts/*.zip
+            artifacts/*.tar.gz

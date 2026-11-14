@@ -517,6 +517,8 @@ impl ViewerApp {
 
         let mut synced_any = false;
         let mut updates: Vec<(usize, MprPlane3D)> = Vec::new();
+        let mut slice_2d_updates: Vec<(usize, usize)> = Vec::new();
+        let leader_mpr = self.viewports[leader_idx].mpr_enabled;
         for other_idx in 0..cell_count {
             if other_idx == leader_idx {
                 continue;
@@ -524,15 +526,24 @@ impl ViewerApp {
             let Some(other_sel) = self.viewports[other_idx].selected else {
                 continue;
             };
+            let other_mpr = self.viewports[other_idx].mpr_enabled;
             if other_sel == leader_sel {
-                if self.viewports[leader_idx].mpr_enabled || self.viewports[other_idx].mpr_enabled {
+                if leader_mpr || other_mpr {
                     updates.push((other_idx, leader_plane.clone()));
                 }
                 continue;
             }
             if let Some(reg) = self.registrations.get(&(leader_sel, other_sel)) {
                 let target_plane = reg.transform_plane(&leader_plane);
-                updates.push((other_idx, target_plane));
+                if leader_mpr || other_mpr {
+                    updates.push((other_idx, target_plane));
+                } else if let Some(vol) = self.volumes.get(&other_sel) {
+                    if vol.depth > 0 {
+                        let vox = vol.lps_to_voxel(target_plane.slice_center_lps());
+                        let mapped = (vox[2].round() as isize).clamp(0, vol.depth as isize - 1) as usize;
+                        slice_2d_updates.push((other_idx, mapped));
+                    }
+                }
             }
         }
 
@@ -540,6 +551,10 @@ impl ViewerApp {
             self.viewports[other_idx].mpr_enabled = true;
             self.viewports[other_idx].mpr_plane = Some(target_plane);
             self.sync_slice_index_from_mpr_plane(other_idx);
+            synced_any = true;
+        }
+        for (other_idx, mapped_slice) in slice_2d_updates {
+            self.viewports[other_idx].slice = mapped_slice;
             synced_any = true;
         }
         synced_any
@@ -839,9 +854,9 @@ impl ViewerApp {
                 updates.push((other_idx, leader_new_slice));
                 continue;
             }
-            // If 3D registration is active on `other_idx`, `synchronize_mpr_followers` already updated its 3D plane.
-            if self.viewports[other_idx].mpr_enabled
-                && self.registrations.contains_key(&(leader_sel, other_sel))
+            // If 3D registration is active on `other_idx`, `synchronize_mpr_followers` already updated its plane or 2D slice.
+            if self.registrations.contains_key(&(leader_sel, other_sel))
+                && (self.viewports[other_idx].mpr_enabled || self.volumes.contains_key(&other_sel))
             {
                 continue;
             }
@@ -2145,9 +2160,14 @@ impl ViewerApp {
                                                     "Auto-grouped acquisition (Axial / Coronal / Sagittal). Click to open with 3D MPR enabled, or right-click to assign to a viewport.",
                                                 );
                                             if resp.clicked() {
+                                                let target_ri = active_sel
+                                                    .filter(|&(s_i, r_i)| {
+                                                        s_i == si && group.series_indices.contains(&r_i)
+                                                    })
+                                                    .map_or(group.primary_series, |(_, r_i)| r_i);
                                                 clicked = Some((
                                                     self.active_viewport,
-                                                    (si, group.primary_series),
+                                                    (si, target_ri),
                                                     true,
                                                 ));
                                             }

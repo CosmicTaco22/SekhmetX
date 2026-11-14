@@ -99,6 +99,9 @@ pub struct Series {
     pub frame_of_reference_uid: Option<String>,
     pub acquisition_time_secs: Option<f64>,
     pub acquisition_number: Option<i64>,
+    pub convolution_kernel: Option<String>,
+    pub window_center: Option<f64>,
+    pub window_width: Option<f64>,
     pub mpr_group_id: Option<usize>,
     pub slices: Vec<SliceRef>,
 }
@@ -239,6 +242,9 @@ struct Header {
     frame_of_reference_uid: Option<String>,
     acquisition_time_secs: Option<f64>,
     acquisition_number: Option<i64>,
+    convolution_kernel: Option<String>,
+    window_center: Option<f64>,
+    window_width: Option<f64>,
 }
 
 const NON_IMAGE_MODALITIES: &[&str] = &[
@@ -316,6 +322,9 @@ fn read_header(path: &Path) -> Option<Header> {
             .or_else(|| get_str(&obj, tags::SERIES_TIME))
             .and_then(|s| parse_dicom_time_secs(&s)),
         acquisition_number: get_int(&obj, tags::ACQUISITION_NUMBER),
+        convolution_kernel: get_str(&obj, tags::CONVOLUTION_KERNEL),
+        window_center: get_f64s(&obj, tags::WINDOW_CENTER).and_then(|v| v.first().copied()),
+        window_width: get_f64s(&obj, tags::WINDOW_WIDTH).and_then(|v| v.first().copied()),
     })
 }
 
@@ -639,6 +648,9 @@ fn build_index(headers: Vec<Header>) -> Index {
             frame_of_reference_uid: h.frame_of_reference_uid.clone(),
             acquisition_time_secs: h.acquisition_time_secs,
             acquisition_number: h.acquisition_number,
+            convolution_kernel: h.convolution_kernel.clone(),
+            window_center: h.window_center,
+            window_width: h.window_width,
             mpr_group_id: None,
             slices: Vec::new(),
         });
@@ -650,6 +662,15 @@ fn build_index(headers: Vec<Header>) -> Index {
         }
         if series.acquisition_number.is_none() && h.acquisition_number.is_some() {
             series.acquisition_number = h.acquisition_number;
+        }
+        if series.convolution_kernel.is_none() && h.convolution_kernel.is_some() {
+            series.convolution_kernel = h.convolution_kernel.clone();
+        }
+        if series.window_center.is_none() && h.window_center.is_some() {
+            series.window_center = h.window_center;
+        }
+        if series.window_width.is_none() && h.window_width.is_some() {
+            series.window_width = h.window_width;
         }
 
         for frame in 0..h.frames {
@@ -729,9 +750,94 @@ fn sort_slices(series: &mut Series) {
     });
 }
 
+/// Classifies a series description into a coarse reconstruction/kernel/sequence family
+/// so incompatible reconstructions (e.g. CT Brain soft-tissue vs Bone kernel, or MR T1 vs T2)
+/// are never merged into the same MPR group.
+fn series_kernel_class(desc: &str) -> Option<&'static str> {
+    let lower = desc.to_ascii_lowercase();
+    let has_any = |kws: &[&str]| kws.iter().any(|k| lower.contains(k));
+
+    if has_any(&[
+        "bone", "osso", "osseo", "ósseo", "osteo", "b60", "b70", "b80", "h60", "h70", "u70",
+        "hrct", "sharp",
+    ]) {
+        return Some("bone");
+    }
+    if has_any(&["lung", "pulm"]) {
+        return Some("lung");
+    }
+    if has_any(&[
+        "brain",
+        "cereb",
+        "cranio",
+        "crânio",
+        "soft",
+        "stnd",
+        "std",
+        "standard",
+        "mediast",
+        "parenchym",
+        "parenquima",
+        "partes moles",
+    ]) {
+        return Some("soft");
+    }
+    if has_any(&["flair"]) {
+        return Some("flair");
+    }
+    if has_any(&["dwi", "diff"]) {
+        return Some("dwi");
+    }
+    if has_any(&["adc"]) {
+        return Some("adc");
+    }
+    if has_any(&["swi"]) {
+        return Some("swi");
+    }
+    if has_any(&["stir"]) {
+        return Some("stir");
+    }
+    if has_any(&["t2"]) {
+        return Some("t2");
+    }
+    if has_any(&["t1", "mprage", "bravo", "spgr"]) {
+        return Some("t1");
+    }
+    None
+}
+
+/// Returns `true` when two series from the same acquisition represent compatible
+/// reconstructions (same kernel / contrast / window class) and can safely share MPR reslicing.
+fn series_compatible_for_mpr(a: &Series, b: &Series) -> bool {
+    if let (Some(ka), Some(kb)) = (&a.convolution_kernel, &b.convolution_kernel) {
+        if !ka.trim().eq_ignore_ascii_case(kb.trim()) {
+            return false;
+        }
+    }
+    if let (Some(wla), Some(wwa), Some(wlb), Some(wwb)) =
+        (a.window_center, a.window_width, b.window_center, b.window_width)
+    {
+        if (wla - wlb).abs() > 100.0 {
+            return false;
+        }
+        let min_ww = wwa.abs().min(wwb.abs()).max(1.0);
+        let max_ww = wwa.abs().max(wwb.abs());
+        if max_ww / min_ww > 2.0 {
+            return false;
+        }
+    }
+    match (series_kernel_class(&a.description), series_kernel_class(&b.description)) {
+        (Some(ca), Some(cb)) if ca != cb => return false,
+        (Some("bone"), None) | (None, Some("bone")) => return false,
+        (Some("lung"), None) | (None, Some("lung")) => return false,
+        _ => {}
+    }
+    true
+}
+
 /// Automatically detects separated series (e.g. Axial, Coronal, and Sagittal reconstructions)
 /// that originate from the same acquisition time / FrameOfReferenceUID and groups them into
-/// unified MPR-enabled groups.
+/// unified MPR-enabled groups without mixing incompatible reconstruction kernels.
 fn build_mpr_groups(series: &mut [Series], study_desc: &str) -> Vec<MprGroup> {
     let n = series.len();
     let mut visited = vec![false; n];
@@ -749,6 +855,9 @@ fn build_mpr_groups(series: &mut [Series], study_desc: &str) -> Vec<MprGroup> {
                 continue;
             }
             if series[i].modality != series[j].modality {
+                continue;
+            }
+            if !series_compatible_for_mpr(&series[i], &series[j]) {
                 continue;
             }
             let same_for = match (&series[i].frame_of_reference_uid, &series[j].frame_of_reference_uid) {
@@ -771,6 +880,7 @@ fn build_mpr_groups(series: &mut [Series], study_desc: &str) -> Vec<MprGroup> {
             };
             if time_match || acq_num_match {
                 cluster.push(j);
+                visited[j] = true;
             }
         }
 
@@ -809,11 +919,16 @@ fn build_mpr_groups(series: &mut [Series], study_desc: &str) -> Vec<MprGroup> {
             for &idx in &cluster {
                 series[idx].mpr_group_id = Some(group_id);
             }
-            let primary_series = cluster
-                .iter()
-                .copied()
-                .max_by_key(|&idx| series[idx].slices.len())
-                .unwrap_or(cluster[0]);
+            let primary_series = axial_best
+                .or(coronal_best)
+                .or(sagittal_best)
+                .unwrap_or_else(|| {
+                    cluster
+                        .iter()
+                        .copied()
+                        .max_by_key(|&idx| series[idx].slices.len())
+                        .unwrap_or(cluster[0])
+                });
 
             let mut planes = Vec::new();
             if axial_best.is_some() {
@@ -852,4 +967,158 @@ fn build_mpr_groups(series: &mut [Series], study_desc: &str) -> Vec<MprGroup> {
     }
 
     groups
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_series(
+        number: i64,
+        description: &str,
+        modality: &str,
+        plane: DominantPlane,
+        slice_count: usize,
+        kernel: Option<&str>,
+        wl_ww: Option<(f64, f64)>,
+    ) -> Series {
+        let normal = match plane {
+            DominantPlane::Axial => Some([0.0, 0.0, 1.0]),
+            DominantPlane::Coronal => Some([0.0, 1.0, 0.0]),
+            DominantPlane::Sagittal => Some([1.0, 0.0, 0.0]),
+            _ => Some([0.0, 0.0, 1.0]),
+        };
+        let slices = (0..slice_count)
+            .map(|i| SliceRef {
+                path: PathBuf::from(format!("slice_{number}_{i}.dcm")),
+                frame: 0,
+                instance: i as i64 + 1,
+                position: Some([0.0, 0.0, i as f64]),
+                orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                is_3d_plane: true,
+                spacing: Some((0.5, 0.5)),
+                slice_location: Some(i as f64),
+                frame_of_reference_uid: Some("1.2.3.4".into()),
+            })
+            .collect();
+        Series {
+            uid: format!("1.2.3.{number}"),
+            number,
+            description: description.into(),
+            modality: modality.into(),
+            rows: 512,
+            columns: 512,
+            normal,
+            dominant_plane: plane,
+            frame_of_reference_uid: Some("1.2.3.4".into()),
+            acquisition_time_secs: Some(36000.0),
+            acquisition_number: Some(1),
+            convolution_kernel: kernel.map(str::to_string),
+            window_center: wl_ww.map(|(wl, _)| wl),
+            window_width: wl_ww.map(|(_, ww)| ww),
+            mpr_group_id: None,
+            slices,
+        }
+    }
+
+    #[test]
+    fn brain_and_bone_kernels_never_merge_into_same_mpr_group() {
+        let mut series = vec![
+            make_series(
+                1,
+                "Brain 5.0mm Ax",
+                "CT",
+                DominantPlane::Axial,
+                32,
+                Some("STANDARD"),
+                Some((40.0, 80.0)),
+            ),
+            make_series(
+                2,
+                "Bone 1.0mm Ax",
+                "CT",
+                DominantPlane::Axial,
+                160,
+                Some("BONE"),
+                Some((500.0, 2500.0)),
+            ),
+            make_series(
+                3,
+                "Bone Coronal MPR",
+                "CT",
+                DominantPlane::Coronal,
+                120,
+                Some("BONE"),
+                Some((500.0, 2500.0)),
+            ),
+            make_series(
+                4,
+                "Bone Sagittal MPR",
+                "CT",
+                DominantPlane::Sagittal,
+                120,
+                Some("BONE"),
+                Some((500.0, 2500.0)),
+            ),
+        ];
+
+        let groups = build_mpr_groups(&mut series, "HEAD CT");
+        assert_eq!(groups.len(), 2);
+        // Brain stays in its own group and is never mixed with Bone.
+        assert_eq!(groups[0].series_indices, vec![0]);
+        assert_eq!(groups[0].primary_series, 0);
+        // Bone AX+COR+SAG are grouped together with Bone Axial as primary.
+        assert_eq!(groups[1].series_indices, vec![1, 2, 3]);
+        assert_eq!(groups[1].primary_series, 1);
+    }
+
+    #[test]
+    fn same_kernel_orthogonal_series_group_with_axial_primary() {
+        let mut series = vec![
+            make_series(
+                1,
+                "Brain Coronal",
+                "CT",
+                DominantPlane::Coronal,
+                90,
+                Some("H30s"),
+                Some((40.0, 80.0)),
+            ),
+            make_series(
+                2,
+                "Brain Axial",
+                "CT",
+                DominantPlane::Axial,
+                40,
+                Some("H30s"),
+                Some((40.0, 80.0)),
+            ),
+            make_series(
+                3,
+                "Brain Sagittal",
+                "CT",
+                DominantPlane::Sagittal,
+                90,
+                Some("H30s"),
+                Some((40.0, 80.0)),
+            ),
+        ];
+
+        let groups = build_mpr_groups(&mut series, "HEAD CT");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].series_indices, vec![0, 1, 2]);
+        assert_eq!(groups[0].primary_series, 1);
+    }
+
+    #[test]
+    fn mr_t1_and_t2_never_merge_into_same_mpr_group() {
+        let mut series = vec![
+            make_series(1, "T1 AX", "MR", DominantPlane::Axial, 24, None, None),
+            make_series(2, "T2 COR", "MR", DominantPlane::Coronal, 24, None, None),
+        ];
+        let groups = build_mpr_groups(&mut series, "BRAIN MR");
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].series_indices, vec![0]);
+        assert_eq!(groups[1].series_indices, vec![1]);
+    }
 }
