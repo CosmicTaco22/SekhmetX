@@ -3642,24 +3642,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rdicom-viewer"
-version = "0.2.0"
-dependencies = [
- "anyhow",
- "bytemuck",
- "dicom-core",
- "dicom-dictionary-std",
- "dicom-object",
- "dicom-pixeldata",
- "eframe",
- "flate2",
- "image",
- "rayon",
- "rfd",
- "walkdir",
-]
-
-[[package]]
 name = "read-fonts"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3842,6 +3824,24 @@ dependencies = [
  "memmap2",
  "smithay-client-toolkit 0.19.2",
  "tiny-skia",
+]
+
+[[package]]
+name = "sekhmetx"
+version = "0.2.1"
+dependencies = [
+ "anyhow",
+ "bytemuck",
+ "dicom-core",
+ "dicom-dictionary-std",
+ "dicom-object",
+ "dicom-pixeldata",
+ "eframe",
+ "flate2",
+ "image",
+ "rayon",
+ "rfd",
+ "walkdir",
 ]
 
 [[package]]

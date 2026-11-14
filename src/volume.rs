@@ -48,7 +48,19 @@ pub struct Volume3D {
 impl Volume3D {
     /// Builds a `Volume3D` from a `Series` and its decoded `Frame`s (one per slice).
     pub fn from_series(series: &Series, frames: &[Arc<Frame>]) -> Option<Arc<Self>> {
-        if frames.len() < 3 || frames.len() != series.slices.len() {
+        Self::from_series_with_force(series, frames, false)
+    }
+
+    /// Builds a `Volume3D` from a `Series` and its decoded `Frame`s.
+    /// When `force` is `true`, even 1-2 slice stacks or RGB/non-standard series are
+    /// promoted into a 3D volume using fallback slice thickness / orientation.
+    pub fn from_series_with_force(
+        series: &Series,
+        frames: &[Arc<Frame>],
+        force: bool,
+    ) -> Option<Arc<Self>> {
+        let min_frames = if force { 1 } else { 3 };
+        if frames.len() < min_frames || frames.len() != series.slices.len() {
             return None;
         }
         let first = &frames[0];
@@ -59,12 +71,12 @@ impl Volume3D {
         if w == 0 || h == 0 {
             return None;
         }
-        // Verify all slices are greyscale with matching dimensions.
+        // Verify all slices have matching dimensions (and greyscale unless forced).
         for f in frames {
             if f.width as usize != w || f.height as usize != h {
                 return None;
             }
-            if !matches!(f.pixels, Pixels::Gray(_)) {
+            if !force && !matches!(f.pixels, Pixels::Gray(_)) {
                 return None;
             }
         }
@@ -74,9 +86,24 @@ impl Volume3D {
         let dy = row_sp.max(0.1);
 
         let orient = first.orientation;
-        let row_dir = normalize3([orient[0], orient[1], orient[2]]);
-        let col_dir = normalize3([orient[3], orient[4], orient[5]]);
-        let normal = normalize3(cross3(row_dir, col_dir));
+        let raw_row = [orient[0], orient[1], orient[2]];
+        let raw_col = [orient[3], orient[4], orient[5]];
+        let row_dir = if len3(raw_row) > 1e-6 {
+            normalize3(raw_row)
+        } else {
+            [1.0, 0.0, 0.0]
+        };
+        let col_dir = if len3(raw_col) > 1e-6 {
+            normalize3(raw_col)
+        } else {
+            [0.0, 1.0, 0.0]
+        };
+        let raw_norm = cross3(row_dir, col_dir);
+        let normal = if len3(raw_norm) > 1e-6 {
+            normalize3(raw_norm)
+        } else {
+            [0.0, 0.0, 1.0]
+        };
 
         let origin0 = first
             .origin
@@ -109,9 +136,15 @@ impl Volume3D {
         let mut max_val = f32::NEG_INFINITY;
 
         for (z, f) in frames.iter().enumerate() {
-            if let Pixels::Gray(src) = &f.pixels {
-                let dst = &mut voxels[z * slice_len..(z + 1) * slice_len];
-                dst.copy_from_slice(src);
+            let dst = &mut voxels[z * slice_len..(z + 1) * slice_len];
+            match &f.pixels {
+                Pixels::Gray(src) => dst.copy_from_slice(src),
+                Pixels::Rgba(rgba) => {
+                    for (i, px) in rgba.chunks_exact(4).take(slice_len).enumerate() {
+                        dst[i] =
+                            0.299 * (px[0] as f32) + 0.587 * (px[1] as f32) + 0.114 * (px[2] as f32);
+                    }
+                }
             }
             let fw_min = (f.full_window.level - 0.5 * f.full_window.width) as f32;
             let fw_max = (f.full_window.level + 0.5 * f.full_window.width) as f32;
@@ -328,23 +361,46 @@ impl Volume3D {
     /// Reslices the 3D volume (and any sibling orthogonal volumes from the same acquisition group)
     /// along an arbitrary 3D plane `plane`, returning a calibrated `Arc<Frame>`.
     pub fn reslice_plane(&self, siblings: &[Arc<Volume3D>], plane: &MprPlane3D) -> Arc<Frame> {
-        let min_sp = self.spacing[0]
-            .min(self.spacing[1])
-            .min(self.spacing[2])
-            .clamp(0.4, 1.5);
-        let fov_mm = (self.bounding_radius_mm * 1.75).max(160.0);
-        let out_dim = ((fov_mm / min_sp).round() as usize).clamp(192, 512);
-        let out_sp = fov_mm / out_dim as f64;
+        let native_aligned = dot3(plane.u_axis, self.row_dir) > 0.999
+            && dot3(plane.v_axis, self.col_dir) > 0.999
+            && dot3(plane.normal, self.slice_dir).abs() > 0.999;
+
+        let (out_w, out_h, out_sp_u, out_sp_v) = if native_aligned {
+            (self.width, self.height, self.spacing[0], self.spacing[1])
+        } else {
+            let ex = (self.width.saturating_sub(1) as f64) * self.spacing[0];
+            let ey = (self.height.saturating_sub(1) as f64) * self.spacing[1];
+            let ez = (self.depth.saturating_sub(1) as f64) * self.spacing[2];
+            let fov_u = (ex * dot3(self.row_dir, plane.u_axis).abs()
+                + ey * dot3(self.col_dir, plane.u_axis).abs()
+                + ez * dot3(self.slice_dir, plane.u_axis).abs())
+            .max(40.0);
+            let fov_v = (ex * dot3(self.row_dir, plane.v_axis).abs()
+                + ey * dot3(self.col_dir, plane.v_axis).abs()
+                + ez * dot3(self.slice_dir, plane.v_axis).abs())
+            .max(40.0);
+            let min_sp = self.spacing[0]
+                .min(self.spacing[1])
+                .min(self.spacing[2])
+                .clamp(0.25, 1.5);
+            let out_sp = min_sp.max(fov_u.max(fov_v) / 1023.0);
+            let w = ((fov_u / out_sp).round() as usize + 1).clamp(128, 1024);
+            let h = ((fov_v / out_sp).round() as usize + 1).clamp(128, 1024);
+            (w, h, out_sp, out_sp)
+        };
+        let out_sp = out_sp_u.min(out_sp_v);
+        let min_sp = out_sp.clamp(0.25, 1.5);
 
         let slice_center = add3(plane.center_lps, scale3(plane.normal, plane.offset_mm));
-        let half_ext = 0.5 * (out_dim.saturating_sub(1) as f64) * out_sp;
+        let half_ext_u = 0.5 * (out_w.saturating_sub(1) as f64) * out_sp_u;
+        let half_ext_v = 0.5 * (out_h.saturating_sub(1) as f64) * out_sp_v;
         let top_left_lps = sub3(
-            sub3(slice_center, scale3(plane.u_axis, half_ext)),
-            scale3(plane.v_axis, half_ext),
+            sub3(slice_center, scale3(plane.u_axis, half_ext_u)),
+            scale3(plane.v_axis, half_ext_v),
         );
 
-        let u_step = scale3(plane.u_axis, out_sp);
-        let v_step = scale3(plane.v_axis, out_sp);
+        let u_step = scale3(plane.u_axis, out_sp_u);
+        let v_step = scale3(plane.v_axis, out_sp_v);
         let bg = self.background_value();
 
         // Compute resolution weights for this volume and any sibling orthogonal volumes (AX/COR/SAG).
@@ -403,10 +459,10 @@ impl Volume3D {
                 Vec::new()
             };
 
-        let mut pixels = vec![bg; out_dim * out_dim];
+        let mut pixels = vec![bg; out_w * out_h];
         let slab_mode = plane.slab_mode;
         pixels
-            .par_chunks_mut(out_dim)
+            .par_chunks_mut(out_w)
             .enumerate()
             .for_each(|(y, row_buf)| {
                 let row_start = add3(top_left_lps, scale3(v_step, y as f64));
@@ -491,8 +547,8 @@ impl Volume3D {
         let slice_location = Some(dot3(slice_center, plane.normal));
 
         Arc::new(Frame {
-            width: out_dim as u32,
-            height: out_dim as u32,
+            width: out_w as u32,
+            height: out_h as u32,
             pixels: Pixels::Gray(pixels),
             stored_window: self.stored_window,
             full_window: self.full_window,
@@ -500,7 +556,7 @@ impl Volume3D {
             inverts: self.inverts,
             voi_lut_applied: false,
             slope: self.slope,
-            spacing: Some((out_sp, out_sp)),
+            spacing: Some((out_sp_v, out_sp_u)),
             pixel_ratio: 1.0,
             origin: Some(top_left_lps),
             orientation,
@@ -547,12 +603,18 @@ pub struct MprPlane3D {
 }
 
 impl MprPlane3D {
-    /// Initializes the 3D plane from a volume's native acquisition orientation.
+    /// Initializes the 3D plane from a volume's native acquisition orientation,
+    /// aligning `normal` with `vol.slice_dir` so slice `0` stays `0` and `depth - 1` stays `depth - 1`.
     pub fn from_volume_native(vol: &Volume3D) -> Self {
         let o = vol.native_orientation;
         let u = normalize3([o[0], o[1], o[2]]);
         let v = normalize3([o[3], o[4], o[5]]);
-        let n = normalize3(cross3(u, v));
+        let cross_n = normalize3(cross3(u, v));
+        let n = if dot3(cross_n, vol.slice_dir) < 0.0 {
+            scale3(cross_n, -1.0)
+        } else {
+            cross_n
+        };
         Self {
             center_lps: vol.center_lps,
             u_axis: u,
@@ -920,5 +982,67 @@ mod tests {
         assert!(dot3(p.u_axis, p.v_axis).abs() < 1e-9);
         assert!(dot3(p.u_axis, p.normal).abs() < 1e-9);
         assert!(dot3(p.v_axis, p.normal).abs() < 1e-9);
+    }
+
+    #[test]
+    fn forced_volume_accepts_single_slice_while_standard_requires_three() {
+        let frame = Arc::new(Frame {
+            width: 4,
+            height: 4,
+            pixels: Pixels::Gray(vec![0.0; 16]),
+            stored_window: None,
+            full_window: Window {
+                level: 0.0,
+                width: 100.0,
+            },
+            bits_window: None,
+            inverts: false,
+            voi_lut_applied: false,
+            slope: 1.0,
+            spacing: Some((1.0, 1.0)),
+            pixel_ratio: 1.0,
+            origin: Some([0.0, 0.0, 0.0]),
+            orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            is_3d_plane: true,
+            frame_of_reference_uid: None,
+            slice_thickness: Some(2.5),
+            slice_location: Some(0.0),
+            value_unit: "HU",
+        });
+        let series = Series {
+            uid: "1.2.3".into(),
+            number: 1,
+            description: "Single Slice".into(),
+            modality: "CT".into(),
+            rows: 4,
+            columns: 4,
+            normal: None,
+            dominant_plane: crate::dicom_index::DominantPlane::Axial,
+            frame_of_reference_uid: None,
+            acquisition_time_secs: None,
+            acquisition_number: None,
+            convolution_kernel: None,
+            window_center: None,
+            window_width: None,
+            mpr_group_id: None,
+            slices: vec![crate::dicom_index::SliceRef {
+                path: std::path::PathBuf::from("dummy.dcm"),
+                frame: 0,
+                instance: 1,
+                position: Some([0.0, 0.0, 0.0]),
+                orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+                is_3d_plane: true,
+                spacing: Some((1.0, 1.0)),
+                slice_location: Some(0.0),
+                frame_of_reference_uid: None,
+            }],
+        };
+        let frames = vec![frame];
+        assert!(Volume3D::from_series(&series, &frames).is_none());
+        let forced = Volume3D::from_series_with_force(&series, &frames, true)
+            .expect("forced volume should build for 1 slice");
+        assert_eq!(forced.depth, 1);
+        assert_eq!(forced.width, 4);
+        assert_eq!(forced.height, 4);
     }
 }

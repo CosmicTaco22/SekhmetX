@@ -18,12 +18,12 @@ use std::sync::atomic::AtomicUsize;
 use eframe::egui;
 
 const USAGE: &str = "\
-RDicom Viewer
+SekhmetX
 
-  rdicom-viewer [FOLDER_OR_FILES...]          open the viewer (optionally with a folder)
-  rdicom-viewer --list FOLDER                 print the studies and series found
-  rdicom-viewer --check FOLDER                try to decode every image and report failures
-  rdicom-viewer --render FOLDER OUT.png [SERIES] [IMAGE] [WIDTH LEVEL]
+  sekhmetx [FOLDER_OR_FILES...]               open the viewer (optionally with a folder)
+  sekhmetx --list FOLDER                      print the studies and series found
+  sekhmetx --check FOLDER                     try to decode every image and report failures
+  sekhmetx --render FOLDER OUT.png [SERIES] [IMAGE] [WIDTH LEVEL]
                                               save one image as PNG (no window)
 ";
 
@@ -56,14 +56,14 @@ fn main() -> eframe::Result {
     let initial: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("RDicom Viewer")
+            .with_title("SekhmetX")
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([800.0, 500.0])
             .with_drag_and_drop(true),
         ..Default::default()
     };
     eframe::run_native(
-        "RDicom Viewer",
+        "SekhmetX",
         options,
         Box::new(move |cc| Ok(Box::new(app::ViewerApp::new(cc, initial)))),
     )

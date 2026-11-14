@@ -69,18 +69,18 @@ jobs:
         if: ${{ !matrix.cross }}
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            target/${{ matrix.target }}/release/rdicom-viewer.exe --help
+            target/${{ matrix.target }}/release/sekhmetx.exe --help
           else
-            target/${{ matrix.target }}/release/rdicom-viewer --help
+            target/${{ matrix.target }}/release/sekhmetx --help
           fi
         shell: bash
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rdicom-viewer-${{ matrix.target }}
+          name: sekhmetx-${{ matrix.target }}
           path: |
-            target/${{ matrix.target }}/release/rdicom-viewer*
+            target/${{ matrix.target }}/release/sekhmetx*
             !target/${{ matrix.target }}/release/*.d
             !target/${{ matrix.target }}/release/*.pdb
             README.md

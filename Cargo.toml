@@ -1,6 +1,6 @@
 [package]
-name = "rdicom-viewer"
-version = "0.2.0"
+name = "sekhmetx"
+version = "0.2.1"
 edition = "2024"
 description = "A small DICOM viewer for Windows, written in Rust (inspired by IsiX / Horos / OsiriX)"
 license = "LGPL-3.0-or-later"

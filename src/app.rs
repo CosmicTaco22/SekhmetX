@@ -31,7 +31,7 @@ use crate::navigation::{
 use crate::roi::{
     self, RoiBoundingBox, RoiKind, RoiPlanarGeometry, RoiPoint, RoiSize, RoiSpline,
 };
-use crate::volume::{dot3, sub3, MprPlane3D, RigidTransform3D, SlabMode, Volume3D};
+use crate::volume::{add3, dot3, scale3, sub3, MprPlane3D, RigidTransform3D, SlabMode, Volume3D};
 
 const NUMBER_KEYS: [Key; 9] = [
     Key::Num1,
@@ -233,6 +233,8 @@ pub struct ViewerApp {
     rot_drag: Option<(usize, f32, f32)>,
     /// A 3D MPR orbit drag in progress: `(viewport_id, last_pos)`.
     orbit_drag: Option<(usize, Pos2)>,
+    /// Visual & 3D pivot anchor for `Tool::Orbit3D`: `(viewport_id, anchor_screen_pos, anchor_lps)`.
+    orbit_anchor: Option<(usize, Pos2, [f64; 3])>,
     gpu: Option<GpuInfo>,
     tool: Tool,
 
@@ -246,6 +248,22 @@ pub struct ViewerApp {
     fps: f32,
     last_tick: f64,
     cursor_info: Option<String>,
+
+    show_browser: bool,
+    ortho_mpr_active: bool,
+    ortho_crosshair_lps: Option<[f64; 3]>,
+    ortho_saved_tiling: Option<ViewportTiling>,
+    crosshair_drag: Option<usize>,
+    forced_mpr_series: std::collections::HashSet<(usize, usize)>,
+    pending_force_mpr: Option<PendingForceMpr>,
+    pending_mpr_activate: Option<(usize, (usize, usize), bool)>,
+}
+
+#[derive(Clone, Copy)]
+struct PendingForceMpr {
+    vp_idx: usize,
+    key: (usize, usize),
+    ortho: bool,
 }
 
 impl ViewerApp {
@@ -285,6 +303,7 @@ impl ViewerApp {
             scroll_drag: None,
             rot_drag: None,
             orbit_drag: None,
+            orbit_anchor: None,
             gpu: if std::env::var_os("RDICOM_CPU").is_some() {
                 None
             } else {
@@ -300,6 +319,14 @@ impl ViewerApp {
             fps: 15.0,
             last_tick: 0.0,
             cursor_info: None,
+            show_browser: true,
+            ortho_mpr_active: false,
+            ortho_crosshair_lps: None,
+            ortho_saved_tiling: None,
+            crosshair_drag: None,
+            forced_mpr_series: std::collections::HashSet::new(),
+            pending_force_mpr: None,
+            pending_mpr_activate: None,
         };
         if !initial.is_empty() {
             app.start_scan(initial);
@@ -352,16 +379,87 @@ impl ViewerApp {
         if let Some(vp) = self.viewports.get(vp_idx) {
             if vp.mpr_enabled {
                 if let (Some(vol), Some(plane)) = (self.viewport_volume(vp_idx), &vp.mpr_plane) {
+                    if dot3(plane.normal, vol.slice_dir).abs() > 0.99 && vol.depth > 0 {
+                        return vol.depth;
+                    }
                     let half = vol.projected_half_span_mm(plane.normal);
                     let step = vol.spacing[0]
                         .min(vol.spacing[1])
                         .min(vol.spacing[2])
                         .clamp(0.5, 2.0);
-                    return ((2.0 * half / step).round() as usize + 1).clamp(15, 600);
+                    return ((2.0 * half / step).round() as usize + 1).clamp(15, 2048);
                 }
             }
         }
         self.viewport_series(vp_idx).map_or(0, |s| s.slices.len())
+    }
+
+    fn disable_viewport_mpr(&mut self, vp_idx: usize) {
+        if let (Some(vol), Some(plane)) = (
+            self.viewport_volume(vp_idx).cloned(),
+            self.viewports[vp_idx].mpr_plane.clone(),
+        ) {
+            if vol.depth > 0 {
+                let vox = vol.lps_to_voxel(plane.slice_center_lps());
+                let mapped = (vox[2].round() as isize).clamp(0, vol.depth as isize - 1) as usize;
+                self.viewports[vp_idx].slice = mapped;
+            }
+        }
+        self.viewports[vp_idx].mpr_enabled = false;
+        self.viewports[vp_idx].mpr_plane = None;
+        self.viewports[vp_idx].mpr_cached = None;
+    }
+
+    fn should_sync_viewports(&self) -> bool {
+        self.ortho_mpr_active
+            || (self.tiling.cell_count() > 1 && self.sync_mode != SliceSynchronization::Off)
+    }
+
+    fn sync_zoom_from(&mut self, leader_idx: usize, factor: f32) {
+        if !self.should_sync_viewports() {
+            return;
+        }
+        let count = self.tiling.cell_count();
+        for i in 0..count {
+            if i != leader_idx && self.viewports[i].selected.is_some() {
+                self.viewports[i].zoom = (self.viewports[i].zoom * factor).clamp(0.05, 50.0);
+            }
+        }
+    }
+
+    fn sync_pan_from(&mut self, leader_idx: usize, delta: Vec2) {
+        if !self.should_sync_viewports() {
+            return;
+        }
+        let count = self.tiling.cell_count();
+        for i in 0..count {
+            if i != leader_idx && self.viewports[i].selected.is_some() {
+                self.viewports[i].pan += delta;
+            }
+        }
+    }
+
+    fn sync_window_delta(&mut self, leader_idx: usize, d_level: f32, d_width: f32) {
+        if !self.should_sync_viewports() {
+            return;
+        }
+        let count = self.tiling.cell_count();
+        for i in 0..count {
+            if i == leader_idx || self.viewports[i].selected.is_none() {
+                continue;
+            }
+            let base = if let Some(w) = self.viewports[i].window {
+                Some(w)
+            } else {
+                self.viewport_frame(i).map(|f| self.effective_window(i, f))
+            };
+            if let Some(w) = base {
+                self.viewports[i].window = Some(Window {
+                    level: w.level + d_level,
+                    width: (w.width + d_width).max(1.0),
+                });
+            }
+        }
     }
 
     fn viewport_volume(&self, vp_idx: usize) -> Option<&Arc<Volume3D>> {
@@ -666,6 +764,79 @@ impl ViewerApp {
 
     /// Sets the multi-series comparison tiling layout and auto-populates newly exposed
     /// viewports with consecutive series from the active study.
+    /// Updates the shared 3D Orthogonal MPR crosshair position (LPS mm) and reslices
+    /// all visible Axial / Coronal / Sagittal panes to pass through `pt_lps`.
+    fn set_ortho_crosshair_lps(&mut self, pt_lps: [f64; 3]) {
+        self.ortho_crosshair_lps = Some(pt_lps);
+        let count = self.tiling.cell_count().min(3);
+        for vp_idx in 0..count {
+            if !self.viewports[vp_idx].mpr_enabled {
+                continue;
+            }
+            if let Some(mut plane) = self.viewports[vp_idx].mpr_plane.clone() {
+                plane.offset_mm = dot3(sub3(pt_lps, plane.center_lps), plane.normal);
+                self.viewports[vp_idx].mpr_plane = Some(plane);
+                self.sync_slice_index_from_mpr_plane(vp_idx);
+            }
+        }
+    }
+
+    /// Toggles the classic Horos 3-pane Orthogonal MPR layout (`Axial | Coronal | Sagittal`)
+    /// for the active viewport's 3D volume.
+    fn toggle_orthogonal_mpr(&mut self) {
+        if self.ortho_mpr_active {
+            self.ortho_mpr_active = false;
+            self.ortho_crosshair_lps = None;
+            self.crosshair_drag = None;
+            let restore = self.ortho_saved_tiling.take().unwrap_or_default();
+            self.set_tiling(restore);
+            if let Some(vp) = self.viewports.get_mut(self.active_viewport) {
+                vp.mpr_enabled = false;
+                vp.mpr_plane = None;
+                vp.mpr_cached = None;
+            }
+            return;
+        }
+
+        let src_idx = self.active_viewport;
+        let Some(sel) = self.viewports[src_idx].selected else {
+            return;
+        };
+        let Some(vol) = self.volumes.get(&sel).cloned() else {
+            return;
+        };
+
+        self.ortho_saved_tiling = Some(self.tiling);
+        let win = self.viewports[src_idx].window;
+        let clut = self.viewports[src_idx].clut_name.clone();
+        let inv = self.viewports[src_idx].invert;
+        let conv = self.viewports[src_idx].convolution_idx;
+
+        self.set_tiling(ViewportTiling::new(1, 3));
+        self.ortho_mpr_active = true;
+        let center = vol.center_lps;
+        self.ortho_crosshair_lps = Some(center);
+
+        let planes = [
+            MprPlane3D::axial(center),
+            MprPlane3D::coronal(center),
+            MprPlane3D::sagittal(center),
+        ];
+        for (vp_idx, plane) in planes.into_iter().enumerate() {
+            self.assign_series_to_viewport(vp_idx, Some(sel));
+            let vp = &mut self.viewports[vp_idx];
+            vp.window = win;
+            vp.clut_name = clut.clone();
+            vp.invert = inv;
+            vp.convolution_idx = conv;
+            vp.conv_cached = None;
+            vp.mpr_enabled = true;
+            vp.mpr_plane = Some(plane);
+            self.sync_slice_index_from_mpr_plane(vp_idx);
+        }
+        self.active_viewport = 0;
+    }
+
     fn set_tiling(&mut self, tiling: ViewportTiling) {
         self.tiling = tiling;
         let count = tiling.cell_count();
@@ -731,8 +902,15 @@ impl ViewerApp {
                 } else {
                     0.5
                 };
+                let delta_off = (t * 2.0 - 1.0) * half - plane.offset_mm;
                 plane.offset_mm = (t * 2.0 - 1.0) * half;
+                let normal = plane.normal;
                 self.viewports[vp_idx].mpr_plane = Some(plane);
+                if self.ortho_mpr_active && vp_idx < 3 {
+                    if let Some(cur_pt) = self.ortho_crosshair_lps {
+                        self.ortho_crosshair_lps = Some(add3(cur_pt, scale3(normal, delta_off)));
+                    }
+                }
             }
         }
         if vp_idx == self.active_viewport {
@@ -740,7 +918,7 @@ impl ViewerApp {
             self.angle_pending = None;
         }
 
-        if synchronize_others && self.sync_mode != SliceSynchronization::Off {
+        if synchronize_others && self.sync_mode != SliceSynchronization::Off && !self.ortho_mpr_active {
             self.synchronize_mpr_followers(vp_idx);
             self.synchronize_from_leader(vp_idx, prev_slice, new_slice);
         }
@@ -989,8 +1167,17 @@ impl ViewerApp {
     }
 
     fn set_active_window(&mut self, w: Option<Window>) {
-        self.viewports[self.active_viewport].window = w;
+        let leader_idx = self.active_viewport;
+        self.viewports[leader_idx].window = w;
         self.wl_drag = None;
+        if self.should_sync_viewports() {
+            let count = self.tiling.cell_count();
+            for i in 0..count {
+                if i != leader_idx && self.viewports[i].selected.is_some() {
+                    self.viewports[i].window = w;
+                }
+            }
+        }
     }
 
     fn active_clut_table(&self, vp_idx: usize) -> Option<ColorLookupTable> {
@@ -1119,7 +1306,19 @@ impl ViewerApp {
         });
 
         // Queue visible slices and the rest of each active series so 3D volumes assemble automatically.
-        let radius = 512usize;
+        let max_focus_len = self
+            .index
+            .as_ref()
+            .map(|idx| {
+                focuses
+                    .iter()
+                    .filter_map(|&(st, se, _)| idx.studies.get(st)?.series.get(se))
+                    .map(|s| s.slices.len())
+                    .max()
+                    .unwrap_or(512)
+            })
+            .unwrap_or(512);
+        let radius = max_focus_len.max(512);
         self.loader.update_focuses(&focuses, radius);
 
         let mut jobs = Vec::new();
@@ -1177,7 +1376,8 @@ impl ViewerApp {
                 continue;
             };
             let n = se.slices.len();
-            if n < 4 || se.normal.is_none() {
+            let forced = self.forced_mpr_series.contains(&(study, series));
+            if !forced && (n < 3 || se.normal.is_none()) {
                 continue;
             }
             let mut all_ready = true;
@@ -1197,9 +1397,25 @@ impl ViewerApp {
                 }
             }
             if all_ready {
-                if let Some(vol) = Volume3D::from_series(&se, &frames) {
+                if let Some(vol) = Volume3D::from_series_with_force(&se, &frames, forced) {
                     self.volumes.insert((study, series), vol);
                     newly_built_volume = true;
+                }
+            }
+        }
+
+        if let Some((vp_idx, key, ortho)) = self.pending_mpr_activate {
+            if self.viewports[vp_idx].selected != Some(key) {
+                self.pending_mpr_activate = None;
+            } else if self.volumes.contains_key(&key) {
+                self.pending_mpr_activate = None;
+                self.active_viewport = vp_idx;
+                if ortho {
+                    if !self.ortho_mpr_active {
+                        self.toggle_orthogonal_mpr();
+                    }
+                } else if let Some(p) = self.effective_mpr_plane(vp_idx) {
+                    self.set_viewport_mpr_plane(vp_idx, p, true);
                 }
             }
         }
@@ -1441,83 +1657,407 @@ impl ViewerApp {
     // ----------------------------------------------------------------- UI
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            if ui.button("Open Folder…").clicked() {
-                if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                    self.start_scan(vec![dir]);
-                }
-            }
-            if ui.button("Open Files / ZIP…").clicked() {
-                if let Some(files) = rfd::FileDialog::new().pick_files() {
-                    self.start_scan(files);
-                }
-            }
-            ui.separator();
+        // Row 1: Primary Horos-style uncluttered icon/compact toolbar (scrolls horizontally if very narrow, never wraps into a messy pile)
+        egui::ScrollArea::horizontal()
+            .id_salt("horos_toolbar_scroll")
+            .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 4.0;
 
-            // Mouse tools
-            let prev_tool = self.tool;
-            ui.selectable_value(&mut self.tool, Tool::WindowLevel, "WL/WW")
-                .on_hover_text("Drag right = wider window, up = higher level (W)");
-            ui.selectable_value(&mut self.tool, Tool::Scroll, "Scroll")
-                .on_hover_text("Drag up/down to scrub through slices without the scroll wheel (S)");
-            ui.selectable_value(&mut self.tool, Tool::Pan, "Pan")
-                .on_hover_text("Pan image (Middle mouse button also pans)");
-            ui.selectable_value(&mut self.tool, Tool::Zoom, "Zoom")
-                .on_hover_text("Zoom image (Right mouse button or Ctrl+wheel also zooms) (Z)");
-            ui.selectable_value(&mut self.tool, Tool::Rotate, "Rotate")
-                .on_hover_text("Drag around image center to rotate in-plane (2D)");
-            ui.selectable_value(&mut self.tool, Tool::Orbit3D, "3D Rotate")
-                .on_hover_text("Drag in any direction to rotate the 3D volume slicing plane in-place (Axial / Coronal / Sagittal / Oblique) (O)");
-            ui.selectable_value(&mut self.tool, Tool::Length, "Length")
-                .on_hover_text("Measure distance in calibrated mm: click-drag or click two points (L / M)");
-            ui.selectable_value(&mut self.tool, Tool::Angle, "Angle")
-                .on_hover_text("Measure angle: click 3 points (end 1, vertex, end 2) or drag first arm then click second arm (A)");
-            ui.selectable_value(&mut self.tool, Tool::Oval, "◯ Oval")
-                .on_hover_text("Draw Oval / Ellipse ROI with calibrated Area (cm²/mm²), Perimeter, Mean, SD, Min, Max (E)");
-            ui.selectable_value(&mut self.tool, Tool::Rect, "▭ Rect")
-                .on_hover_text("Draw Rectangle ROI with calibrated Area (cm²/mm²), Perimeter, Mean, SD, Min, Max (B)");
-            ui.selectable_value(&mut self.tool, Tool::Polygon, "⬠ Poly")
-                .on_hover_text("Draw Closed Polygon ROI: click vertices, double-click or press Enter to close (G)");
-            ui.selectable_value(&mut self.tool, Tool::Pencil, "✏ Pencil")
-                .on_hover_text("Draw Freehand / Pencil ROI with spline smoothing and interior pixel statistics (F)");
-            ui.selectable_value(&mut self.tool, Tool::Point, "⌖ Point")
-                .on_hover_text("Place a 2D Point / Probe ROI showing calibrated intensity/HU and 3D coordinates (T)");
-            if self.tool != prev_tool {
-                self.drawing.clear();
-                self.angle_pending = None;
-            }
-            if self
-                .viewport_measure_key(self.active_viewport)
-                .and_then(|k| self.measures.get(&k))
-                .is_some_and(|m| !m.is_empty())
-            {
-                if ui
-                    .button("🗑 Clear ROIs")
-                    .on_hover_text("Clear all ROIs on the current slice (Delete/Backspace removes the last ROI)")
-                    .clicked()
-                {
-                    if let Some(k) = self.viewport_measure_key(self.active_viewport) {
-                        self.measures.remove(&k);
+                    if ui
+                        .toggle_value(&mut self.show_browser, "◧")
+                        .on_hover_text("Show / hide Study Browser")
+                        .changed()
+                    {}
+                    ui.menu_button("📂 Open", |ui| {
+                        if ui.button("Open Folder…").clicked() {
+                            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+                                self.start_scan(vec![dir]);
+                            }
+                            ui.close();
+                        }
+                        if ui.button("Open Files / ZIP…").clicked() {
+                            if let Some(files) = rfd::FileDialog::new().pick_files() {
+                                self.start_scan(files);
+                            }
+                            ui.close();
+                        }
+                    })
+                    .response
+                    .on_hover_text("Open DICOM folder, files, or .zip archive");
+                    ui.separator();
+
+                    // Mouse tools (compact Horos-style strip)
+                    let prev_tool = self.tool;
+                    ui.selectable_value(&mut self.tool, Tool::WindowLevel, "WL")
+                        .on_hover_text("Window / Level (W)");
+                    ui.selectable_value(&mut self.tool, Tool::Scroll, "Scroll")
+                        .on_hover_text("Stack scroll (S)");
+                    ui.selectable_value(&mut self.tool, Tool::Pan, "Pan")
+                        .on_hover_text("Pan (Middle mouse button)");
+                    ui.selectable_value(&mut self.tool, Tool::Zoom, "Zoom")
+                        .on_hover_text("Zoom (Right mouse button / Ctrl+wheel) (Z)");
+                    ui.selectable_value(&mut self.tool, Tool::Rotate, "Rot")
+                        .on_hover_text("In-plane 2D rotation");
+                    ui.selectable_value(&mut self.tool, Tool::Orbit3D, "3D")
+                        .on_hover_text("3D Trackball orbit rotation (O)");
+                    ui.separator();
+
+                    // Quick ROIs + ROI dropdown
+                    ui.selectable_value(&mut self.tool, Tool::Length, "📏")
+                        .on_hover_text("Length (mm) (L / M)");
+                    ui.selectable_value(&mut self.tool, Tool::Oval, "◯")
+                        .on_hover_text("Oval / Ellipse ROI (E)");
+                    ui.selectable_value(&mut self.tool, Tool::Rect, "▭")
+                        .on_hover_text("Rectangle ROI (B)");
+                    let roi_label = match self.tool {
+                        Tool::Angle => "ROI: ∠",
+                        Tool::Polygon => "ROI: ⬠",
+                        Tool::Pencil => "ROI: ✏",
+                        Tool::Point => "ROI: ⌖",
+                        _ => "ROI ▾",
+                    };
+                    ui.menu_button(roi_label, |ui| {
+                        ui.selectable_value(&mut self.tool, Tool::Length, "📏 Length (L)");
+                        ui.selectable_value(&mut self.tool, Tool::Angle, "∠ Angle (A)");
+                        ui.selectable_value(&mut self.tool, Tool::Oval, "◯ Oval ROI (E)");
+                        ui.selectable_value(&mut self.tool, Tool::Rect, "▭ Rect ROI (B)");
+                        ui.selectable_value(&mut self.tool, Tool::Polygon, "⬠ Polygon ROI (G)");
+                        ui.selectable_value(&mut self.tool, Tool::Pencil, "✏ Pencil ROI (F)");
+                        ui.selectable_value(&mut self.tool, Tool::Point, "⌖ Point Probe (T)");
+                        if self
+                            .viewport_measure_key(self.active_viewport)
+                            .and_then(|k| self.measures.get(&k))
+                            .is_some_and(|m| !m.is_empty())
+                        {
+                            ui.separator();
+                            if ui.button("🗑 Clear ROIs on Slice").clicked() {
+                                if let Some(k) = self.viewport_measure_key(self.active_viewport) {
+                                    self.measures.remove(&k);
+                                }
+                                ui.close();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Measurement & ROI tools");
+                    ui.separator();
+
+                    // 3-Pane Orthogonal MPR (Axial | Coronal | Sagittal) & In-Place 3D MPR
+                    let has_series = self.active_cell().selected.is_some();
+                    ui.add_enabled_ui(has_series || self.ortho_mpr_active, |ui| {
+                        let mut ortho_on = self.ortho_mpr_active;
+                        if ui
+                            .toggle_value(&mut ortho_on, "⊞ Ax·Cor·Sag")
+                            .on_hover_text("Classic Horos 3-pane Orthogonal MPR (Axial | Coronal | Sagittal) with interactive crosshairs")
+                            .changed()
+                        {
+                            if ortho_on {
+                                self.request_mpr_mode(self.active_viewport, true);
+                            } else if self.ortho_mpr_active {
+                                self.toggle_orthogonal_mpr();
+                            }
+                        }
+                    });
+                    ui.add_enabled_ui(has_series, |ui| {
+                        let mut mpr_on = self.active_cell().mpr_enabled;
+                        if ui
+                            .toggle_value(&mut mpr_on, "🧊 3D")
+                            .on_hover_text("In-place 3D volume slicing inside active viewport")
+                            .changed()
+                        {
+                            let vp_idx = self.active_viewport;
+                            if mpr_on {
+                                self.request_mpr_mode(vp_idx, false);
+                            } else {
+                                self.disable_viewport_mpr(vp_idx);
+                                if self.pending_mpr_activate.is_some_and(|(v, _, o)| v == vp_idx && !o) {
+                                    self.pending_mpr_activate = None;
+                                }
+                            }
+                        }
+                    });
+                    ui.separator();
+
+                    if self.tool != prev_tool {
+                        self.drawing.clear();
+                        self.angle_pending = None;
                     }
-                }
-            }
-            ui.separator();
 
-            // Study / Series & Slice Navigation Controls (no scroll wheel needed)
+                    // WL/WW Presets ComboBox
+                    let active_win = self.active_cell().window;
+                    let mut chosen_win: Option<Option<Window>> = None;
+                    egui::ComboBox::from_id_salt("presets")
+                        .selected_text(self.preset_label())
+                        .width(110.0)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(active_win.is_none(), "0   Default")
+                                .clicked()
+                            {
+                                chosen_win = Some(None);
+                            }
+                            if let Some(f) = self.viewport_frame(self.active_viewport) {
+                                let full = f.full_window;
+                                if ui
+                                    .selectable_label(
+                                        active_win == Some(full),
+                                        format!("~   Full dynamic   L {:.0} W {:.0}", full.level, full.width),
+                                    )
+                                    .clicked()
+                                {
+                                    chosen_win = Some(Some(full));
+                                }
+                            }
+                            ui.separator();
+                            for (i, entry) in self.presets.hot_key_order().into_iter().enumerate() {
+                                let Some(w) = entry.window else { continue };
+                                let key = if i < 9 {
+                                    format!("{}", i + 1)
+                                } else {
+                                    " ".into()
+                                };
+                                let text = format!("{key}   {}   L {} W {}", entry.name, w.level, w.width);
+                                if ui.selectable_label(active_win == Some(w), text).clicked() {
+                                    chosen_win = Some(Some(w));
+                                }
+                            }
+                        });
+                    if let Some(w) = chosen_win {
+                        self.set_active_window(w);
+                    }
+
+                    // CLUT Selector ComboBox
+                    let current_clut_name = self.active_cell().clut_name.clone();
+                    let mut chosen_clut: Option<String> = None;
+                    egui::ComboBox::from_id_salt("clut_selector")
+                        .selected_text(format!("CLUT: {current_clut_name}"))
+                        .width(108.0)
+                        .show_ui(ui, |ui| {
+                            for name in ColourTableBook::menu_names() {
+                                if ui
+                                    .selectable_label(current_clut_name == name, name)
+                                    .clicked()
+                                {
+                                    chosen_clut = Some(name.to_string());
+                                }
+                            }
+                        });
+                    if let Some(name) = chosen_clut {
+                        self.active_cell_mut().clut_name = name;
+                    }
+
+                    // 2D Spatial Convolution Filter Selector
+                    let cur_conv = self.active_cell().convolution_idx;
+                    let conv_label = cur_conv
+                        .and_then(|i| FACTORY_CONVOLUTIONS.get(i))
+                        .map(|k| k.name)
+                        .unwrap_or("None");
+                    let mut chosen_conv: Option<Option<usize>> = None;
+                    egui::ComboBox::from_id_salt("conv_selector")
+                        .selected_text(format!("Filter: {conv_label}"))
+                        .width(105.0)
+                        .show_ui(ui, |ui| {
+                            if ui
+                                .selectable_label(cur_conv.is_none(), "No Filter")
+                                .clicked()
+                            {
+                                chosen_conv = Some(None);
+                            }
+                            ui.separator();
+                            for (idx, k) in FACTORY_CONVOLUTIONS.iter().enumerate() {
+                                if ui
+                                    .selectable_label(cur_conv == Some(idx), k.name)
+                                    .clicked()
+                                {
+                                    chosen_conv = Some(Some(idx));
+                                }
+                            }
+                        });
+                    if let Some(next_conv) = chosen_conv {
+                        let vp = self.active_cell_mut();
+                        vp.convolution_idx = next_conv;
+                        vp.conv_cached = None;
+                    }
+
+                    // View / Transform menu (keeps toolbar clean & uncluttered)
+                    ui.menu_button("View ▾", |ui| {
+                        ui.toggle_value(&mut self.active_cell_mut().invert, "Invert (I)");
+                        ui.separator();
+                        if ui.button("↺ Rotate 90° CCW").clicked() {
+                            let vp = self.active_cell_mut();
+                            vp.rotation = (vp.rotation - 90.0).rem_euclid(360.0);
+                            ui.close();
+                        }
+                        if ui.button("↻ Rotate 90° CW").clicked() {
+                            let vp = self.active_cell_mut();
+                            vp.rotation = (vp.rotation + 90.0).rem_euclid(360.0);
+                            ui.close();
+                        }
+                        let mut x_flip = self.active_cell().x_flipped;
+                        if ui.toggle_value(&mut x_flip, "⇄ Flip Horizontal (H)").changed() {
+                            self.active_cell_mut().x_flipped = x_flip;
+                        }
+                        let mut y_flip = self.active_cell().y_flipped;
+                        if ui.toggle_value(&mut y_flip, "⇅ Flip Vertical (V)").changed() {
+                            self.active_cell_mut().y_flipped = y_flip;
+                        }
+                        ui.separator();
+                        ui.toggle_value(&mut self.show_reference_lines, "Reference Lines");
+                        ui.toggle_value(&mut self.show_annotations, "Annotations & Orientation");
+                        ui.separator();
+                        ui.label("Slice Sync Mode:");
+                        for mode in [
+                            SliceSynchronization::Absolute,
+                            SliceSynchronization::Location,
+                            SliceSynchronization::Relative,
+                            SliceSynchronization::Off,
+                        ] {
+                            ui.selectable_value(&mut self.sync_mode, mode, mode.label());
+                        }
+                        ui.separator();
+                        if ui.button("Reset Viewport (R)").clicked() {
+                            let vp = self.active_cell_mut();
+                            vp.reset_view();
+                            vp.reset_clut();
+                            vp.invert = false;
+                            vp.mpr_enabled = false;
+                            vp.mpr_plane = None;
+                            vp.mpr_cached = None;
+                            self.set_active_window(None);
+                            ui.close();
+                        }
+                    })
+                    .response
+                    .on_hover_text("Orientation, Invert, Reference Lines, HUD, Sync & Reset");
+
+                    // Multi-Series Visual Square-Grid Tiling Picker (Horos TilingArea style)
+                    let mut new_tiling = None;
+                    let cur_rows = self.tiling.rows;
+                    let cur_cols = self.tiling.columns;
+                    ui.menu_button(format!("⊞ {}", self.tiling.label()), |ui| {
+                        ui.set_min_width(132.0);
+                        let grid_max = 4usize;
+                        let cell_size = 24.0;
+                        let gap = 4.0;
+                        let total_side = grid_max as f32 * cell_size + (grid_max - 1) as f32 * gap;
+                        let (grid_rect, _) =
+                            ui.allocate_exact_size(vec2(total_side, total_side), Sense::hover());
+
+                        let pointer_pos = ui.input(|i| i.pointer.hover_pos());
+                        let clicked = ui.input(|i| i.pointer.primary_clicked());
+                        let mut hovered_rc: Option<(usize, usize)> = None;
+
+                        for r in 0..grid_max {
+                            for c in 0..grid_max {
+                                let min = pos2(
+                                    grid_rect.min.x + c as f32 * (cell_size + gap),
+                                    grid_rect.min.y + r as f32 * (cell_size + gap),
+                                );
+                                let cell_rect = Rect::from_min_size(min, vec2(cell_size, cell_size));
+                                if pointer_pos.is_some_and(|p| cell_rect.expand(gap * 0.5).contains(p)) {
+                                    hovered_rc = Some((r, c));
+                                }
+                            }
+                        }
+                        self.tiling_hover = hovered_rc;
+
+                        let (active_r, active_c) =
+                            hovered_rc.unwrap_or((cur_rows.saturating_sub(1), cur_cols.saturating_sub(1)));
+
+                        let painter = ui.painter();
+                        for r in 0..grid_max {
+                            for c in 0..grid_max {
+                                let min = pos2(
+                                    grid_rect.min.x + c as f32 * (cell_size + gap),
+                                    grid_rect.min.y + r as f32 * (cell_size + gap),
+                                );
+                                let cell_rect = Rect::from_min_size(min, vec2(cell_size, cell_size));
+                                let in_selection = r <= active_r && c <= active_c;
+                                let in_current = r < cur_rows && c < cur_cols;
+
+                                let fill = if in_selection {
+                                    if hovered_rc.is_some() {
+                                        Color32::from_rgb(70, 165, 255)
+                                    } else {
+                                        Color32::from_rgb(55, 130, 210)
+                                    }
+                                } else if in_current {
+                                    Color32::from_rgb(38, 62, 92)
+                                } else {
+                                    Color32::from_gray(42)
+                                };
+
+                                let stroke = if in_selection {
+                                    Stroke::new(1.5, Color32::from_rgb(160, 220, 255))
+                                } else if in_current {
+                                    Stroke::new(1.0, Color32::from_rgb(90, 145, 200))
+                                } else {
+                                    Stroke::new(1.0, Color32::from_gray(95))
+                                };
+
+                                painter.rect_filled(cell_rect, 3.0, fill);
+                                painter.rect_stroke(cell_rect, 3.0, stroke, egui::StrokeKind::Inside);
+                            }
+                        }
+
+                        ui.add_space(4.0);
+                        let disp_r = active_r + 1;
+                        let disp_c = active_c + 1;
+                        let count = disp_r * disp_c;
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{disp_r} × {disp_c}  ({count} viewport{})",
+                                    if count == 1 { "" } else { "s" }
+                                ))
+                                .strong()
+                                .color(Color32::from_rgb(150, 210, 255)),
+                            );
+                        });
+
+                        if clicked {
+                            if let Some((hr, hc)) = hovered_rc {
+                                new_tiling = Some(ViewportTiling::new(hr + 1, hc + 1));
+                                ui.close();
+                            }
+                        }
+                    })
+                    .response
+                    .on_hover_text("Viewport grid layout");
+                    if let Some(t) = new_tiling {
+                        self.ortho_mpr_active = false;
+                        self.ortho_crosshair_lps = None;
+                        self.set_tiling(t);
+                    }
+
+                    // Cine play + FPS popover
+                    let cine_label = if self.playing { "⏸" } else { "▶" };
+                    ui.toggle_value(&mut self.playing, cine_label)
+                        .on_hover_text("Play / pause cine loop (Space / P)");
+                    ui.menu_button(format!("{} fps", self.fps as i32), |ui| {
+                        ui.add(
+                            egui::Slider::new(&mut self.fps, 1.0..=60.0)
+                                .text("fps")
+                                .integer(),
+                        );
+                    })
+                    .response
+                    .on_hover_text("Cine playback speed");
+                });
+            });
+
+        // Row 2: Slim Slice Scrubber & Contextual MPR Strip
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+
             let series_count = self.all_series_pairs().len();
             ui.add_enabled_ui(series_count > 1, |ui| {
-                if ui
-                    .button("◀ Se")
-                    .on_hover_text("Previous series in study ([)")
-                    .clicked()
-                {
+                if ui.small_button("◀ Se").on_hover_text("Previous series ([)").clicked() {
                     self.step_active_series(-1);
                 }
-                if ui
-                    .button("Se ▶")
-                    .on_hover_text("Next series in study (])")
-                    .clicked()
-                {
+                if ui.small_button("Se ▶").on_hover_text("Next series (])").clicked() {
                     self.step_active_series(1);
                 }
             });
@@ -1525,18 +2065,10 @@ impl ViewerApp {
             let vp_idx = self.active_viewport;
             let slice_count = self.viewport_slice_count(vp_idx);
             ui.add_enabled_ui(slice_count > 1, |ui| {
-                if ui
-                    .button("⏮")
-                    .on_hover_text("First slice (Home)")
-                    .clicked()
-                {
+                if ui.small_button("⏮").on_hover_text("First slice (Home)").clicked() {
                     self.set_viewport_slice(vp_idx, 0, true);
                 }
-                if ui
-                    .button("◀")
-                    .on_hover_text("Previous slice (Up / Left arrow)")
-                    .clicked()
-                {
+                if ui.small_button("◀").on_hover_text("Previous slice").clicked() {
                     self.step_viewport_slice(vp_idx, -1);
                 }
                 let max_s = slice_count.max(1);
@@ -1547,426 +2079,86 @@ impl ViewerApp {
                             .show_value(false)
                             .trailing_fill(true),
                     )
-                    .on_hover_text(format!(
-                        "Scrub through slices ({} / {})",
-                        cur_1based, slice_count
-                    ));
+                    .on_hover_text(format!("Slice {cur_1based} / {slice_count}"));
                 if slider_resp.changed() {
                     self.set_viewport_slice(vp_idx, cur_1based as isize - 1, true);
                 }
                 ui.monospace(format!("{cur_1based}/{slice_count}"));
-                if ui
-                    .button("▶")
-                    .on_hover_text("Next slice (Down / Right arrow)")
-                    .clicked()
-                {
+                if ui.small_button("▶").on_hover_text("Next slice").clicked() {
                     self.step_viewport_slice(vp_idx, 1);
                 }
-                if ui
-                    .button("⏭")
-                    .on_hover_text("Last slice (End)")
-                    .clicked()
-                {
+                if ui.small_button("⏭").on_hover_text("Last slice (End)").clicked() {
                     self.set_viewport_slice(vp_idx, isize::MAX, true);
                 }
             });
-            ui.separator();
 
-            // WL/WW Presets ComboBox
-            let active_win = self.active_cell().window;
-            let mut chosen_win: Option<Option<Window>> = None;
-            egui::ComboBox::from_id_salt("presets")
-                .selected_text(self.preset_label())
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(active_win.is_none(), "0   Default")
-                        .clicked()
-                    {
-                        chosen_win = Some(None);
-                    }
-                    if let Some(f) = self.viewport_frame(self.active_viewport) {
-                        let full = f.full_window;
-                        if ui
-                            .selectable_label(
-                                active_win == Some(full),
-                                format!("~   Full dynamic   L {:.0} W {:.0}", full.level, full.width),
-                            )
-                            .clicked()
-                        {
-                            chosen_win = Some(Some(full));
-                        }
-                    }
-                    ui.separator();
-                    for (i, entry) in self.presets.hot_key_order().into_iter().enumerate() {
-                        let Some(w) = entry.window else { continue };
-                        let key = if i < 9 {
-                            format!("{}", i + 1)
-                        } else {
-                            " ".into()
-                        };
-                        let text = format!("{key}   {}   L {} W {}", entry.name, w.level, w.width);
-                        if ui.selectable_label(active_win == Some(w), text).clicked() {
-                            chosen_win = Some(Some(w));
-                        }
-                    }
-                });
-            if let Some(w) = chosen_win {
-                self.set_active_window(w);
-            }
-
-            // CLUT Selector ComboBox
-            let current_clut_name = self.active_cell().clut_name.clone();
-            let mut chosen_clut: Option<String> = None;
-            egui::ComboBox::from_id_salt("clut_selector")
-                .selected_text(format!("CLUT: {current_clut_name}"))
-                .show_ui(ui, |ui| {
-                    for name in ColourTableBook::menu_names() {
-                        if ui
-                            .selectable_label(current_clut_name == name, name)
-                            .clicked()
-                        {
-                            chosen_clut = Some(name.to_string());
-                        }
-                    }
-                });
-            if let Some(name) = chosen_clut {
-                self.active_cell_mut().clut_name = name;
-            }
-
-            // 2D Spatial Convolution Filter Selector (22 Horos factory kernels)
-            let cur_conv = self.active_cell().convolution_idx;
-            let conv_label = cur_conv
-                .and_then(|i| FACTORY_CONVOLUTIONS.get(i))
-                .map(|k| k.name)
-                .unwrap_or("None");
-            let mut chosen_conv: Option<Option<usize>> = None;
-            egui::ComboBox::from_id_salt("conv_selector")
-                .selected_text(format!("Filter: {conv_label}"))
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(cur_conv.is_none(), "No Filter")
-                        .clicked()
-                    {
-                        chosen_conv = Some(None);
-                    }
-                    ui.separator();
-                    for (idx, k) in FACTORY_CONVOLUTIONS.iter().enumerate() {
-                        if ui
-                            .selectable_label(cur_conv == Some(idx), k.name)
-                            .clicked()
-                        {
-                            chosen_conv = Some(Some(idx));
-                        }
-                    }
-                });
-            if let Some(next_conv) = chosen_conv {
-                let vp = self.active_cell_mut();
-                vp.convolution_idx = next_conv;
-                vp.conv_cached = None;
-            }
-
-            ui.toggle_value(&mut self.active_cell_mut().invert, "Invert")
-                .on_hover_text("Invert greyscale lookup (I)");
-            ui.separator();
-
-            // Orientation buttons (Rotate 90 CCW/CW, Flip H/V, Reset)
-            if ui
-                .button("↺ 90°")
-                .on_hover_text("Rotate 90° counter-clockwise")
-                .clicked()
-            {
-                let vp = self.active_cell_mut();
-                vp.rotation = (vp.rotation - 90.0).rem_euclid(360.0);
-            }
-            if ui
-                .button("↻ 90°")
-                .on_hover_text("Rotate 90° clockwise")
-                .clicked()
-            {
-                let vp = self.active_cell_mut();
-                vp.rotation = (vp.rotation + 90.0).rem_euclid(360.0);
-            }
-            let mut x_flip = self.active_cell().x_flipped;
-            if ui
-                .toggle_value(&mut x_flip, "⇄ Flip H")
-                .on_hover_text("Mirror horizontally (H)")
-                .changed()
-            {
-                self.active_cell_mut().x_flipped = x_flip;
-            }
-            let mut y_flip = self.active_cell().y_flipped;
-            if ui
-                .toggle_value(&mut y_flip, "⇅ Flip V")
-                .on_hover_text("Flip vertically (V)")
-                .changed()
-            {
-                self.active_cell_mut().y_flipped = y_flip;
-            }
-            if ui
-                .button("Reset")
-                .on_hover_text("Reset zoom, pan, rotation, CLUT, 3D plane, and window (R)")
-                .clicked()
-            {
-                let vp = self.active_cell_mut();
-                vp.reset_view();
-                vp.reset_clut();
-                vp.invert = false;
-                vp.mpr_enabled = false;
-                vp.mpr_plane = None;
-                vp.mpr_cached = None;
-                self.set_active_window(None);
-            }
-            ui.separator();
-
-            // In-Place Single-Viewport 3D MPR Plane Controls
-            let has_vol = self.viewport_volume(self.active_viewport).is_some();
-            ui.add_enabled_ui(has_vol, |ui| {
-                let mut mpr_on = self.active_cell().mpr_enabled;
-                if ui
-                    .toggle_value(&mut mpr_on, "🧊 3D MPR")
-                    .on_hover_text("Enable in-place 3D volume slicing & 3D oblique rotation inside this viewport")
-                    .changed()
-                {
-                    let vp_idx = self.active_viewport;
-                    if mpr_on {
-                        if let Some(p) = self.effective_mpr_plane(vp_idx) {
-                            self.set_viewport_mpr_plane(vp_idx, p, true);
-                        }
-                    } else {
-                        self.viewports[vp_idx].mpr_enabled = false;
-                    }
-                }
-                if ui
-                    .button("Ax")
-                    .on_hover_text("Switch this viewport to 3D Axial plane")
-                    .clicked()
-                {
-                    let vp_idx = self.active_viewport;
+            if self.active_cell().mpr_enabled {
+                ui.separator();
+                if ui.small_button("Ax").on_hover_text("Axial plane").clicked() {
                     if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
                         self.set_viewport_mpr_plane(vp_idx, MprPlane3D::axial(vol.center_lps), true);
                     }
                 }
-                if ui
-                    .button("Cor")
-                    .on_hover_text("Switch this viewport to 3D Coronal plane")
-                    .clicked()
-                {
-                    let vp_idx = self.active_viewport;
+                if ui.small_button("Cor").on_hover_text("Coronal plane").clicked() {
                     if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
-                        self.set_viewport_mpr_plane(
-                            vp_idx,
-                            MprPlane3D::coronal(vol.center_lps),
-                            true,
-                        );
+                        self.set_viewport_mpr_plane(vp_idx, MprPlane3D::coronal(vol.center_lps), true);
                     }
                 }
-                if ui
-                    .button("Sag")
-                    .on_hover_text("Switch this viewport to 3D Sagittal plane")
-                    .clicked()
-                {
-                    let vp_idx = self.active_viewport;
+                if ui.small_button("Sag").on_hover_text("Sagittal plane").clicked() {
                     if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
-                        self.set_viewport_mpr_plane(
-                            vp_idx,
-                            MprPlane3D::sagittal(vol.center_lps),
-                            true,
-                        );
+                        self.set_viewport_mpr_plane(vp_idx, MprPlane3D::sagittal(vol.center_lps), true);
                     }
                 }
-                if ui
-                    .button("Nat")
-                    .on_hover_text("Reset 3D slicing plane to native acquisition orientation")
-                    .clicked()
-                {
-                    let vp_idx = self.active_viewport;
+                if ui.small_button("Nat").on_hover_text("Native orientation").clicked() {
                     if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
-                        self.set_viewport_mpr_plane(
-                            vp_idx,
-                            MprPlane3D::from_volume_native(&vol),
-                            true,
-                        );
+                        self.set_viewport_mpr_plane(vp_idx, MprPlane3D::from_volume_native(&vol), true);
                     }
                 }
-                if self.active_cell().mpr_enabled {
-                    let vp_idx = self.active_viewport;
-                    if let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
-                        let mut changed = false;
-                        egui::ComboBox::from_id_salt("mpr_slab_mode")
-                            .selected_text(format!("Slab: {}", plane.slab_mode.label()))
-                            .width(86.0)
-                            .show_ui(ui, |ui| {
-                                for m in [
-                                    SlabMode::Thin,
-                                    SlabMode::Mip,
-                                    SlabMode::MinIp,
-                                    SlabMode::Mean,
-                                ] {
-                                    if ui
-                                        .selectable_value(&mut plane.slab_mode, m, m.label())
-                                        .changed()
-                                    {
-                                        changed = true;
-                                    }
+                if let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
+                    let mut changed = false;
+                    egui::ComboBox::from_id_salt("mpr_slab_mode")
+                        .selected_text(format!("Slab: {}", plane.slab_mode.label()))
+                        .width(82.0)
+                        .show_ui(ui, |ui| {
+                            for m in [
+                                SlabMode::Thin,
+                                SlabMode::Mip,
+                                SlabMode::MinIp,
+                                SlabMode::Mean,
+                            ] {
+                                if ui.selectable_value(&mut plane.slab_mode, m, m.label()).changed() {
+                                    changed = true;
                                 }
-                            });
-                        if plane.slab_mode != SlabMode::Thin {
-                            if ui
-                                .add(
-                                    egui::Slider::new(&mut plane.slab_thickness_mm, 1.0..=50.0)
-                                        .suffix(" mm")
-                                        .fixed_decimals(1),
-                                )
-                                .on_hover_text("Thick-slab MIP / MinIP / Mean projection thickness in mm")
-                                .changed()
-                            {
-                                changed = true;
                             }
-                        }
-                        if changed {
-                            self.set_viewport_mpr_plane(vp_idx, plane, true);
+                        });
+                    if plane.slab_mode != SlabMode::Thin {
+                        if ui
+                            .add(
+                                egui::Slider::new(&mut plane.slab_thickness_mm, 1.0..=50.0)
+                                    .suffix(" mm")
+                                    .fixed_decimals(1),
+                            )
+                            .changed()
+                        {
+                            changed = true;
                         }
                     }
+                    if changed {
+                        self.set_viewport_mpr_plane(vp_idx, plane, true);
+                    }
                 }
-            });
-            if self.tiling.cell_count() > 1 {
+            }
+
+            if self.tiling.cell_count() > 1 && !self.ortho_mpr_active {
+                ui.separator();
                 if ui
-                    .button("⚓ Lock 3D Sync")
-                    .on_hover_text("Lock the current slice height and 3D tilt angle between the active viewport and comparison viewports")
+                    .small_button("⚓ Lock 3D Sync")
+                    .on_hover_text("Lock current slice height & 3D tilt angle between comparison viewports")
                     .clicked()
                 {
                     self.lock_current_3d_alignment();
                 }
             }
-            ui.separator();
-
-            // Multi-Series Visual Square-Grid Tiling Picker (Horos TilingArea style)
-            let mut new_tiling = None;
-            let cur_rows = self.tiling.rows;
-            let cur_cols = self.tiling.columns;
-            ui.menu_button(format!("⊞ Layout {}", self.tiling.label()), |ui| {
-                ui.set_min_width(132.0);
-                let grid_max = 4usize;
-                let cell_size = 24.0;
-                let gap = 4.0;
-                let total_side = grid_max as f32 * cell_size + (grid_max - 1) as f32 * gap;
-                let (grid_rect, _) =
-                    ui.allocate_exact_size(vec2(total_side, total_side), Sense::hover());
-
-                let pointer_pos = ui.input(|i| i.pointer.hover_pos());
-                let clicked = ui.input(|i| i.pointer.primary_clicked());
-                let mut hovered_rc: Option<(usize, usize)> = None;
-
-                for r in 0..grid_max {
-                    for c in 0..grid_max {
-                        let min = pos2(
-                            grid_rect.min.x + c as f32 * (cell_size + gap),
-                            grid_rect.min.y + r as f32 * (cell_size + gap),
-                        );
-                        let cell_rect = Rect::from_min_size(min, vec2(cell_size, cell_size));
-                        if pointer_pos.is_some_and(|p| cell_rect.expand(gap * 0.5).contains(p)) {
-                            hovered_rc = Some((r, c));
-                        }
-                    }
-                }
-                self.tiling_hover = hovered_rc;
-
-                let (active_r, active_c) =
-                    hovered_rc.unwrap_or((cur_rows.saturating_sub(1), cur_cols.saturating_sub(1)));
-
-                let painter = ui.painter();
-                for r in 0..grid_max {
-                    for c in 0..grid_max {
-                        let min = pos2(
-                            grid_rect.min.x + c as f32 * (cell_size + gap),
-                            grid_rect.min.y + r as f32 * (cell_size + gap),
-                        );
-                        let cell_rect = Rect::from_min_size(min, vec2(cell_size, cell_size));
-                        let in_selection = r <= active_r && c <= active_c;
-                        let in_current = r < cur_rows && c < cur_cols;
-
-                        let fill = if in_selection {
-                            if hovered_rc.is_some() {
-                                Color32::from_rgb(70, 165, 255)
-                            } else {
-                                Color32::from_rgb(55, 130, 210)
-                            }
-                        } else if in_current {
-                            Color32::from_rgb(38, 62, 92)
-                        } else {
-                            Color32::from_gray(42)
-                        };
-
-                        let stroke = if in_selection {
-                            Stroke::new(1.5, Color32::from_rgb(160, 220, 255))
-                        } else if in_current {
-                            Stroke::new(1.0, Color32::from_rgb(90, 145, 200))
-                        } else {
-                            Stroke::new(1.0, Color32::from_gray(95))
-                        };
-
-                        painter.rect_filled(cell_rect, 3.0, fill);
-                        painter.rect_stroke(cell_rect, 3.0, stroke, egui::StrokeKind::Inside);
-                    }
-                }
-
-                ui.add_space(4.0);
-                let disp_r = active_r + 1;
-                let disp_c = active_c + 1;
-                let count = disp_r * disp_c;
-                ui.vertical_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{disp_r} × {disp_c}  ({count} viewport{})",
-                            if count == 1 { "" } else { "s" }
-                        ))
-                        .strong()
-                        .color(Color32::from_rgb(150, 210, 255)),
-                    );
-                });
-
-                if clicked {
-                    if let Some((hr, hc)) = hovered_rc {
-                        new_tiling = Some(ViewportTiling::new(hr + 1, hc + 1));
-                        ui.close();
-                    }
-                }
-            })
-            .response
-            .on_hover_text("Choose viewport grid layout by hovering & clicking the squares");
-            if let Some(t) = new_tiling {
-                self.set_tiling(t);
-            }
-
-            // Slice Synchronization Mode Selector
-            egui::ComboBox::from_id_salt("sync_selector")
-                .selected_text(self.sync_mode.label())
-                .show_ui(ui, |ui| {
-                    for mode in [
-                        SliceSynchronization::Absolute,
-                        SliceSynchronization::Location,
-                        SliceSynchronization::Relative,
-                        SliceSynchronization::Off,
-                    ] {
-                        ui.selectable_value(&mut self.sync_mode, mode, mode.label());
-                    }
-                });
-
-            ui.toggle_value(&mut self.show_reference_lines, "Ref Lines")
-                .on_hover_text("Show 3D cross-reference / scout cut lines between non-parallel series");
-            ui.toggle_value(&mut self.show_annotations, "HUD")
-                .on_hover_text("Show patient/series annotations and orientation markers");
-            ui.separator();
-
-            // Cine controls
-            let label = if self.playing { "⏸ Stop" } else { "▶ Cine" };
-            ui.toggle_value(&mut self.playing, label)
-                .on_hover_text("Play / pause cine loop (Space / P)");
-            ui.add(
-                egui::Slider::new(&mut self.fps, 1.0..=60.0)
-                    .text("fps")
-                    .integer(),
-            );
         });
     }
 
@@ -2130,92 +2322,11 @@ impl ViewerApp {
                                 });
                             }
 
-                            // Show auto-detected multi-plane MPR Acquisition Groups (e.g. separated AX/COR/SAG from the same acquisition).
-                            for group in &study.mpr_groups {
-                                if group.series_indices.len() >= 2 {
-                                    ui.push_id(("mpr_grp", si, group.id), |ui| {
-                                        let grp_active = active_sel.is_some_and(|(s_i, r_i)| {
-                                            s_i == si && group.series_indices.contains(&r_i)
-                                        });
-                                        let total_imgs: usize = group
-                                            .series_indices
-                                            .iter()
-                                            .filter_map(|&ri| study.series.get(ri))
-                                            .map(|s| s.slices.len())
-                                            .sum();
-                                        let grp_text = format!(
-                                            "🧊 MPR [{}]  {}  ({} imgs)",
-                                            group.planes_badge, group.label, total_imgs
-                                        );
-                                        ui.horizontal_wrapped(|ui| {
-                                            let resp = ui
-                                                .selectable_label(
-                                                    grp_active,
-                                                    egui::RichText::new(grp_text)
-                                                        .monospace()
-                                                        .strong()
-                                                        .color(Color32::from_rgb(130, 210, 255)),
-                                                )
-                                                .on_hover_text(
-                                                    "Auto-grouped acquisition (Axial / Coronal / Sagittal). Click to open with 3D MPR enabled, or right-click to assign to a viewport.",
-                                                );
-                                            if resp.clicked() {
-                                                let target_ri = active_sel
-                                                    .filter(|&(s_i, r_i)| {
-                                                        s_i == si && group.series_indices.contains(&r_i)
-                                                    })
-                                                    .map_or(group.primary_series, |(_, r_i)| r_i);
-                                                clicked = Some((
-                                                    self.active_viewport,
-                                                    (si, target_ri),
-                                                    true,
-                                                ));
-                                            }
-                                            resp.context_menu(|ui| {
-                                                for vp_idx in 0..cell_count {
-                                                    if ui
-                                                        .button(format!(
-                                                            "Open MPR Group in Viewport {}",
-                                                            vp_idx + 1
-                                                        ))
-                                                        .clicked()
-                                                    {
-                                                        clicked = Some((
-                                                            vp_idx,
-                                                            (si, group.primary_series),
-                                                            true,
-                                                        ));
-                                                        ui.close();
-                                                    }
-                                                }
-                                            });
-                                            for (lbl, opt_ri) in [
-                                                ("AX", group.axial_series),
-                                                ("COR", group.coronal_series),
-                                                ("SAG", group.sagittal_series),
-                                            ] {
-                                                if let Some(ri) = opt_ri {
-                                                    if ui
-                                                        .small_button(lbl)
-                                                        .on_hover_text(format!(
-                                                            "Open {lbl} acquisition in 3D MPR mode"
-                                                        ))
-                                                        .clicked()
-                                                    {
-                                                        clicked = Some((
-                                                            self.active_viewport,
-                                                            (si, ri),
-                                                            true,
-                                                        ));
-                                                    }
-                                                }
-                                            }
-                                        });
-                                    });
-                                }
-                            }
-
-                            for &ri in &matching_series {
+                            // Helper closure to render a single series row (with 38x38 thumbnail & click/context menu).
+                            let draw_series_row = |ui: &mut egui::Ui,
+                                                   ri: usize,
+                                                   clicked: &mut Option<(usize, (usize, usize), bool)>,
+                                                   thumb_jobs: &mut Vec<Job>| {
                                 let series = &study.series[ri];
                                 let desc = if series.description.is_empty() {
                                     "(no description)"
@@ -2314,7 +2425,7 @@ impl ViewerApp {
                                             if series.is_mpr_capable() { " · 3D MPR Ready" } else { "" }
                                         ));
                                     if resp.clicked() || thumb_resp.clicked() {
-                                        clicked = Some((self.active_viewport, (si, ri), false));
+                                        *clicked = Some((self.active_viewport, (si, ri), false));
                                     }
                                     resp.context_menu(|ui| {
                                         for vp_idx in 0..cell_count {
@@ -2322,12 +2433,118 @@ impl ViewerApp {
                                                 .button(format!("Open in Viewport {}", vp_idx + 1))
                                                 .clicked()
                                             {
-                                                clicked = Some((vp_idx, (si, ri), false));
+                                                *clicked = Some((vp_idx, (si, ri), false));
                                                 ui.close();
                                             }
                                         }
                                     });
                                 });
+                            };
+
+                            // Render series in list order, grouping multi-plane AX/COR/SAG reconstructions
+                            // into a compact Horos-style block (no duplicate rows outside the block).
+                            let mut rendered_series = std::collections::HashSet::new();
+                            for &ri in &matching_series {
+                                if rendered_series.contains(&ri) {
+                                    continue;
+                                }
+                                let grp = study.series[ri]
+                                    .mpr_group_id
+                                    .and_then(|gid| study.mpr_groups.iter().find(|g| g.id == gid))
+                                    .filter(|g| {
+                                        g.series_indices
+                                            .iter()
+                                            .filter(|idx| matching_series.contains(idx))
+                                            .count()
+                                            >= 2
+                                    });
+
+                                if let Some(group) = grp {
+                                    let grp_active = active_sel.is_some_and(|(s_i, r_i)| {
+                                        s_i == si && group.series_indices.contains(&r_i)
+                                    });
+                                    let mut ordered_planes = Vec::new();
+                                    for opt_ri in [
+                                        group.axial_series,
+                                        group.coronal_series,
+                                        group.sagittal_series,
+                                    ] {
+                                        if let Some(pri) = opt_ri {
+                                            if matching_series.contains(&pri)
+                                                && !ordered_planes.contains(&pri)
+                                            {
+                                                ordered_planes.push(pri);
+                                            }
+                                        }
+                                    }
+                                    for &gri in &group.series_indices {
+                                        if matching_series.contains(&gri)
+                                            && !ordered_planes.contains(&gri)
+                                        {
+                                            ordered_planes.push(gri);
+                                        }
+                                    }
+                                    for &pri in &ordered_planes {
+                                        rendered_series.insert(pri);
+                                    }
+
+                                    ui.push_id(("mpr_grp_block", si, group.id), |ui| {
+                                        egui::Frame::group(ui.style())
+                                            .fill(Color32::from_rgb(28, 34, 44))
+                                            .stroke(Stroke::new(
+                                                1.0,
+                                                if grp_active {
+                                                    Color32::from_rgb(70, 145, 230)
+                                                } else {
+                                                    Color32::from_rgb(52, 60, 74)
+                                                },
+                                            ))
+                                            .inner_margin(egui::Margin::symmetric(6, 5))
+                                            .show(ui, |ui| {
+                                                let grp_text = format!(
+                                                    "🧊 {}  [{}]",
+                                                    group.label, group.planes_badge
+                                                );
+                                                let hdr = ui
+                                                    .selectable_label(
+                                                        grp_active,
+                                                        egui::RichText::new(grp_text)
+                                                            .monospace()
+                                                            .strong()
+                                                            .size(11.0)
+                                                            .color(Color32::from_rgb(130, 210, 255)),
+                                                    )
+                                                    .on_hover_text(
+                                                        "Grouped Axial / Coronal / Sagittal reconstructions. Click to open in 3D MPR.",
+                                                    );
+                                                if hdr.clicked() {
+                                                    let target_ri = active_sel
+                                                        .filter(|&(s_i, r_i)| {
+                                                            s_i == si
+                                                                && group.series_indices.contains(&r_i)
+                                                        })
+                                                        .map_or(group.primary_series, |(_, r_i)| r_i);
+                                                    clicked = Some((
+                                                        self.active_viewport,
+                                                        (si, target_ri),
+                                                        true,
+                                                    ));
+                                                }
+                                                ui.add_space(2.0);
+                                                for pri in ordered_planes {
+                                                    draw_series_row(
+                                                        ui,
+                                                        pri,
+                                                        &mut clicked,
+                                                        &mut thumb_jobs,
+                                                    );
+                                                }
+                                            });
+                                    });
+                                } else {
+                                    rendered_series.insert(ri);
+                                    draw_series_row(ui, ri, &mut clicked, &mut thumb_jobs);
+                                }
                             }
                         });
                 }
@@ -2571,7 +2788,10 @@ impl ViewerApp {
 
         let mut cur_key = cur_key;
         if !on_scrubber {
-            self.handle_drag(vp_idx, &response, view, &frame);
+            let consumed = self.handle_ortho_crosshair_drag(vp_idx, &response, view, &frame);
+            if !consumed {
+                self.handle_drag(vp_idx, &response, view, &frame);
+            }
             if let Some((updated_f, updated_k)) = self.ensure_mpr_frame(vp_idx) {
                 frame = updated_f;
                 cur_key = Some(updated_k);
@@ -2647,8 +2867,32 @@ impl ViewerApp {
             self.hover_px = None;
         }
 
-        if self.show_reference_lines && self.tiling.cell_count() > 1 {
+        if self.ortho_mpr_active && vp_idx < 3 {
+            self.draw_ortho_crosshairs(&painter, vp_idx, view, img, &frame);
+        } else if self.show_reference_lines && self.tiling.cell_count() > 1 {
             self.draw_reference_lines(&painter, vp_idx, img, &frame);
+        }
+        if let Some((a_vp, anchor_pos, _)) = self.orbit_anchor {
+            if a_vp == vp_idx {
+                let clipped = painter.with_clip_rect(view);
+                let col = Color32::from_rgb(255, 200, 75);
+                clipped.circle_stroke(anchor_pos, 10.0, Stroke::new(1.5, col));
+                clipped.circle_filled(anchor_pos, 2.5, col);
+                clipped.line_segment(
+                    [pos2(anchor_pos.x - 14.0, anchor_pos.y), pos2(anchor_pos.x + 14.0, anchor_pos.y)],
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 200, 75, 160)),
+                );
+                clipped.line_segment(
+                    [pos2(anchor_pos.x, anchor_pos.y - 14.0), pos2(anchor_pos.x, anchor_pos.y + 14.0)],
+                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 200, 75, 160)),
+                );
+                if let Some(cur) = response.interact_pointer_pos() {
+                    clipped.line_segment(
+                        [anchor_pos, cur],
+                        Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 200, 75, 140)),
+                    );
+                }
+            }
         }
 
         self.draw_measures(&painter, vp_idx, img, &frame);
@@ -2659,6 +2903,146 @@ impl ViewerApp {
         }
         self.draw_scrubber_bar(ui, &painter, vp_idx, view);
         self.draw_viewport_border(&painter, vp_idx, view);
+    }
+
+    fn ortho_crosshair_screen_pos(
+        &self,
+        vp_idx: usize,
+        img: Rect,
+        frame: &Frame,
+    ) -> Option<Pos2> {
+        let pt_lps = self.ortho_crosshair_lps?;
+        let plane = self.viewports.get(vp_idx)?.mpr_plane.as_ref()?;
+        let slice_center = plane.slice_center_lps();
+        let rel = sub3(pt_lps, slice_center);
+        let u_mm = dot3(rel, plane.u_axis);
+        let v_mm = dot3(rel, plane.v_axis);
+        let (sy, sx) = frame.spacing.unwrap_or((1.0, 1.0));
+        let sx = sx.max(1e-6);
+        let sy = sy.max(1e-6);
+        let px = (frame.width.saturating_sub(1) as f64) * 0.5 + u_mm / sx;
+        let py = (frame.height.saturating_sub(1) as f64) * 0.5 + v_mm / sy;
+        Some(self.pixel_to_screen(vp_idx, img, frame, pos2(px as f32, py as f32)))
+    }
+
+    fn handle_ortho_crosshair_drag(
+        &mut self,
+        vp_idx: usize,
+        response: &egui::Response,
+        view: Rect,
+        frame: &Frame,
+    ) -> bool {
+        if !self.ortho_mpr_active || vp_idx >= 3 {
+            return false;
+        }
+        if response.drag_stopped() && self.crosshair_drag == Some(vp_idx) {
+            self.crosshair_drag = None;
+            return true;
+        }
+        let img = self.image_rect(vp_idx, view, frame);
+        let cross = self.ortho_crosshair_screen_pos(vp_idx, img, frame);
+        let pointer_pos = response.interact_pointer_pos();
+        let shift_held = response.ctx.input(|i| i.modifiers.shift);
+
+        let start_drag = response.drag_started_by(egui::PointerButton::Primary)
+            && (shift_held
+                || pointer_pos.is_some_and(|p| cross.is_some_and(|c| c.distance(p) <= 18.0)));
+        if start_drag {
+            self.crosshair_drag = Some(vp_idx);
+        }
+
+        let clicked_near = response.clicked_by(egui::PointerButton::Primary)
+            && (shift_held
+                || pointer_pos.is_some_and(|p| cross.is_some_and(|c| c.distance(p) <= 18.0)));
+
+        if self.crosshair_drag == Some(vp_idx) || clicked_near {
+            if let Some(pos) = pointer_pos {
+                if let Some(plane) = self.viewports.get(vp_idx).and_then(|v| v.mpr_plane.clone()) {
+                    let px = self.screen_to_pixel(vp_idx, img, frame, pos);
+                    let (sy, sx) = frame.spacing.unwrap_or((1.0, 1.0));
+                    let sx = sx.max(1e-6);
+                    let sy = sy.max(1e-6);
+                    let u_mm = (px.x as f64 - (frame.width.saturating_sub(1) as f64) * 0.5) * sx;
+                    let v_mm = (px.y as f64 - (frame.height.saturating_sub(1) as f64) * 0.5) * sy;
+                    let new_lps = add3(
+                        plane.slice_center_lps(),
+                        add3(scale3(plane.u_axis, u_mm), scale3(plane.v_axis, v_mm)),
+                    );
+                    self.set_ortho_crosshair_lps(new_lps);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    fn draw_ortho_crosshairs(
+        &self,
+        painter: &egui::Painter,
+        vp_idx: usize,
+        view: Rect,
+        img: Rect,
+        frame: &Frame,
+    ) {
+        let Some(c) = self.ortho_crosshair_screen_pos(vp_idx, img, frame) else {
+            return;
+        };
+        let clipped = painter.with_clip_rect(view);
+        let (h_color, v_color, badge, badge_color) = match vp_idx {
+            0 => (
+                Color32::from_rgba_unmultiplied(74, 222, 128, 210), // Coronal (Green)
+                Color32::from_rgba_unmultiplied(248, 113, 113, 210), // Sagittal (Red)
+                "AXIAL",
+                Color32::from_rgb(74, 168, 255),
+            ),
+            1 => (
+                Color32::from_rgba_unmultiplied(74, 168, 255, 210), // Axial (Blue)
+                Color32::from_rgba_unmultiplied(248, 113, 113, 210), // Sagittal (Red)
+                "CORONAL",
+                Color32::from_rgb(74, 222, 128),
+            ),
+            _ => (
+                Color32::from_rgba_unmultiplied(74, 168, 255, 210), // Axial (Blue)
+                Color32::from_rgba_unmultiplied(74, 222, 128, 210), // Coronal (Green)
+                "SAGITTAL",
+                Color32::from_rgb(248, 113, 113),
+            ),
+        };
+        let gap = 10.0;
+        // Horizontal line (with open center gap)
+        if c.x - gap > view.min.x {
+            clipped.line_segment(
+                [pos2(view.min.x, c.y), pos2(c.x - gap, c.y)],
+                Stroke::new(1.25, h_color),
+            );
+        }
+        if c.x + gap < view.max.x {
+            clipped.line_segment(
+                [pos2(c.x + gap, c.y), pos2(view.max.x, c.y)],
+                Stroke::new(1.25, h_color),
+            );
+        }
+        // Vertical line (with open center gap)
+        if c.y - gap > view.min.y {
+            clipped.line_segment(
+                [pos2(c.x, view.min.y), pos2(c.x, c.y - gap)],
+                Stroke::new(1.25, v_color),
+            );
+        }
+        if c.y + gap < view.max.y {
+            clipped.line_segment(
+                [pos2(c.x, c.y + gap), pos2(c.x, view.max.y)],
+                Stroke::new(1.25, v_color),
+            );
+        }
+        clipped.circle_stroke(c, 4.0, Stroke::new(1.25, badge_color));
+        clipped.text(
+            pos2(view.center().x, view.min.y + 8.0),
+            Align2::CENTER_TOP,
+            badge,
+            FontId::proportional(12.0),
+            badge_color,
+        );
     }
 
     fn draw_scrubber_bar(
@@ -2878,6 +3262,14 @@ impl ViewerApp {
                 }
             } else {
                 self.viewports[vp_idx].reset_view();
+                if self.should_sync_viewports() {
+                    let count = self.tiling.cell_count();
+                    for i in 0..count {
+                        if i != vp_idx && self.viewports[i].selected.is_some() {
+                            self.viewports[i].reset_view();
+                        }
+                    }
+                }
             }
             return;
         }
@@ -2889,11 +3281,14 @@ impl ViewerApp {
 
         if response.dragged_by(egui::PointerButton::Middle) {
             self.viewports[vp_idx].pan += delta;
+            self.sync_pan_from(vp_idx, delta);
             return;
         }
         if response.dragged_by(egui::PointerButton::Secondary) {
+            let factor = (-delta.y / 200.0).exp();
             let z = &mut self.viewports[vp_idx].zoom;
-            *z = (*z * (-delta.y / 200.0).exp()).clamp(0.05, 50.0);
+            *z = (*z * factor).clamp(0.05, 50.0);
+            self.sync_zoom_from(vp_idx, factor);
             return;
         }
 
@@ -2923,10 +3318,16 @@ impl ViewerApp {
                     (self.wl_drag, response.interact_pointer_pos())
                 {
                     if id == vp_idx {
+                        let prev_w = self.effective_window(vp_idx, frame);
                         let dx = (now.x - start.x) as f64;
                         let dy = (start.y - now.y) as f64;
-                        self.viewports[vp_idx].window =
-                            Some(d.window(dx, dy, None, 0, frame.slope));
+                        let next_w = d.window(dx, dy, None, 0, frame.slope);
+                        self.viewports[vp_idx].window = Some(next_w);
+                        let d_level = next_w.level - prev_w.level;
+                        let d_width = next_w.width - prev_w.width;
+                        if d_level.abs() > 1e-6 || d_width.abs() > 1e-6 {
+                            self.sync_window_delta(vp_idx, d_level, d_width);
+                        }
                     }
                 }
                 if response.drag_stopped() {
@@ -2968,12 +3369,15 @@ impl ViewerApp {
             Tool::Pan => {
                 if is_drag {
                     self.viewports[vp_idx].pan += delta;
+                    self.sync_pan_from(vp_idx, delta);
                 }
             }
             Tool::Zoom => {
                 if is_drag {
+                    let factor = (-delta.y / 200.0).exp();
                     let z = &mut self.viewports[vp_idx].zoom;
-                    *z = (*z * (-delta.y / 200.0).exp()).clamp(0.05, 50.0);
+                    *z = (*z * factor).clamp(0.05, 50.0);
+                    self.sync_zoom_from(vp_idx, factor);
                 }
             }
             Tool::Rotate => {
@@ -3007,19 +3411,51 @@ impl ViewerApp {
                 if !is_drag {
                     return;
                 }
+                if response.drag_started() {
+                    if let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
+                        let press_pos = response
+                            .ctx
+                            .input(|i| i.pointer.press_origin())
+                            .or(response.interact_pointer_pos())
+                            .unwrap_or_else(|| view.center());
+                        let px = self.screen_to_pixel(vp_idx, img, frame, press_pos);
+                        let (sy, sx) = frame.spacing.unwrap_or((1.0, 1.0));
+                        let u_mm = (px.x as f64 - (frame.width.saturating_sub(1) as f64) * 0.5)
+                            * sx.max(1e-6);
+                        let v_mm = (px.y as f64 - (frame.height.saturating_sub(1) as f64) * 0.5)
+                            * sy.max(1e-6);
+                        let anchor_lps = add3(
+                            plane.slice_center_lps(),
+                            add3(scale3(plane.u_axis, u_mm), scale3(plane.v_axis, v_mm)),
+                        );
+                        self.orbit_anchor = Some((vp_idx, press_pos, anchor_lps));
+                        plane.offset_mm = dot3(sub3(anchor_lps, plane.center_lps), plane.normal);
+                        self.set_viewport_mpr_plane(vp_idx, plane, true);
+                    }
+                }
                 if delta.length_sq() > 0.0 {
                     if let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
-                        let shift = response.ctx.input(|i| i.modifiers.shift);
+                        let (shift, alt) = response
+                            .ctx
+                            .input(|i| (i.modifiers.shift, i.modifiers.alt));
+                        let speed = if alt { 0.08 } else { 0.18 };
                         if shift {
-                            plane.orbit_3d(0.0, 0.0, delta.x as f64 * 0.45);
+                            plane.orbit_3d(0.0, 0.0, delta.x as f64 * speed);
                         } else {
-                            plane.orbit_3d(delta.x as f64 * 0.45, -delta.y as f64 * 0.45, 0.0);
+                            plane.orbit_3d(delta.x as f64 * speed, -delta.y as f64 * speed, 0.0);
+                        }
+                        if let Some((a_vp, _, anchor_lps)) = self.orbit_anchor {
+                            if a_vp == vp_idx {
+                                plane.offset_mm =
+                                    dot3(sub3(anchor_lps, plane.center_lps), plane.normal);
+                            }
                         }
                         self.set_viewport_mpr_plane(vp_idx, plane, true);
                     }
                 }
                 if response.drag_stopped() {
                     self.orbit_drag = None;
+                    self.orbit_anchor = None;
                 }
             }
             Tool::Length => {
@@ -4013,6 +4449,87 @@ impl ViewerApp {
             br.join("\n"),
         );
     }
+    /// Requests 3D MPR (`ortho = false`) or 3-pane Orthogonal MPR (`ortho = true`) on `vp_idx`.
+    /// Normally 3D-capable series activate immediately (or as soon as decoding completes).
+    /// Non-3D-capable series (too few slices or missing 3D geometry) prompt a Yes/No quality warning first.
+    fn request_mpr_mode(&mut self, vp_idx: usize, ortho: bool) {
+        let Some(key) = self.viewports[vp_idx].selected else {
+            return;
+        };
+        let is_capable = self.series_at(key).is_some_and(|s| s.is_mpr_capable());
+        let already_forced = self.forced_mpr_series.contains(&key);
+        let has_vol = self.viewport_volume(vp_idx).is_some();
+
+        if is_capable || already_forced || has_vol {
+            if has_vol {
+                self.active_viewport = vp_idx;
+                if ortho {
+                    if !self.ortho_mpr_active {
+                        self.toggle_orthogonal_mpr();
+                    }
+                } else if let Some(p) = self.effective_mpr_plane(vp_idx) {
+                    self.set_viewport_mpr_plane(vp_idx, p, true);
+                }
+            } else {
+                self.pending_mpr_activate = Some((vp_idx, key, ortho));
+            }
+        } else {
+            self.pending_force_mpr = Some(PendingForceMpr { vp_idx, key, ortho });
+        }
+    }
+
+    /// Modal confirmation dialog when the user forces 3D / Orthogonal MPR on a non-3D-capable series.
+    fn draw_force_mpr_modal(&mut self, ctx: &egui::Context) {
+        let Some(req) = self.pending_force_mpr else {
+            return;
+        };
+        let mut open = true;
+        let mut decision: Option<bool> = None;
+
+        egui::Window::new("Low-Quality 3D Reconstruction Warning")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_max_width(420.0);
+                ui.label(
+                    egui::RichText::new(
+                        "This acquisition does not have enough slices or 3D orientation data for standard multiplanar reconstruction.",
+                    )
+                    .strong(),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    "Forcing 3D slicing on this series may produce a blurry, stretched, or low-quality image.\n\nAre you sure you want to continue?",
+                );
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(egui::RichText::new("Yes, Force 3D").strong())
+                        .clicked()
+                    {
+                        decision = Some(true);
+                    }
+                    if ui.button("No, Cancel").clicked() {
+                        decision = Some(false);
+                    }
+                });
+            });
+
+        if !open && decision.is_none() {
+            decision = Some(false);
+        }
+
+        if let Some(yes) = decision {
+            self.pending_force_mpr = None;
+            if yes {
+                self.forced_mpr_series.insert(req.key);
+                self.viewports[req.vp_idx].selected = Some(req.key);
+                self.pending_mpr_activate = Some((req.vp_idx, req.key, req.ortho));
+            }
+        }
+    }
 }
 
 impl eframe::App for ViewerApp {
@@ -4024,11 +4541,14 @@ impl eframe::App for ViewerApp {
 
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        egui::Panel::left("browser")
-            .resizable(true)
-            .default_size(320.0)
-            .show(ui, |ui| self.browser(ui));
+        if self.show_browser {
+            egui::Panel::left("browser")
+                .resizable(true)
+                .default_size(300.0)
+                .show(ui, |ui| self.browser(ui));
+        }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport_grid(ui));
+        self.draw_force_mpr_modal(&ctx);
     }
 }
 

@@ -85,49 +85,49 @@ jobs:
         run: |
           $tag = if ("${{ github.event.inputs.tag }}" -ne "") { "${{ github.event.inputs.tag }}" } else { "${{ github.ref_name }}" }
           $ProgressPreference = 'SilentlyContinue'
-          New-Item -ItemType Directory -Force -Path dist/rdicom-viewer | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/rdicom-viewer.exe" dist/rdicom-viewer/
-          Copy-Item README.md dist/rdicom-viewer/
-          Copy-Item CHANGELOG.md dist/rdicom-viewer/
-          Compress-Archive -Path dist/rdicom-viewer/* -DestinationPath "dist/rdicom-viewer-${tag}-${{ matrix.artifact_slug }}.zip" -Force
+          New-Item -ItemType Directory -Force -Path dist/sekhmetx | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/sekhmetx.exe" dist/sekhmetx/
+          Copy-Item README.md dist/sekhmetx/
+          Copy-Item CHANGELOG.md dist/sekhmetx/
+          Compress-Archive -Path dist/sekhmetx/* -DestinationPath "dist/sekhmetx-${tag}-${{ matrix.artifact_slug }}.zip" -Force
 
       - name: Package macOS .app & tar.gz
         if: runner.os == 'macOS'
         run: |
           TAG="${{ github.event.inputs.tag }}"
           if [ -z "$TAG" ]; then TAG="${{ github.ref_name }}"; fi
-          mkdir -p dist/rdicom-viewer
-          cp "target/${{ matrix.target }}/release/rdicom-viewer" dist/rdicom-viewer/
-          cp README.md CHANGELOG.md dist/rdicom-viewer/
-          tar -C dist -czf "dist/rdicom-viewer-${TAG}-${{ matrix.artifact_slug }}.tar.gz" rdicom-viewer
+          mkdir -p dist/sekhmetx
+          cp "target/${{ matrix.target }}/release/sekhmetx" dist/sekhmetx/
+          cp README.md CHANGELOG.md dist/sekhmetx/
+          tar -C dist -czf "dist/sekhmetx-${TAG}-${{ matrix.artifact_slug }}.tar.gz" sekhmetx
 
-          APP_DIR="dist/RDicom Viewer.app"
+          APP_DIR="dist/SekhmetX.app"
           mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
-          cp "target/${{ matrix.target }}/release/rdicom-viewer" "$APP_DIR/Contents/MacOS/rdicom-viewer"
+          cp "target/${{ matrix.target }}/release/sekhmetx" "$APP_DIR/Contents/MacOS/sekhmetx"
           cat > "$APP_DIR/Contents/Info.plist" << 'PLIST'
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
           <plist version="1.0">
           <dict>
-            <key>CFBundleExecutable</key><string>rdicom-viewer</string>
-            <key>CFBundleIdentifier</key><string>com.rdicom.viewer</string>
-            <key>CFBundleName</key><string>RDicom Viewer</string>
+            <key>CFBundleExecutable</key><string>sekhmetx</string>
+            <key>CFBundleIdentifier</key><string>com.sekhmetx.viewer</string>
+            <key>CFBundleName</key><string>SekhmetX</string>
             <key>CFBundlePackageType</key><string>APPL</string>
             <key>NSHighResolutionCapable</key><true/>
           </dict>
           </plist>
           PLIST
-          ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "dist/rdicom-viewer-${TAG}-macos-arm64-app.zip"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "dist/sekhmetx-${TAG}-macos-arm64-app.zip"
 
       - name: Package Linux tar.gz
         if: runner.os == 'Linux'
         run: |
           TAG="${{ github.event.inputs.tag }}"
           if [ -z "$TAG" ]; then TAG="${{ github.ref_name }}"; fi
-          mkdir -p dist/rdicom-viewer
-          cp "target/${{ matrix.target }}/release/rdicom-viewer" dist/rdicom-viewer/
-          cp README.md CHANGELOG.md dist/rdicom-viewer/
-          tar -C dist -czf "dist/rdicom-viewer-${TAG}-${{ matrix.artifact_slug }}.tar.gz" rdicom-viewer
+          mkdir -p dist/sekhmetx
+          cp "target/${{ matrix.target }}/release/sekhmetx" dist/sekhmetx/
+          cp README.md CHANGELOG.md dist/sekhmetx/
+          tar -C dist -czf "dist/sekhmetx-${TAG}-${{ matrix.artifact_slug }}.tar.gz" sekhmetx
 
       - name: Upload packaged release artifact
         uses: actions/upload-artifact@v4
@@ -168,7 +168,7 @@ jobs:
                   break
               if in_sec:
                   out.append(ln)
-          text = "\n".join(out).strip() or f"Release {tag} of RDicom Viewer."
+          text = "\n".join(out).strip() or f"Release {tag} of SekhmetX."
           open("RELEASE_NOTES.md", "w", encoding="utf-8").write(text + "\n")
           PY
 
@@ -176,7 +176,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: RDicom Viewer ${{ github.event.inputs.tag || github.ref_name }}
+          name: SekhmetX ${{ github.event.inputs.tag || github.ref_name }}
           body_path: RELEASE_NOTES.md
           generate_release_notes: true
           files: |

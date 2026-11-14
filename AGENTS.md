@@ -25,6 +25,7 @@ programmer: explain results in plain language.
   `rdicom` and `ported_from`, then run `python3 tools/upstream.py render-map isix`.
 - Don't use the IsiX/Horos/OsiriX names or icons in the app.
 - Not a medical device. Never claim diagnostic use.
+- **Session / Token-Limit Handoff (`CONTINUE.md`):** If you are running low on context/tokens or must stop before a task is complete, write or update `CONTINUE.md` at the repository root before ending your turn. Include: (1) current goal/milestone, (2) files modified or in progress, (3) last build/test status, and (4) the exact next steps so the next agent can resume immediately without interruption. When starting a session, read `CONTINUE.md` (if present) right after `HANDOFF.md`.
 
 ## Commands
 

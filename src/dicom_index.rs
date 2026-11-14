@@ -806,9 +806,40 @@ fn series_kernel_class(desc: &str) -> Option<&'static str> {
     None
 }
 
+fn series_is_mip(desc: &str) -> bool {
+    let lower = desc.to_ascii_lowercase();
+    lower.split(|c: char| !c.is_ascii_alphanumeric()).any(|tok| {
+        matches!(tok, "mip" | "minip")
+    })
+}
+
+/// Strips plane tokens (`ax`, `axial`, `cor`, `coronal`, `sag`, `sagittal`, `obl`, `mpr`)
+/// and slice-thickness tokens (e.g. `1`, `0`, `mm`, `5.0mm`)
+/// so we can tell whether two series are orthogonal planes of the same reconstruction.
+fn series_base_name(desc: &str) -> String {
+    desc.to_ascii_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|tok| {
+            !tok.is_empty()
+                && !tok.chars().all(|c| c.is_ascii_digit())
+                && !tok
+                    .strip_suffix("mm")
+                    .is_some_and(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                && !matches!(
+                    *tok,
+                    "ax" | "axial" | "cor" | "coronal" | "sag" | "sagittal" | "obl" | "mpr" | "mm" | "cm"
+                )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Returns `true` when two series from the same acquisition represent compatible
 /// reconstructions (same kernel / contrast / window class) and can safely share MPR reslicing.
 fn series_compatible_for_mpr(a: &Series, b: &Series) -> bool {
+    if series_is_mip(&a.description) != series_is_mip(&b.description) {
+        return false;
+    }
     if let (Some(ka), Some(kb)) = (&a.convolution_kernel, &b.convolution_kernel) {
         if !ka.trim().eq_ignore_ascii_case(kb.trim()) {
             return false;
@@ -831,6 +862,15 @@ fn series_compatible_for_mpr(a: &Series, b: &Series) -> bool {
         (Some("bone"), None) | (None, Some("bone")) => return false,
         (Some("lung"), None) | (None, Some("lung")) => return false,
         _ => {}
+    }
+    // If either series is already a full standalone 3D stack (>= 40 slices), only group
+    // it with another series if they share the same base reconstruction name (e.g. Brain AX/COR/SAG).
+    if a.slices.len() >= 40 || b.slices.len() >= 40 {
+        let ba = series_base_name(&a.description);
+        let bb = series_base_name(&b.description);
+        if !ba.is_empty() && !bb.is_empty() && ba != bb {
+            return false;
+        }
     }
     true
 }
@@ -1120,5 +1160,21 @@ mod tests {
         assert_eq!(groups.len(), 2);
         assert_eq!(groups[0].series_indices, vec![0]);
         assert_eq!(groups[1].series_indices, vec![1]);
+    }
+
+    #[test]
+    fn angio_standalone_stack_never_merges_with_mip_reconstructions() {
+        let mut series = vec![
+            make_series(4, "Angio ABD", "CT", DominantPlane::Axial, 686, None, None),
+            make_series(602, "MIP AX", "CT", DominantPlane::Axial, 94, None, None),
+            make_series(603, "MIP COR", "CT", DominantPlane::Coronal, 53, None, None),
+            make_series(604, "MIP SAG", "CT", DominantPlane::Sagittal, 73, None, None),
+        ];
+        let groups = build_mpr_groups(&mut series, "ANGIO_ABDOMINAL");
+        assert_eq!(groups.len(), 2);
+        // Angio ABD stays standalone with 686 images, never 906.
+        assert_eq!(groups[0].series_indices, vec![0]);
+        // MIP AX/COR/SAG group cleanly together.
+        assert_eq!(groups[1].series_indices, vec![1, 2, 3]);
     }
 }
