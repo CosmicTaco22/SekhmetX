@@ -2,7 +2,7 @@
 name = "sekhmetx"
 version = "0.2.1"
 edition = "2024"
-description = "A small DICOM viewer for Windows, written in Rust (inspired by IsiX / Horos / OsiriX)"
+description = "SekhmetX: a fast, native cross-platform DICOM viewer in Rust (modeled on IsiX / Horos / OsiriX)"
 license = "LGPL-3.0-or-later"
 
 [dependencies]
@@ -17,6 +17,14 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 eframe = { version = "0.37", default-features = true }
 # Native "Open folder" dialog
 rfd = "0.17"
+
+# Auto-update (GitHub Releases check + in-place binary replacement)
+ureq = "3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tar = "0.4"
+self-replace = "1"
 
 # DICOM (pure Rust, from the dicom-rs project)
 dicom-object = "0.10"

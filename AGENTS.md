@@ -26,6 +26,10 @@ programmer: explain results in plain language.
 - Don't use the IsiX/Horos/OsiriX names or icons in the app.
 - Not a medical device. Never claim diagnostic use.
 - **Session / Token-Limit Handoff (`CONTINUE.md`):** If you are running low on context/tokens or must stop before a task is complete, write or update `CONTINUE.md` at the repository root before ending your turn. Include: (1) current goal/milestone, (2) files modified or in progress, (3) last build/test status, and (4) the exact next steps so the next agent can resume immediately without interruption. When starting a session, read `CONTINUE.md` (if present) right after `HANDOFF.md`.
+- **Bug-First & IsiX Upstream Sync Workflow:** Whenever checking for updates or updating SekhmetX:
+  1. Read `BUGS.md` and check any logged errors/issues first.
+  2. Run `python3 tools/upstream.py fetch` and `python3 tools/upstream.py report isix` (and inspect `.upstream/isix` git log) to see if `ThalesMMS/IsiX-DICOM-Viewer-macOS` encountered the same or similar bugs and how they fixed them.
+  3. Port/adapt the IsiX fixes and UI improvements, add regression tests, update `BUGS.md`, and verify with `cargo test --release`.
 
 ## Commands
 

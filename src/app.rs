@@ -257,6 +257,10 @@ pub struct ViewerApp {
     forced_mpr_series: std::collections::HashSet<(usize, usize)>,
     pending_force_mpr: Option<PendingForceMpr>,
     pending_mpr_activate: Option<(usize, (usize, usize), bool)>,
+    update_status: crate::updater::UpdateStatus,
+    update_rx: Option<Receiver<anyhow::Result<Option<crate::updater::ReleaseInfo>>>>,
+    install_rx: Option<Receiver<anyhow::Result<String>>>,
+    show_update_modal: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -327,7 +331,12 @@ impl ViewerApp {
             forced_mpr_series: std::collections::HashSet::new(),
             pending_force_mpr: None,
             pending_mpr_activate: None,
+            update_status: crate::updater::UpdateStatus::Idle,
+            update_rx: None,
+            install_rx: None,
+            show_update_modal: false,
         };
+        app.start_update_check(false, &cc.egui_ctx);
         if !initial.is_empty() {
             app.start_scan(initial);
         }
@@ -1193,6 +1202,28 @@ impl ViewerApp {
     // ------------------------------------------------------- background work
 
     fn poll_background(&mut self, ctx: &egui::Context) {
+        if let Some(rx) = &self.update_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.update_rx = None;
+                self.update_status = match res {
+                    Ok(Some(info)) => crate::updater::UpdateStatus::Available(info),
+                    Ok(None) => crate::updater::UpdateStatus::UpToDate(
+                        env!("CARGO_PKG_VERSION").to_string(),
+                    ),
+                    Err(e) => crate::updater::UpdateStatus::Error(format!("{e:#}")),
+                };
+            }
+        }
+        if let Some(rx) = &self.install_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.install_rx = None;
+                self.update_status = match res {
+                    Ok(tag) => crate::updater::UpdateStatus::Installed(tag),
+                    Err(e) => crate::updater::UpdateStatus::Error(format!("{e:#}")),
+                };
+            }
+        }
+
         if let Some(scan) = &self.scan {
             match scan.rx.try_recv() {
                 Ok(index) => {
@@ -2045,6 +2076,48 @@ impl ViewerApp {
                     })
                     .response
                     .on_hover_text("Cine playback speed");
+
+                    ui.separator();
+                    let (upd_label, upd_hover) = match &self.update_status {
+                        crate::updater::UpdateStatus::Available(info) => (
+                            egui::RichText::new(format!("⬆ {}", info.tag_name))
+                                .strong()
+                                .color(Color32::from_rgb(120, 225, 150)),
+                            format!("Update {} available — click to install", info.tag_name),
+                        ),
+                        crate::updater::UpdateStatus::Checking => (
+                            egui::RichText::new("🔄 …"),
+                            "Checking GitHub for updates…".to_string(),
+                        ),
+                        crate::updater::UpdateStatus::Installing => (
+                            egui::RichText::new("⬇ …"),
+                            "Downloading and installing update…".to_string(),
+                        ),
+                        crate::updater::UpdateStatus::Installed(tag) => (
+                            egui::RichText::new(format!("✅ {tag}"))
+                                .color(Color32::from_rgb(120, 225, 150)),
+                            "Update installed — click to restart SekhmetX".to_string(),
+                        ),
+                        _ => (
+                            egui::RichText::new("🔄"),
+                            format!(
+                                "Check for SekhmetX updates (current v{})",
+                                env!("CARGO_PKG_VERSION")
+                            ),
+                        ),
+                    };
+                    if ui.button(upd_label).on_hover_text(upd_hover).clicked() {
+                        self.show_update_modal = true;
+                        if matches!(
+                            self.update_status,
+                            crate::updater::UpdateStatus::Idle
+                                | crate::updater::UpdateStatus::UpToDate(_)
+                                | crate::updater::UpdateStatus::Error(_)
+                        ) {
+                            let ctx = ui.ctx().clone();
+                            self.start_update_check(true, &ctx);
+                        }
+                    }
                 });
             });
 
@@ -2164,7 +2237,29 @@ impl ViewerApp {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if let Some(scan) = &self.scan {
+            if let Some(rx) = &self.update_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.update_rx = None;
+                self.update_status = match res {
+                    Ok(Some(info)) => crate::updater::UpdateStatus::Available(info),
+                    Ok(None) => crate::updater::UpdateStatus::UpToDate(
+                        env!("CARGO_PKG_VERSION").to_string(),
+                    ),
+                    Err(e) => crate::updater::UpdateStatus::Error(format!("{e:#}")),
+                };
+            }
+        }
+        if let Some(rx) = &self.install_rx {
+            if let Ok(res) = rx.try_recv() {
+                self.install_rx = None;
+                self.update_status = match res {
+                    Ok(tag) => crate::updater::UpdateStatus::Installed(tag),
+                    Err(e) => crate::updater::UpdateStatus::Error(format!("{e:#}")),
+                };
+            }
+        }
+
+        if let Some(scan) = &self.scan {
                 let done = scan.done.load(Ordering::Relaxed);
                 let total = scan.total.load(Ordering::Relaxed);
                 ui.spinner();
@@ -4530,6 +4625,146 @@ impl ViewerApp {
             }
         }
     }
+
+    fn start_update_check(&mut self, open_modal: bool, ctx: &egui::Context) {
+        if open_modal {
+            self.show_update_modal = true;
+        }
+        if self.update_rx.is_some() || self.install_rx.is_some() {
+            return;
+        }
+        self.update_status = crate::updater::UpdateStatus::Checking;
+        let ctx_clone = ctx.clone();
+        self.update_rx = Some(crate::updater::spawn_check(move || {
+            ctx_clone.request_repaint();
+        }));
+    }
+
+    fn draw_update_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_update_modal {
+            return;
+        }
+        let mut open = true;
+        let status = self.update_status.clone();
+        let mut action_check = false;
+        let mut action_install: Option<(String, String)> = None;
+        let mut action_restart = false;
+
+        egui::Window::new("SekhmetX Updates")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .open(&mut open)
+            .show(ctx, |ui| {
+                ui.set_min_width(380.0);
+                ui.set_max_width(460.0);
+                ui.label(
+                    egui::RichText::new(format!("Current version: v{}", env!("CARGO_PKG_VERSION")))
+                        .monospace()
+                        .color(Color32::from_gray(170)),
+                );
+                ui.add_space(6.0);
+
+                match &status {
+                    crate::updater::UpdateStatus::Idle
+                    | crate::updater::UpdateStatus::Checking => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Checking GitHub Releases for updates…");
+                        });
+                    }
+                    crate::updater::UpdateStatus::UpToDate(v) => {
+                        ui.label(
+                            egui::RichText::new(format!("You are running the latest version (v{v})."))
+                                .strong()
+                                .color(Color32::from_rgb(130, 220, 155)),
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Check Again").clicked() {
+                            action_check = true;
+                        }
+                    }
+                    crate::updater::UpdateStatus::Available(info) => {
+                        ui.label(
+                            egui::RichText::new(format!("New version available: {}", info.tag_name))
+                                .strong()
+                                .color(Color32::from_rgb(130, 210, 255)),
+                        );
+                        if !info.notes.trim().is_empty() {
+                            ui.add_space(6.0);
+                            egui::ScrollArea::vertical()
+                                .max_height(160.0)
+                                .show(ui, |ui| {
+                                    ui.label(info.notes.trim());
+                                });
+                        }
+                        ui.add_space(10.0);
+                        ui.horizontal(|ui| {
+                            if let Some(url) = &info.download_url {
+                                if ui
+                                    .button(egui::RichText::new("Download & Install").strong())
+                                    .clicked()
+                                {
+                                    action_install = Some((url.clone(), info.tag_name.clone()));
+                                }
+                            }
+                            ui.hyperlink_to("Open GitHub Release", &info.html_url);
+                        });
+                    }
+                    crate::updater::UpdateStatus::Installing => {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label("Downloading and installing update…");
+                        });
+                    }
+                    crate::updater::UpdateStatus::Installed(tag) => {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "SekhmetX {tag} installed! Restart to launch the new version."
+                            ))
+                            .strong()
+                            .color(Color32::from_rgb(130, 220, 155)),
+                        );
+                        ui.add_space(10.0);
+                        if ui
+                            .button(egui::RichText::new("Restart SekhmetX").strong())
+                            .clicked()
+                        {
+                            action_restart = true;
+                        }
+                    }
+                    crate::updater::UpdateStatus::Error(err) => {
+                        ui.label(
+                            egui::RichText::new(format!("Update check failed: {err}"))
+                                .color(Color32::from_rgb(240, 120, 120)),
+                        );
+                        ui.add_space(8.0);
+                        if ui.button("Retry").clicked() {
+                            action_check = true;
+                        }
+                    }
+                }
+            });
+
+        if !open {
+            self.show_update_modal = false;
+        }
+        if action_check {
+            self.start_update_check(true, ctx);
+        }
+        if let Some((url, tag)) = action_install {
+            self.update_status = crate::updater::UpdateStatus::Installing;
+            let ctx_clone = ctx.clone();
+            self.install_rx = Some(crate::updater::spawn_install(url, tag, move || {
+                ctx_clone.request_repaint();
+            }));
+        }
+        if action_restart {
+            if let Err(e) = crate::updater::restart_application() {
+                self.update_status = crate::updater::UpdateStatus::Error(format!("{e:#}"));
+            }
+        }
+    }
 }
 
 impl eframe::App for ViewerApp {
@@ -4549,6 +4784,7 @@ impl eframe::App for ViewerApp {
         }
         egui::CentralPanel::no_frame().show(ui, |ui| self.viewport_grid(ui));
         self.draw_force_mpr_modal(&ctx);
+        self.draw_update_modal(&ctx);
     }
 }
 

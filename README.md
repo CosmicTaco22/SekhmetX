@@ -1,12 +1,12 @@
-# RDicom Viewer
+# SekhmetX
 
-A fast, native radiological DICOM viewer for Windows (and cross-platform desktop), written in Rust (`eframe`/`egui` + `wgpu` + `dicom-rs`). It is a from-scratch rewrite modeled directly on [IsiX DICOM Viewer](https://github.com/ThalesMMS/IsiX-DICOM-Viewer-macOS) (and Horos / OsiriX before it) for its geometry, pixel pipeline, ROI statistics, and radiological workflow.
+A fast, native radiological DICOM viewer for Windows, macOS, and Linux, written in Rust (`eframe`/`egui` + `wgpu` + `dicom-rs`). It is a from-scratch rewrite modeled directly on [IsiX DICOM Viewer](https://github.com/ThalesMMS/IsiX-DICOM-Viewer-macOS) (and Horos / OsiriX before it) for its geometry, pixel pipeline, ROI statistics, and radiological workflow.
 
 > **Not a medical device.** For personal use, teaching, research, and second looks only; not certified for primary clinical diagnosis.
 
 ---
 
-## Key Features (v0.2.0)
+## Key Features (v0.2.1)
 
 - **Direct Folder, File & `.zip` Archive Opening:**
   - Open folders recursively, individual DICOM files, or **`.zip` patient archives** (extracted non-destructively into an isolated `%TEMP%\rdicom-zip-cache` folder and cleaned up automatically when the app closes).
@@ -57,7 +57,7 @@ A fast, native radiological DICOM viewer for Windows (and cross-platform desktop
 ## Releases & Building
 
 ### Download from GitHub Releases
-Every tagged release (`v*`) automatically builds `rdicom-viewer.exe` and `rdicom-viewer-windows-x86_64.zip` via GitHub Actions and attaches them to the [GitHub Releases](../../releases) page alongside the changelog notes from [CHANGELOG.md](CHANGELOG.md).
+Every tagged release (`v*`) automatically builds **SekhmetX** (`sekhmetx`) for **Windows (`x86_64` & `arm64`)**, **macOS (`arm64` `.app` & `.tar.gz`)**, and **Linux (`x86_64`)** via GitHub Actions and attaches them to the [GitHub Releases](../../releases) page alongside the changelog notes from [CHANGELOG.md](CHANGELOG.md). You can also update directly inside the app via the toolbar **`🔄`** update button.
 
 ### Build from Source on Windows
 1. Install Rust (<https://rustup.rs>) with the Visual Studio C++ Build Tools, plus CMake (`winget install Kitware.CMake` or `scoop install cmake`).
@@ -65,7 +65,7 @@ Every tagged release (`v*`) automatically builds `rdicom-viewer.exe` and `rdicom
    ```powershell
    cargo test --release
    cargo build --release
-   .\target\release\rdicom-viewer.exe
+   .\target\release\sekhmetx.exe
    ```
 
 ---
@@ -73,9 +73,9 @@ Every tagged release (`v*`) automatically builds `rdicom-viewer.exe` and `rdicom
 ## Command-Line Helpers
 
 ```powershell
-rdicom-viewer --list FOLDER_OR_ZIP        # print studies and series found
-rdicom-viewer --check FOLDER_OR_ZIP       # decode every image and report failures
-rdicom-viewer --render FOLDER OUT.png [SERIES] [IMAGE] [WIDTH LEVEL]
+sekhmetx --list FOLDER_OR_ZIP             # print studies and series found
+sekhmetx --check FOLDER_OR_ZIP            # decode every image and report failures
+sekhmetx --render FOLDER OUT.png [SERIES] [IMAGE] [WIDTH LEVEL]
 ```
 
 ---

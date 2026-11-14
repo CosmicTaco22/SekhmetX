@@ -10,6 +10,7 @@ mod imaging;
 mod loader;
 mod navigation;
 mod roi;
+mod updater;
 mod volume;
 
 use std::path::PathBuf;
