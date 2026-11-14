@@ -4,6 +4,8 @@
 mod app;
 mod dicom_index;
 mod frame;
+mod gpu_view;
+mod imaging;
 mod loader;
 
 use std::path::PathBuf;
@@ -104,7 +106,7 @@ fn cli_render(args: &[String]) -> anyhow::Result<()> {
     let series_n: usize = args.get(2).map(|s| s.parse()).transpose()?.unwrap_or(0);
     let image_n: Option<usize> = args.get(3).map(|s| s.parse()).transpose()?;
     let window = match (args.get(4), args.get(5)) {
-        (Some(w), Some(l)) => Some((l.parse::<f64>()?, w.parse::<f64>()?)),
+        (Some(w), Some(l)) => Some(imaging::Window::new(l.parse::<f32>()?, w.parse::<f32>()?)),
         _ => None,
     };
 
@@ -116,7 +118,10 @@ fn cli_render(args: &[String]) -> anyhow::Result<()> {
     let i = image_n.unwrap_or(se.slices.len() / 2).min(se.slices.len() - 1);
     let s = &se.slices[i];
     let f = frame::load_frame(&s.path, s.frame)?;
-    let w = window.unwrap_or_else(|| f.default_window());
+    let w = match window {
+        Some(w) => f.requested(w).unwrap_or(f.full_window),
+        None => f.default_window(),
+    };
     let rgba = f.render(w, false);
     image::save_buffer(out, &rgba, f.width, f.height, image::ColorType::Rgba8)?;
     println!(
@@ -126,8 +131,8 @@ fn cli_render(args: &[String]) -> anyhow::Result<()> {
         se.slices.len(),
         f.width,
         f.height,
-        w.0,
-        w.1
+        w.level,
+        w.width
     );
     Ok(())
 }

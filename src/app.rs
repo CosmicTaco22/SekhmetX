@@ -13,19 +13,12 @@ use eframe::egui::{
 
 use crate::dicom_index::{self, Index, Series, Study};
 use crate::frame::Frame;
+use crate::gpu_view::{self, GpuInfo, ImageCallback, SliceKey};
+use crate::imaging::{defaults, drag, presets, Window};
 use crate::loader::{Job, Loader};
 
-/// Window presets: (name, width, level). Keys 1–8.
-pub const PRESETS: &[(&str, f64, f64)] = &[
-    ("Abdomen", 400.0, 40.0),
-    ("Lung", 1500.0, -600.0),
-    ("Bone", 2000.0, 400.0),
-    ("Brain", 80.0, 40.0),
-    ("Mediastinum", 350.0, 50.0),
-    ("Liver", 150.0, 60.0),
-    ("Stroke", 40.0, 40.0),
-    ("Angio", 600.0, 150.0),
-];
+const NUMBER_KEYS: [Key; 9] =
+    [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
 
 /// Memory budget for decoded slices of the open series.
 const CACHE_BUDGET_BYTES: usize = 1536 * 1024 * 1024;
@@ -78,8 +71,20 @@ pub struct ViewerApp {
     texture: Option<TextureHandle>,
     rendered: Option<RenderKey>,
 
-    /// User-chosen window (center, width). `None` = use each image's default.
-    window: Option<(f64, f64)>,
+    /// The window the user set (preset, drag). `None` = the series default.
+    window: Option<Window>,
+    /// Horos takes a series' default window from its middle image and keeps
+    /// it for every slice.
+    series_default: Option<Window>,
+    presets: presets::Catalog,
+    /// A window/level drag in progress: where it started and from what window.
+    wl_drag: Option<(Pos2, drag::Drag)>,
+    /// Set when images are drawn by the graphics card (the usual case).
+    gpu: Option<GpuInfo>,
+    /// Bumped when the series changes, so the GPU knows its slice is stale.
+    series_gen: u64,
+    /// The last slice drawn on the GPU, shown while the next one decodes.
+    last_gpu: Option<(Arc<Frame>, SliceKey)>,
     invert: bool,
     zoom: f32,
     pan: Vec2,
@@ -113,6 +118,13 @@ impl ViewerApp {
             texture: None,
             rendered: None,
             window: None,
+            series_default: None,
+            presets: presets::Catalog::factory(),
+            wl_drag: None,
+            // RDICOM_CPU=1 forces the processor path (for comparison or old GPUs).
+            gpu: if std::env::var_os("RDICOM_CPU").is_some() { None } else { gpu_view::install(cc) },
+            series_gen: 0,
+            last_gpu: None,
             invert: false,
             zoom: 1.0,
             pan: Vec2::ZERO,
@@ -171,12 +183,25 @@ impl ViewerApp {
         self.failed.clear();
         self.rendered = None;
         self.window = None;
+        self.series_default = None;
+        self.wl_drag = None;
+        self.series_gen += 1;
+        self.last_gpu = None;
         self.invert = false;
         self.playing = false;
         self.drawing.clear();
         self.angle_pending = None;
         self.reset_view();
         self.slice = 0;
+        // Decode the middle image first: it sets the series' default window.
+        let middle = self.current_series().and_then(|se| {
+            let idx = defaults::reference_index(se.slices.len())?;
+            let s = &se.slices[idx];
+            Some(Job { idx, path: s.path.clone(), frame: s.frame, urgent: true })
+        });
+        if let Some(job) = middle {
+            self.loader.request(job);
+        }
     }
 
     fn reset_view(&mut self) {
@@ -202,8 +227,32 @@ impl ViewerApp {
         self.cache.get(&self.slice)
     }
 
-    fn effective_window(&self, f: &Frame) -> (f64, f64) {
-        self.window.unwrap_or_else(|| f.default_window())
+    /// The window this image is shown with: the user's (as Horos applies a
+    /// request to this image), else the series default, else the image's own.
+    fn effective_window(&self, f: &Frame) -> Window {
+        match self.window.or(self.series_default) {
+            Some(w) => f.requested(w).unwrap_or(f.full_window),
+            None => f.default_window(),
+        }
+    }
+
+    /// What the window on screen is called: a preset, "Full dynamic",
+    /// "Default" or "Other", as Horos's window menu shows it.
+    fn window_name(&self, f: &Frame) -> presets::Name {
+        let default = self.series_default.map_or_else(|| f.default_window(), |w| f.requested(w).unwrap_or(f.full_window));
+        self.presets.name(self.effective_window(f), Some(f.full_window), Some(default))
+    }
+
+    fn preset_label(&self) -> String {
+        match self.current_frame() {
+            Some(f) => format!("Window: {}", self.window_name(f).label()),
+            None => "Window presets".into(),
+        }
+    }
+
+    fn set_window(&mut self, w: Option<Window>) {
+        self.window = w;
+        self.wl_drag = None;
     }
 
     fn current_key(&self) -> Option<(PathBuf, u32)> {
@@ -239,6 +288,11 @@ impl ViewerApp {
         for (idx, result) in self.loader.poll() {
             match result {
                 Ok(frame) => {
+                    if self.series_default.is_none()
+                        && Some(idx) == defaults::reference_index(self.slice_count())
+                    {
+                        self.series_default = Some(frame.default_window());
+                    }
                     if self.cache.is_empty() {
                         let per = frame.bytes().max(1);
                         self.keep_radius = (CACHE_BUDGET_BYTES / per / 2).clamp(10, 5000);
@@ -280,6 +334,7 @@ impl ViewerApp {
                             idx,
                             path: s.path.clone(),
                             frame: s.frame,
+                            urgent: false,
                         });
                     }
                 }
@@ -354,6 +409,7 @@ impl ViewerApp {
             Key::Num6,
             Key::Num7,
             Key::Num8,
+            Key::Num9,
         ];
         let pressed: Vec<Key> = ctx.input(|i| keys.iter().copied().filter(|k| i.key_pressed(*k)).collect());
         for key in pressed {
@@ -367,7 +423,7 @@ impl ViewerApp {
                 Key::I => self.invert = !self.invert,
                 Key::R => {
                     self.reset_view();
-                    self.window = None;
+                    self.set_window(None);
                 }
                 Key::P | Key::Space => self.playing = !self.playing,
                 Key::Delete | Key::Backspace => {
@@ -385,13 +441,16 @@ impl ViewerApp {
                 Key::M => self.tool = Tool::Length,
                 Key::A => self.tool = Tool::Angle,
                 Key::Z => self.tool = Tool::Zoom,
-                Key::Num0 => self.window = None,
+                Key::Num0 => self.set_window(None),
                 k => {
-                    let n = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8]
+                    // Horos: keys 1–9 are the presets in alphabetical order.
+                    let preset = NUMBER_KEYS
                         .iter()
-                        .position(|x| *x == k);
-                    if let Some((_, w, l)) = n.and_then(|n| PRESETS.get(n)) {
-                        self.window = Some((*l, *w));
+                        .position(|x| *x == k)
+                        .and_then(|n| self.presets.hot_key(n))
+                        .and_then(|e| e.window);
+                    if let Some(w) = preset {
+                        self.set_window(Some(w));
                     }
                 }
             }
@@ -414,7 +473,7 @@ impl ViewerApp {
             }
             ui.separator();
             ui.selectable_value(&mut self.tool, Tool::WindowLevel, "W/L")
-                .on_hover_text("Drag: left/right = width, up/down = level  (W)");
+                .on_hover_text("Drag: right = wider window, up = higher level (darker), as in Horos  (W)");
             ui.selectable_value(&mut self.tool, Tool::Pan, "Pan")
                 .on_hover_text("Middle mouse button also pans");
             ui.selectable_value(&mut self.tool, Tool::Zoom, "Zoom")
@@ -425,23 +484,29 @@ impl ViewerApp {
                 .on_hover_text("Drag the first arm, then click the end of the second arm  (A)");
             ui.separator();
 
+            let mut chosen: Option<Option<Window>> = None;
             egui::ComboBox::from_id_salt("presets")
-                .selected_text("Window presets")
+                .selected_text(self.preset_label())
                 .show_ui(ui, |ui| {
-                    if ui.selectable_label(self.window.is_none(), "0  Default (from image)").clicked() {
-                        self.window = None;
+                    if ui.selectable_label(self.window.is_none(), "0   Default").clicked() {
+                        chosen = Some(None);
                     }
-                    for (i, (name, w, l)) in PRESETS.iter().enumerate() {
-                        let text = format!("{}  {name}   W {w}  L {l}", i + 1);
-                        if ui.selectable_label(self.window == Some((*l, *w)), text).clicked() {
-                            self.window = Some((*l, *w));
+                    for (i, entry) in self.presets.hot_key_order().into_iter().enumerate() {
+                        let Some(w) = entry.window else { continue };
+                        let key = if i < 9 { format!("{}", i + 1) } else { " ".into() };
+                        let text = format!("{key}   {}   L {} W {}", entry.name, w.level, w.width);
+                        if ui.selectable_label(self.window == Some(w), text).clicked() {
+                            chosen = Some(Some(w));
                         }
                     }
                 });
+            if let Some(w) = chosen {
+                self.set_window(w);
+            }
             ui.toggle_value(&mut self.invert, "Invert");
             if ui.button("Reset").on_hover_text("Reset zoom, pan and window  (R)").clicked() {
                 self.reset_view();
-                self.window = None;
+                self.set_window(None);
             }
             ui.separator();
             let label = if self.playing { "Stop cine" } else { "Play cine" };
@@ -454,7 +519,7 @@ impl ViewerApp {
                     "Page Up / Down: jump 10 images; Home / End: first / last",
                     "Left drag: active tool   Middle drag: pan   Right drag: zoom",
                     "Ctrl + wheel: zoom   Double-click: reset view",
-                    "1–8: window presets   0: image default   I: invert",
+                    "1–5: Horos window presets (alphabetical)   0: default window   I: invert",
                     "W / M / A / Z: W/L, length, angle, zoom tool",
                     "Delete: remove last measurement on this image   Esc: cancel",
                     "P or Space: play / stop cine   R: reset",
@@ -483,10 +548,11 @@ impl ViewerApp {
                 }
             } else if let Some(index) = &self.index {
                 ui.label(format!(
-                    "{} studies · {} images · {} other files skipped",
+                    "{} studies · {} images · {} other files skipped · drawing on {}",
                     index.studies.len(),
                     index.image_count(),
-                    index.files_skipped
+                    index.files_skipped,
+                    if self.gpu.is_some() { "GPU" } else { "CPU" }
                 ));
             }
             if let Some(msg) = &self.message {
@@ -629,7 +695,11 @@ impl ViewerApp {
                 None => "Loading…".to_string(),
             };
             // Keep showing the previous image while the next one decodes.
-            if let (Some(tex), Some(prev)) = (&self.texture, self.rendered) {
+            if let Some((prev, key)) = self.last_gpu.clone() {
+                let r = self.image_rect(view, &prev);
+                let w = self.effective_window(&prev);
+                painter.add(self.gpu_callback(ui, prev.clone(), key, r, w).into_shape(view));
+            } else if let (Some(tex), Some(prev)) = (&self.texture, self.rendered) {
                 if let Some(pf) = self.cache.get(&prev.idx) {
                     let r = self.image_rect(view, pf);
                     painter.image(tex.id(), r, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::from_gray(160));
@@ -642,30 +712,20 @@ impl ViewerApp {
 
         self.handle_drag(&response, view, &frame);
 
-        // Re-render the texture only when something visible changed.
         let window = self.effective_window(&frame);
-        let key = RenderKey {
-            idx: self.slice,
-            center: window.0.to_bits(),
-            width: window.1.to_bits(),
-            invert: self.invert,
-        };
-        if self.rendered != Some(key) || self.texture.is_none() {
-            let rgba = frame.render(window, self.invert);
-            let image = ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &rgba);
-            match &mut self.texture {
-                Some(t) => t.set(image, TextureOptions::LINEAR),
-                None => self.texture = Some(ui.ctx().load_texture("slice", image, TextureOptions::LINEAR)),
-            }
-            self.rendered = Some(key);
-        }
-
         let img = self.image_rect(view, &frame);
-        if let Some(tex) = &self.texture {
-            painter.image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        let on_gpu = self.gpu.is_some_and(|g| frame.width <= g.max_texture && frame.height <= g.max_texture);
+        if on_gpu {
+            // The graphics card windows the image: nothing to recompute here.
+            let key = SliceKey { series: self.series_gen, index: self.slice };
+            painter.add(self.gpu_callback(ui, frame.clone(), key, img, window).into_shape(view));
+            self.last_gpu = Some((frame.clone(), key));
+        } else {
+            self.draw_on_cpu(ui, &painter, &frame, img, window);
         }
 
         // Cursor readout.
+
         self.cursor_info = response.hover_pos().and_then(|p| {
             let px = Self::to_pixel(img, &frame, p);
             if px.x < 0.0 || px.y < 0.0 {
@@ -677,6 +737,43 @@ impl ViewerApp {
 
         self.draw_measures(&painter, img, &frame);
         self.draw_overlay(&painter, view, Some(&frame));
+    }
+
+    fn gpu_callback(&self, ui: &egui::Ui, frame: Arc<Frame>, key: SliceKey, img: Rect, window: Window) -> ImageCallback {
+        let ppp = ui.ctx().pixels_per_point();
+        let invert = self.invert != frame.inverts;
+        ImageCallback {
+            frame,
+            key,
+            image_rect_px: Rect::from_min_max(pos2(img.min.x * ppp, img.min.y * ppp), pos2(img.max.x * ppp, img.max.y * ppp)),
+            window,
+            invert,
+        }
+    }
+
+    /// The processor path: window to RGBA, upload as an egui texture. Used
+    /// without a GPU, for images larger than its texture limit, or with RDICOM_CPU=1.
+    fn draw_on_cpu(&mut self, ui: &egui::Ui, painter: &egui::Painter, frame: &Frame, img: Rect, window: Window) {
+        // Re-render the texture only when something visible changed.
+        let key = RenderKey {
+            idx: self.slice,
+            center: window.level.to_bits() as u64,
+            width: window.width.to_bits() as u64,
+            invert: self.invert,
+        };
+        if self.rendered != Some(key) || self.texture.is_none() {
+            let rgba = frame.render(window, self.invert);
+            let image = ColorImage::from_rgba_unmultiplied([frame.width as usize, frame.height as usize], &rgba);
+            match &mut self.texture {
+                Some(t) => t.set(image, TextureOptions::LINEAR),
+                None => self.texture = Some(ui.ctx().load_texture("slice", image, TextureOptions::LINEAR)),
+            }
+            self.rendered = Some(key);
+        }
+        if let Some(tex) = &self.texture {
+            painter.image(tex.id(), img, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+        }
+        self.last_gpu = None;
     }
 
     fn handle_wheel(&mut self, ui: &egui::Ui, response: &egui::Response) {
@@ -743,12 +840,22 @@ impl ViewerApp {
 
         match self.tool {
             Tool::WindowLevel => {
-                if frame.is_gray() && delta != Vec2::ZERO {
-                    let (c, w) = self.effective_window(frame);
-                    let step = (w.abs().max(20.0) / 250.0) as f64;
-                    let w = (w + delta.x as f64 * step).max(1.0);
-                    let c = c + delta.y as f64 * step;
-                    self.window = Some((c, w));
+                // Horos: measured from where the drag started, width ÷ 80 per
+                // point; right widens the window, up raises the level.
+                if response.drag_started() || self.wl_drag.is_none() {
+                    let origin = response.ctx.input(|i| i.pointer.press_origin());
+                    if let Some(start) = origin.or(response.interact_pointer_pos()) {
+                        let from = self.effective_window(frame);
+                        self.wl_drag = Some((start, drag::Drag::new(drag::Variant::Image, from)));
+                    }
+                }
+                if let (Some((start, d)), Some(now)) = (self.wl_drag, response.interact_pointer_pos()) {
+                    let dx = (now.x - start.x) as f64;
+                    let dy = (start.y - now.y) as f64; // screen y points down; Horos's up
+                    self.window = Some(d.window(dx, dy, None, 0, frame.slope));
+                }
+                if response.drag_stopped() {
+                    self.wl_drag = None;
                 }
             }
             Tool::Pan => self.pan += delta,
@@ -871,14 +978,17 @@ impl ViewerApp {
 
         let mut br = Vec::new();
         if let Some(f) = frame {
-            if f.is_gray() {
-                let (c, w) = self.effective_window(f);
-                br.push(format!("WL: {c:.0}  WW: {w:.0}"));
-            }
+            let w = self.effective_window(f);
+            let digits = if w.width.abs() < 10.0 { 2 } else { 0 };
+            br.push(format!("WL: {:.*}  WW: {:.*}", digits, w.level, digits, w.width));
+            br.push(self.window_name(f).label().to_string());
         }
         br.push(format!("Zoom: {:.0}%", self.zoom * 100.0));
         if self.invert {
             br.push("Inverted".into());
+        }
+        if frame.is_some_and(|f| f.voi_lut_applied) {
+            br.push("VOI LUT".into());
         }
         text(view.right_bottom() + vec2(-pad, -pad), Align2::RIGHT_BOTTOM, br.join("\n"));
     }

@@ -16,7 +16,12 @@ CoreData), so the logic is re-implemented in portable Rust.
   by image size and orientation, so localizers don't get mixed into a stack.
 - Slices ordered by instance number, then by position along the slice normal.
 - 2D viewing: mouse-wheel stacking, window/level, zoom, pan, invert, cine.
-- CT window presets (keys 1–8), or the image's own window (key 0).
+- Window/level behaves as in Horos: same drag speed and direction, Horos's factory
+  presets on keys 1–5 (alphabetical, as in Horos), key 0 for the default, and a series
+  takes its default window from its middle image.
+- Window/level runs on the graphics card (DirectX 12 on Windows, Metal on Mac, Vulkan
+  on Linux); `RDICOM_CPU=1` forces the processor path.
+- VOI LUT tables (CR/DX/mammography) and MONOCHROME1 are handled as Horos does.
 - Length (mm) and angle measurements, kept per image while the app is open.
 - Live value under the cursor (HU for CT).
 - Non-square pixels displayed with the correct aspect ratio.
@@ -38,7 +43,7 @@ older CT). `--check` lists any file it can't decode.
 | Pan | Middle drag |
 | Zoom | Right drag, Ctrl + wheel |
 | Reset view | Double-click, R |
-| Window presets | 1 Abdomen · 2 Lung · 3 Bone · 4 Brain · 5 Mediastinum · 6 Liver · 7 Stroke · 8 Angio · 0 image default |
+| Window presets | 1 CT Abdomen · 2 CT Bone · 3 CT Brain · 4 CT Pulmonary · 5 VR Endoscopy · 0 default |
 | Invert | I |
 | Tools | W window/level · M length · A angle · Z zoom |
 | Angle | Drag the first arm toward the vertex, then click the end of the second arm |
@@ -84,7 +89,9 @@ rdicom-viewer --render FOLDER OUT.png [SERIES] [IMAGE] [WIDTH LEVEL]
 | File | Role |
 |---|---|
 | `src/dicom_index.rs` | Folder scan, header parsing, study/series grouping, slice sorting |
-| `src/frame.rs` | Pixel decoding, modality LUT, window/level rendering, value readout |
+| `src/frame.rs` | Pixel decoding, modality LUT, VOI LUT, value readout |
+| `src/imaging/` | Windowing rules ported from IsiX, with its tests |
+| `src/gpu_view.rs` | Draws the image and applies the window on the graphics card |
 | `src/loader.rs` | Background decoding threads, nearest-slice-first |
 | `src/app.rs` | The window: browser, viewport, tools, overlays, shortcuts |
 | `src/main.rs` | Startup and command-line helpers |

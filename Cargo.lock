@@ -3646,6 +3646,7 @@ name = "rdicom-viewer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "dicom-core",
  "dicom-dictionary-std",
  "dicom-object",

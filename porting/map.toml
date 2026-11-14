@@ -183,8 +183,9 @@ name = "Pixel pipeline: frame loading, rescale, window/level, VOI LUT, overlays,
 decision = "port"
 priority = 1
 progress = "partial"
-rdicom = "src/frame.rs, src/loader.rs"
-notes = "The core of how images look. Port VOILUTMapping, FramePhotometry and WindowRendering first and test against IsiX's tests."
+ported_from = "3e24831224b8"
+rdicom = "src/imaging/ (window, VOI LUT, defaults, photometry), src/frame.rs, src/loader.rs"
+notes = "Ported with IsiX's tests: requested/full window, linear and colour windowing, VOI LUT tables, default-window order, MONOCHROME1. Still to port: convolution filters, image arithmetic, subtraction, shutters, thumbnails."
 paths = ['^Modules/IsiXImaging/(Sources|Tests)/BufferOperations/(?!PETSUV|SUV|T1|T2|SyntheticDiffusion|BValue)',
          '^Modules/IsiXImaging/(Sources|Tests)/(Display|NonDICOM|Calibration)/',
          '^Modules/IsiXImaging/Sources/(?![^/]*SUV)[^/]+$']
@@ -199,7 +200,8 @@ name = "2D viewer: viewport, tools, scrolling, cine, annotations, layouts, sync,
 decision = "rebuild"
 priority = 1
 progress = "partial"
-rdicom = "src/app.rs"
+ported_from = "3e24831224b8"
+rdicom = "src/app.rs, src/gpu_view.rs (GPU window/level), src/imaging/drag.rs, src/imaging/presets.rs"
 crates = "egui, wgpu"
 notes = "Where Horos's feel lives. Rebuild screen by screen, side by side with Horos."
 paths = ['^Modules/IsiXImaging/(Sources|Tests)/(Viewer(?!Fusion|Reconstruction|Export)[A-Za-z]*|View(Input|Drawing|Capture|Series|Presentation)|Annotations|SeriesOperations)/']

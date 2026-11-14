@@ -14,6 +14,9 @@ pub struct Job {
     pub idx: usize,
     pub path: PathBuf,
     pub frame: u32,
+    /// Decoded before anything else, wherever it is (the series' middle
+    /// image, which sets the series' default window).
+    pub urgent: bool,
 }
 
 struct Queue {
@@ -82,7 +85,7 @@ impl Loader {
         q.focus = focus;
         let pending = &mut self.pending;
         q.jobs.retain(|j| {
-            let keep = j.idx.abs_diff(focus) <= radius;
+            let keep = j.urgent || j.idx.abs_diff(focus) <= radius;
             if !keep {
                 pending.remove(&j.idx);
             }
@@ -140,7 +143,7 @@ fn worker(shared: Arc<(Mutex<Queue>, Condvar)>, tx: Sender<Done>, repaint: Arc<d
                 .jobs
                 .iter()
                 .enumerate()
-                .min_by_key(|(_, j)| j.idx.abs_diff(focus))
+                .min_by_key(|(_, j)| (!j.urgent, j.idx.abs_diff(focus)))
                 .map(|(i, _)| i)
                 .unwrap();
             (q.generation, q.jobs.swap_remove(best))

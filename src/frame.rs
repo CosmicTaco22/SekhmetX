@@ -1,19 +1,23 @@
 //! Decoding one image (frame) and turning it into display pixels.
+//!
+//! Decoding is dicom-rs; how the image is windowed and shown follows Horos
+//! (see `crate::imaging`).
 
 use std::path::Path;
 
 use anyhow::{Context, Result};
 use dicom_dictionary_std::tags;
-use dicom_object::OpenFileOptions;
+use dicom_object::{DefaultDicomObject, OpenFileOptions};
 use dicom_pixeldata::{PhotometricInterpretation, PixelDecoder};
-use rayon::prelude::*;
 
-use crate::dicom_index::{get_f64, get_f64s, get_str};
+use crate::dicom_index::{get_f64, get_f64s, get_int, get_str};
+use crate::imaging::{defaults, photometry, voi_lut::VoiLut, window, Window};
 
 pub enum Pixels {
-    /// Grayscale values after the modality LUT (Hounsfield units for CT).
+    /// Grey values after the modality LUT (Hounsfield units for CT), and
+    /// after a VOI LUT table when the file has one Horos applies.
     Gray(Vec<f32>),
-    /// Colour images (ultrasound, screenshots, ...), already RGBA8.
+    /// Colour images (ultrasound, screenshots, ...), RGBA8.
     Rgba(Vec<u8>),
 }
 
@@ -21,11 +25,16 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub pixels: Pixels,
-    /// Window (center, width) suggested by the file, if any.
-    pub file_window: Option<(f64, f64)>,
-    /// Robust value range (0.5–99.5 percentile), used when no window is stored.
-    pub auto_window: (f64, f64),
-    pub monochrome1: bool,
+    /// The file's Window Center/Width, or a VOI LUT table's output range.
+    pub stored_window: Option<Window>,
+    /// Smallest to largest value: Horos's "full dynamic".
+    pub full_window: Window,
+    /// What the stored bits can hold: the last-resort window.
+    pub bits_window: Option<Window>,
+    /// Shown black-for-white (MONOCHROME1, except PET).
+    pub inverts: bool,
+    pub voi_lut_applied: bool,
+    pub slope: f32,
     /// (row spacing, column spacing) in mm.
     pub spacing: Option<(f64, f64)>,
     pub slice_thickness: Option<f64>,
@@ -41,12 +50,16 @@ impl Frame {
         }
     }
 
-    pub fn default_window(&self) -> (f64, f64) {
-        self.file_window.unwrap_or(self.auto_window)
+    /// The window this image opens with in Horos: its stored window, else its
+    /// full dynamic, else its stored bits.
+    pub fn default_window(&self) -> Window {
+        defaults::default_window(self.stored_window, Some(self.full_window), self.bits_window).unwrap_or(self.full_window)
     }
 
-    pub fn is_gray(&self) -> bool {
-        matches!(self.pixels, Pixels::Gray(_))
+    /// What a requested window becomes on this image (whole values on wide
+    /// images, a minimum width), or `None` for "the full window".
+    pub fn requested(&self, w: Window) -> Option<Window> {
+        window::requested(w.level, w.width, self.full_window.width, self.slope)
     }
 
     /// Value at pixel (x, y), for the cursor readout.
@@ -71,77 +84,32 @@ impl Frame {
         })
     }
 
-    /// Produces RGBA8 pixels for display with the given window.
-    pub fn render(&self, window: (f64, f64), invert: bool) -> Vec<u8> {
+    /// RGBA8 pixels for display with the given window. `invert` is the
+    /// viewer's invert toggle; a MONOCHROME1 image is already shown inverted.
+    pub fn render(&self, w: Window, invert: bool) -> Vec<u8> {
+        let flip = invert != self.inverts;
         match &self.pixels {
-            Pixels::Rgba(v) => {
-                if invert {
-                    v.chunks_exact(4)
-                        .flat_map(|p| [255 - p[0], 255 - p[1], 255 - p[2], p[3]])
-                        .collect()
-                } else {
-                    v.clone()
-                }
-            }
             Pixels::Gray(values) => {
                 let mut out = vec![0u8; values.len() * 4];
-                let flip = invert != self.monochrome1;
-                apply_window(values, &mut out, window, flip);
+                window::linear_rgba(values, &mut out, w, flip);
+                out
+            }
+            Pixels::Rgba(rgba) => {
+                let mut out = vec![0u8; rgba.len()];
+                window::colour_rgba(rgba, &mut out, &window::colour_table(w), flip);
                 out
             }
         }
     }
 }
 
-/// DICOM linear VOI function (PS3.3 C.11.2.1.2), written straight into RGBA.
-pub fn apply_window(values: &[f32], out: &mut [u8], (center, width): (f64, f64), flip: bool) {
-    let c = center as f32 - 0.5;
-    let w = (width.max(1.0) as f32 - 1.0).max(1e-3);
-    let lo = c - w / 2.0;
-    let hi = c + w / 2.0;
-    out.par_chunks_mut(4 * 1024)
-        .zip(values.par_chunks(1024))
-        .for_each(|(dst, src)| {
-            for (px, &v) in dst.chunks_exact_mut(4).zip(src) {
-                let g = if v <= lo {
-                    0.0
-                } else if v > hi {
-                    255.0
-                } else {
-                    ((v - c) / w + 0.5) * 255.0
-                };
-                let mut g = g as u8;
-                if flip {
-                    g = 255 - g;
-                }
-                px[0] = g;
-                px[1] = g;
-                px[2] = g;
-                px[3] = 255;
-            }
-        });
-}
-
-fn percentile_range(values: &[f32]) -> (f32, f32) {
-    // Sample up to ~64k values so this stays fast on large images.
-    let step = (values.len() / 65_536).max(1);
-    let mut s: Vec<f32> = values
-        .iter()
-        .step_by(step)
-        .copied()
-        .filter(|v| v.is_finite())
-        .collect();
-    if s.is_empty() {
-        return (0.0, 1.0);
-    }
-    s.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let lo = s[(s.len() as f64 * 0.005) as usize];
-    let hi = s[((s.len() as f64 * 0.995) as usize).min(s.len() - 1)];
-    if hi > lo {
-        (lo, hi)
-    } else {
-        (s[0], s[s.len() - 1].max(s[0] + 1.0))
-    }
+/// The first item of the VOI LUT Sequence as a table, if there is one usable.
+fn read_voi_lut(obj: &DefaultDicomObject, signed: bool) -> Option<VoiLut> {
+    let seq = obj.element_opt(tags::VOILUT_SEQUENCE).ok().flatten()?;
+    let item = seq.items()?.first()?;
+    let descriptor: Vec<i64> = item.element(tags::LUT_DESCRIPTOR).ok()?.to_multi_int::<i64>().ok()?;
+    let data = item.element(tags::LUT_DATA).ok()?.to_bytes().ok()?;
+    VoiLut::new(&descriptor, None, Some(&data), signed)
 }
 
 pub fn load_frame(path: &Path, frame: u32) -> Result<Frame> {
@@ -155,43 +123,73 @@ pub fn load_frame(path: &Path, frame: u32) -> Result<Frame> {
 
     let width = decoded.columns();
     let height = decoded.rows();
+    let modality = get_str(&obj, tags::MODALITY).unwrap_or_default();
     let photometric = decoded.photometric_interpretation().clone();
-    let monochrome1 = matches!(photometric, PhotometricInterpretation::Monochrome1);
+    let mono1 = matches!(photometric, PhotometricInterpretation::Monochrome1);
+    let inverts = photometry::inverts(if mono1 { "MONOCHROME1" } else { photometric.as_str() }, &modality, false);
 
     let spacing = get_f64s(&obj, tags::PIXEL_SPACING)
         .or_else(|| get_f64s(&obj, tags::IMAGER_PIXEL_SPACING))
         .filter(|v| v.len() >= 2 && v[0] > 0.0 && v[1] > 0.0)
         .map(|v| (v[0], v[1]));
-    let modality = get_str(&obj, tags::MODALITY).unwrap_or_default();
+    let slope = get_f64(&obj, tags::RESCALE_SLOPE).unwrap_or(1.0) as f32;
+    let intercept = get_f64(&obj, tags::RESCALE_INTERCEPT).unwrap_or(0.0) as f32;
+    let signed = get_int(&obj, tags::PIXEL_REPRESENTATION).unwrap_or(0) == 1;
 
-    let (pixels, file_window, auto_window) = if decoded.samples_per_pixel() == 1 {
-        let values: Vec<f32> = decoded
+    let mut voi_lut_applied = false;
+    let (pixels, stored_window, full_window, bits_window) = if decoded.samples_per_pixel() == 1 {
+        let mut values: Vec<f32> = decoded
             .to_vec_frame(0)
             .context("could not convert pixel values")?;
-        let file_window = decoded
+
+        let mut stored_window = decoded
             .window()
             .ok()
             .flatten()
             .and_then(|w| w.first().copied())
-            .filter(|w| w.width > 0.0)
-            .map(|w| (w.center, w.width));
-        let (lo, hi) = percentile_range(&values);
-        let auto = (((lo + hi) / 2.0) as f64, ((hi - lo) as f64).max(1.0));
-        (Pixels::Gray(values), file_window, auto)
+            .map(|w| Window::new(w.center as f32, w.width as f32));
+
+        // Horos applies a VOI LUT table only where the rescale is the identity:
+        // the table's input is the stored value, and with a rescale in the way
+        // the index would be wrong.
+        if slope == 1.0 && intercept == 0.0 {
+            if let Some(lut) = read_voi_lut(&obj, signed) {
+                let original = values.clone();
+                if lut.apply(&mut values, signed) {
+                    voi_lut_applied = true;
+                    stored_window = Some(lut.window());
+                } else {
+                    values = original; // a table that maps nothing is corrupt
+                }
+            }
+        }
+
+        let full = window::full(&values, false);
+        let bits = defaults::stored_range(
+            decoded.bits_stored() as i32,
+            decoded.bits_allocated() as i32,
+            signed && !voi_lut_applied,
+            slope,
+            intercept,
+        );
+        (Pixels::Gray(values), stored_window, full, bits)
     } else {
         let img = decoded
             .to_dynamic_image(0)
             .context("could not convert colour image")?;
-        (Pixels::Rgba(img.to_rgba8().into_raw()), None, (128.0, 256.0))
+        (Pixels::Rgba(img.to_rgba8().into_raw()), None, window::full(&[], true), None)
     };
 
     Ok(Frame {
         width,
         height,
         pixels,
-        file_window,
-        auto_window,
-        monochrome1,
+        stored_window,
+        full_window,
+        bits_window,
+        inverts,
+        voi_lut_applied,
+        slope,
         spacing,
         slice_thickness: get_f64(&obj, tags::SLICE_THICKNESS),
         slice_location: get_f64(&obj, tags::SLICE_LOCATION),
