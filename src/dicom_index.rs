@@ -878,7 +878,7 @@ fn series_compatible_for_mpr(a: &Series, b: &Series) -> bool {
 /// Automatically detects separated series (e.g. Axial, Coronal, and Sagittal reconstructions)
 /// that originate from the same acquisition time / FrameOfReferenceUID and groups them into
 /// unified MPR-enabled groups without mixing incompatible reconstruction kernels.
-fn build_mpr_groups(series: &mut [Series], study_desc: &str) -> Vec<MprGroup> {
+pub fn build_mpr_groups(series: &mut [Series], study_desc: &str) -> Vec<MprGroup> {
     let n = series.len();
     let mut visited = vec![false; n];
     let mut groups = Vec::new();

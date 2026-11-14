@@ -261,6 +261,8 @@ pub struct ViewerApp {
     update_rx: Option<Receiver<anyhow::Result<Option<crate::updater::ReleaseInfo>>>>,
     install_rx: Option<Receiver<anyhow::Result<String>>>,
     show_update_modal: bool,
+    db: Option<crate::db::Database>,
+    lang: crate::i18n::Lang,
 }
 
 #[derive(Clone, Copy)]
@@ -281,6 +283,12 @@ impl ViewerApp {
         cc.egui_ctx.set_visuals(visuals);
         let ctx = cc.egui_ctx.clone();
         let viewports = (0..MAX_VIEWPORTS).map(ViewportCell::new).collect();
+        let db = crate::db::Database::open_default().ok();
+        let saved_lang = db
+            .as_ref()
+            .and_then(|d| d.get_setting("lang"))
+            .map(|s| crate::i18n::Lang::from_code(&s))
+            .unwrap_or(crate::i18n::Lang::En);
         let mut app = Self {
             index: None,
             scan: None,
@@ -335,10 +343,20 @@ impl ViewerApp {
             update_rx: None,
             install_rx: None,
             show_update_modal: false,
+            db,
+            lang: saved_lang,
         };
         app.start_update_check(false, &cc.egui_ctx);
         if !initial.is_empty() {
             app.start_scan(initial);
+        } else if let Some(db) = &app.db {
+            if let Ok(saved) = db.load_index() {
+                if !saved.studies.is_empty() {
+                    app.index = Some(saved);
+                    app.assign_series_to_viewport(0, Some((0, 0)));
+                    app.populate_unassigned_viewports();
+                }
+            }
         }
         app
     }
@@ -1248,9 +1266,30 @@ impl ViewerApp {
                     let first = (!index.studies.is_empty()
                         && !index.studies[0].series.is_empty())
                     .then_some((0, 0));
-                    self.index = Some(index);
+                    let first_uid = index.studies.first().map(|s| s.uid.clone());
+                    let merged = if let Some(db) = &mut self.db {
+                        let _ = db.save_index(&index);
+                        match db.load_index() {
+                            Ok(saved) if !saved.studies.is_empty() => saved,
+                            _ => index,
+                        }
+                    } else {
+                        index
+                    };
+                    let target_sel = first_uid
+                        .as_deref()
+                        .and_then(|uid| {
+                            merged
+                                .studies
+                                .iter()
+                                .position(|s| s.uid == uid)
+                                .filter(|&si| !merged.studies[si].series.is_empty())
+                                .map(|si| (si, 0))
+                        })
+                        .or(first);
+                    self.index = Some(merged);
                     self.active_viewport = 0;
-                    if let Some(sel) = first {
+                    if let Some(sel) = target_sel {
                         self.assign_series_to_viewport(0, Some(sel));
                         self.populate_unassigned_viewports();
                     }
@@ -1688,6 +1727,7 @@ impl ViewerApp {
     // ----------------------------------------------------------------- UI
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
+        let tr = crate::i18n::tr(self.lang);
         // Row 1: Primary Horos-style uncluttered icon/compact toolbar (scrolls horizontally if very narrow, never wraps into a messy pile)
         egui::ScrollArea::horizontal()
             .id_salt("horos_toolbar_scroll")
@@ -1698,17 +1738,21 @@ impl ViewerApp {
 
                     if ui
                         .toggle_value(&mut self.show_browser, "◧")
-                        .on_hover_text("Show / hide Study Browser")
+                        .on_hover_text(tr.browser_hover)
                         .changed()
                     {}
-                    ui.menu_button("📂 Open", |ui| {
-                        if ui.button("Open Folder…").clicked() {
+                    ui.menu_button(format!("📂 {}", tr.open), |ui| {
+                        let (lbl_folder, lbl_files) = match self.lang {
+                            crate::i18n::Lang::En => ("Open Folder…", "Open Files / ZIP…"),
+                            crate::i18n::Lang::Es => ("Abrir Carpeta…", "Abrir Archivos / ZIP…"),
+                        };
+                        if ui.button(lbl_folder).clicked() {
                             if let Some(dir) = rfd::FileDialog::new().pick_folder() {
                                 self.start_scan(vec![dir]);
                             }
                             ui.close();
                         }
-                        if ui.button("Open Files / ZIP…").clicked() {
+                        if ui.button(lbl_files).clicked() {
                             if let Some(files) = rfd::FileDialog::new().pick_files() {
                                 self.start_scan(files);
                             }
@@ -1716,22 +1760,22 @@ impl ViewerApp {
                         }
                     })
                     .response
-                    .on_hover_text("Open DICOM folder, files, or .zip archive");
+                    .on_hover_text(tr.open_hover);
                     ui.separator();
 
                     // Mouse tools (compact Horos-style strip)
                     let prev_tool = self.tool;
-                    ui.selectable_value(&mut self.tool, Tool::WindowLevel, "WL")
+                    ui.selectable_value(&mut self.tool, Tool::WindowLevel, tr.wl)
                         .on_hover_text("Window / Level (W)");
-                    ui.selectable_value(&mut self.tool, Tool::Scroll, "Scroll")
+                    ui.selectable_value(&mut self.tool, Tool::Scroll, tr.scroll)
                         .on_hover_text("Stack scroll (S)");
-                    ui.selectable_value(&mut self.tool, Tool::Pan, "Pan")
+                    ui.selectable_value(&mut self.tool, Tool::Pan, tr.pan)
                         .on_hover_text("Pan (Middle mouse button)");
-                    ui.selectable_value(&mut self.tool, Tool::Zoom, "Zoom")
+                    ui.selectable_value(&mut self.tool, Tool::Zoom, tr.zoom)
                         .on_hover_text("Zoom (Right mouse button / Ctrl+wheel) (Z)");
-                    ui.selectable_value(&mut self.tool, Tool::Rotate, "Rot")
+                    ui.selectable_value(&mut self.tool, Tool::Rotate, tr.rot)
                         .on_hover_text("In-plane 2D rotation");
-                    ui.selectable_value(&mut self.tool, Tool::Orbit3D, "3D")
+                    ui.selectable_value(&mut self.tool, Tool::Orbit3D, tr.orbit_3d)
                         .on_hover_text("3D Trackball orbit rotation (O)");
                     ui.separator();
 
@@ -2077,6 +2121,21 @@ impl ViewerApp {
                     .response
                     .on_hover_text("Cine playback speed");
 
+                    let lang_btn = match self.lang {
+                        crate::i18n::Lang::En => "🌐 EN",
+                        crate::i18n::Lang::Es => "🌐 ES",
+                    };
+                    if ui
+                        .button(lang_btn)
+                        .on_hover_text("Switch language (English / Español)")
+                        .clicked()
+                    {
+                        self.lang = self.lang.toggle();
+                        if let Some(db) = &self.db {
+                            let _ = db.set_setting("lang", self.lang.code());
+                        }
+                    }
+
                     ui.separator();
                     let (upd_label, upd_hover) = match &self.update_status {
                         crate::updater::UpdateStatus::Available(info) => (
@@ -2237,28 +2296,6 @@ impl ViewerApp {
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            if let Some(rx) = &self.update_rx {
-            if let Ok(res) = rx.try_recv() {
-                self.update_rx = None;
-                self.update_status = match res {
-                    Ok(Some(info)) => crate::updater::UpdateStatus::Available(info),
-                    Ok(None) => crate::updater::UpdateStatus::UpToDate(
-                        env!("CARGO_PKG_VERSION").to_string(),
-                    ),
-                    Err(e) => crate::updater::UpdateStatus::Error(format!("{e:#}")),
-                };
-            }
-        }
-        if let Some(rx) = &self.install_rx {
-            if let Ok(res) = rx.try_recv() {
-                self.install_rx = None;
-                self.update_status = match res {
-                    Ok(tag) => crate::updater::UpdateStatus::Installed(tag),
-                    Err(e) => crate::updater::UpdateStatus::Error(format!("{e:#}")),
-                };
-            }
-        }
-
         if let Some(scan) = &self.scan {
                 let done = scan.done.load(Ordering::Relaxed);
                 let total = scan.total.load(Ordering::Relaxed);
@@ -2294,10 +2331,11 @@ impl ViewerApp {
     }
 
     fn browser(&mut self, ui: &mut egui::Ui) {
+        let tr = crate::i18n::tr(self.lang);
         if self.index.is_none() {
             ui.add_space(8.0);
-            ui.label("No studies loaded.");
-            ui.label("Use “Open Folder…” or drop a folder onto the window.");
+            ui.label(tr.no_studies);
+            ui.label(tr.drop_hint);
             return;
         }
 
@@ -2306,7 +2344,7 @@ impl ViewerApp {
         ui.horizontal(|ui| {
             ui.label("🔍");
             let edit = egui::TextEdit::singleline(&mut self.browser_search)
-                .hint_text("Search patient, ID, study, series…")
+                .hint_text(tr.search_hint)
                 .desired_width(ui.available_width() - 28.0);
             ui.add(edit);
             if !self.browser_search.is_empty() && ui.small_button("✕").clicked() {
@@ -2315,7 +2353,7 @@ impl ViewerApp {
         });
         ui.horizontal_wrapped(|ui| {
             for (code, label) in [
-                ("ALL", "All"),
+                ("ALL", tr.all),
                 ("CT", "CT"),
                 ("MR", "MR"),
                 ("US", "US"),
@@ -2335,6 +2373,8 @@ impl ViewerApp {
         let scan_gen = self.scan_gen;
         let mut clicked: Option<(usize, (usize, usize), bool)> = None;
         let mut tile_study: Option<(usize, ViewportTiling)> = None;
+        let mut remove_study_uid: Option<String> = None;
+        let mut clear_library = false;
         let mut thumb_jobs: Vec<Job> = Vec::new();
         let active_sel = self.active_cell().selected;
         let cell_count = self.tiling.cell_count();
@@ -2342,6 +2382,29 @@ impl ViewerApp {
         let Some(index) = &self.index else {
             return;
         };
+
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} · {} {}",
+                    tr.library,
+                    index.studies.len(),
+                    tr.studies
+                ))
+                .small()
+                .color(Color32::from_gray(165)),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button(tr.clear)
+                    .on_hover_text("Clear studies from the local library (files on disk are untouched)")
+                    .clicked()
+                {
+                    clear_library = true;
+                }
+            });
+        });
+        ui.add_space(2.0);
 
         egui::ScrollArea::vertical()
             .auto_shrink([false; 2])
@@ -2384,7 +2447,7 @@ impl ViewerApp {
                     }
 
                     let title = format!("{}   {}", study.patient_name, study.date);
-                    egui::CollapsingHeader::new(egui::RichText::new(title).strong())
+                    let hdr_resp = egui::CollapsingHeader::new(egui::RichText::new(title).strong())
                         .id_salt(&study.uid)
                         .default_open(true)
                         .show(ui, |ui| {
@@ -2403,7 +2466,7 @@ impl ViewerApp {
                             }
                             if study.series.len() >= 2 {
                                 ui.horizontal(|ui| {
-                                    ui.small("Compare:");
+                                    ui.small(tr.compare);
                                     if ui.small_button("1×2").clicked() {
                                         tile_study = Some((si, ViewportTiling::new(1, 2)));
                                     }
@@ -2642,8 +2705,43 @@ impl ViewerApp {
                                 }
                             }
                         });
+                    hdr_resp.header_response.context_menu(|ui| {
+                        if ui.button(tr.remove_from_library).clicked() {
+                            remove_study_uid = Some(study.uid.clone());
+                            ui.close();
+                        }
+                    });
                 }
             });
+
+        if clear_library {
+            if let Some(db) = &self.db {
+                let _ = db.clear_all();
+            }
+            self.index = None;
+            for vp in &mut self.viewports {
+                vp.reset_series_state(None);
+            }
+            return;
+        }
+        if let Some(uid) = remove_study_uid {
+            if let Some(db) = &self.db {
+                let _ = db.remove_study(&uid);
+            }
+            if let Some(idx) = &mut self.index {
+                idx.studies.retain(|s| s.uid != uid);
+                if idx.studies.is_empty() {
+                    self.index = None;
+                }
+            }
+            for vp in &mut self.viewports {
+                vp.reset_series_state(None);
+            }
+            if self.index.is_some() {
+                self.assign_series_to_viewport(0, Some((0, 0)));
+            }
+            return;
+        }
 
         for job in thumb_jobs {
             self.thumbnails_queued
@@ -4578,35 +4676,29 @@ impl ViewerApp {
         let Some(req) = self.pending_force_mpr else {
             return;
         };
+        let tr = crate::i18n::tr(self.lang);
         let mut open = true;
         let mut decision: Option<bool> = None;
 
-        egui::Window::new("Low-Quality 3D Reconstruction Warning")
+        egui::Window::new(tr.force_3d_title)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .open(&mut open)
             .show(ctx, |ui| {
                 ui.set_max_width(420.0);
-                ui.label(
-                    egui::RichText::new(
-                        "This acquisition does not have enough slices or 3D orientation data for standard multiplanar reconstruction.",
-                    )
-                    .strong(),
-                );
+                ui.label(egui::RichText::new(tr.force_3d_headline).strong());
                 ui.add_space(6.0);
-                ui.label(
-                    "Forcing 3D slicing on this series may produce a blurry, stretched, or low-quality image.\n\nAre you sure you want to continue?",
-                );
+                ui.label(tr.force_3d_body);
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     if ui
-                        .button(egui::RichText::new("Yes, Force 3D").strong())
+                        .button(egui::RichText::new(tr.force_3d_yes).strong())
                         .clicked()
                     {
                         decision = Some(true);
                     }
-                    if ui.button("No, Cancel").clicked() {
+                    if ui.button(tr.force_3d_no).clicked() {
                         decision = Some(false);
                     }
                 });
@@ -4644,13 +4736,14 @@ impl ViewerApp {
         if !self.show_update_modal {
             return;
         }
+        let tr = crate::i18n::tr(self.lang);
         let mut open = true;
         let status = self.update_status.clone();
         let mut action_check = false;
         let mut action_install: Option<(String, String)> = None;
         let mut action_restart = false;
 
-        egui::Window::new("SekhmetX Updates")
+        egui::Window::new(tr.updates_title)
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
@@ -4659,9 +4752,13 @@ impl ViewerApp {
                 ui.set_min_width(380.0);
                 ui.set_max_width(460.0);
                 ui.label(
-                    egui::RichText::new(format!("Current version: v{}", env!("CARGO_PKG_VERSION")))
-                        .monospace()
-                        .color(Color32::from_gray(170)),
+                    egui::RichText::new(format!(
+                        "{}: v{}",
+                        tr.current_version,
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .monospace()
+                    .color(Color32::from_gray(170)),
                 );
                 ui.add_space(6.0);
 
@@ -4670,23 +4767,23 @@ impl ViewerApp {
                     | crate::updater::UpdateStatus::Checking => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Checking GitHub Releases for updates…");
+                            ui.label(tr.checking_updates);
                         });
                     }
                     crate::updater::UpdateStatus::UpToDate(v) => {
                         ui.label(
-                            egui::RichText::new(format!("You are running the latest version (v{v})."))
+                            egui::RichText::new(format!("{} (v{v}).", tr.up_to_date))
                                 .strong()
                                 .color(Color32::from_rgb(130, 220, 155)),
                         );
                         ui.add_space(8.0);
-                        if ui.button("Check Again").clicked() {
+                        if ui.button(tr.check_again).clicked() {
                             action_check = true;
                         }
                     }
                     crate::updater::UpdateStatus::Available(info) => {
                         ui.label(
-                            egui::RichText::new(format!("New version available: {}", info.tag_name))
+                            egui::RichText::new(format!("{}: {}", tr.new_version, info.tag_name))
                                 .strong()
                                 .color(Color32::from_rgb(130, 210, 255)),
                         );
@@ -4702,19 +4799,19 @@ impl ViewerApp {
                         ui.horizontal(|ui| {
                             if let Some(url) = &info.download_url {
                                 if ui
-                                    .button(egui::RichText::new("Download & Install").strong())
+                                    .button(egui::RichText::new(tr.download_install).strong())
                                     .clicked()
                                 {
                                     action_install = Some((url.clone(), info.tag_name.clone()));
                                 }
                             }
-                            ui.hyperlink_to("Open GitHub Release", &info.html_url);
+                            ui.hyperlink_to(tr.open_github, &info.html_url);
                         });
                     }
                     crate::updater::UpdateStatus::Installing => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Downloading and installing update…");
+                            ui.label(tr.installing_update);
                         });
                     }
                     crate::updater::UpdateStatus::Installed(tag) => {
@@ -4727,7 +4824,7 @@ impl ViewerApp {
                         );
                         ui.add_space(10.0);
                         if ui
-                            .button(egui::RichText::new("Restart SekhmetX").strong())
+                            .button(egui::RichText::new(tr.restart_sekhmetx).strong())
                             .clicked()
                         {
                             action_restart = true;
@@ -4739,7 +4836,7 @@ impl ViewerApp {
                                 .color(Color32::from_rgb(240, 120, 120)),
                         );
                         ui.add_space(8.0);
-                        if ui.button("Retry").clicked() {
+                        if ui.button(tr.retry).clicked() {
                             action_check = true;
                         }
                     }

@@ -2,10 +2,12 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod app;
+mod db;
 mod dicom_index;
 mod frame;
 mod geometry;
 mod gpu_view;
+mod i18n;
 mod imaging;
 mod loader;
 mod navigation;
