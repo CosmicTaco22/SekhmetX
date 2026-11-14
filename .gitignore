@@ -3,3 +3,5 @@
 *.png
 /.upstream/
 __pycache__/
+CONVERSATION_SUMMARY.txt
+FULL_CONVERSATIONS_TRANSCRIPT.txt
