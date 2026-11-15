@@ -1,9 +1,10 @@
-//! The viewer window: study/series browser on the left, Horos-style toolbar at
-//! the top, and multi-series comparison viewports (`1×1` through `3×3`) with
+﻿//! The viewer window: study/series browser on the left, Horos-style toolbar at
+//! the top, and multi-series comparison viewports (`1Ã—1` through `3Ã—3`) with
 //! synchronized scrolling, 3D cross-reference/scout lines, CLUTs, and
 //! orientation edge markers in the center.
 
 mod modals;
+mod overlays;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -868,7 +869,7 @@ impl ViewerApp {
     }
 
     /// Manually locks the current 3D plane & slice offset of all visible follower viewports
-    /// to the active leader viewport (`⚓ Lock 3D Sync`).
+    /// to the active leader viewport (`âš“ Lock 3D Sync`).
     pub(crate) fn lock_current_3d_alignment(&mut self) {
         let leader_idx = self.active_viewport;
         let Some(leader_sel) = self.viewports[leader_idx].selected else {
@@ -2243,7 +2244,7 @@ impl ViewerApp {
                 if name.is_empty() {
                     tr.pacs_connected.to_string()
                 } else {
-                    format!("● {name}")
+                    format!("â— {name}")
                 }
             } else {
                 tr.pacs_login_btn.to_string()
@@ -2303,7 +2304,7 @@ impl ViewerApp {
                     egui::ProgressBar::new(0.0)
                         .desired_width(220.0)
                         .animate(true)
-                        .text(format!("{} {dl}…", tr.pacs_msg_starting_dl)),
+                        .text(format!("{} {dl}â€¦", tr.pacs_msg_starting_dl)),
                 );
                 ui.separator();
                 ui.ctx().request_repaint();
@@ -2323,7 +2324,7 @@ impl ViewerApp {
                 }
             } else if let Some(index) = &self.index {
                 ui.label(format!(
-                    "{} {} · {} {} · {} {} · {} {}",
+                    "{} {} Â· {} {} Â· {} {} Â· {} {}",
                     index.studies.len(),
                     tr.studies,
                     index.image_count(),
@@ -2346,8 +2347,8 @@ impl ViewerApp {
                 );
                 if self.previous_crash_pending {
                     let lbl = match self.lang {
-                        crate::i18n::Lang::Es => "⚠ Registro de Fallo",
-                        crate::i18n::Lang::En => "⚠ Crash Log",
+                        crate::i18n::Lang::Es => "âš  Registro de Fallo",
+                        crate::i18n::Lang::En => "âš  Crash Log",
                     };
                     if ui
                         .add(
@@ -2381,12 +2382,12 @@ impl ViewerApp {
         // Horos-style Search & Modality Filter Bar
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label("🔍");
+            ui.label("ðŸ”");
             let edit = egui::TextEdit::singleline(&mut self.browser_search)
                 .hint_text(tr.search_hint)
                 .desired_width(ui.available_width() - 28.0);
             ui.add(edit);
-            if !self.browser_search.is_empty() && ui.small_button("✕").clicked() {
+            if !self.browser_search.is_empty() && ui.small_button("âœ•").clicked() {
                 self.browser_search.clear();
             }
         });
@@ -2426,7 +2427,7 @@ impl ViewerApp {
             let disk_mb = crate::db::library_disk_usage_bytes() as f64 / (1024.0 * 1024.0);
             ui.label(
                 egui::RichText::new(format!(
-                    "{} · {} {} ({disk_mb:.1} MB)",
+                    "{} Â· {} {} ({disk_mb:.1} MB)",
                     tr.library,
                     index.studies.len(),
                     tr.studies
@@ -2550,7 +2551,7 @@ impl ViewerApp {
                 for pg in &patient_groups {
                     let mut pt_label = pg.display_name.clone();
                     if !pg.display_id.is_empty() {
-                        pt_label.push_str(&format!(" · ID {}", pg.display_id));
+                        pt_label.push_str(&format!(" Â· ID {}", pg.display_id));
                     }
                     pt_label.push_str(&format!(" ({})", pg.studies.len()));
 
@@ -2571,9 +2572,9 @@ impl ViewerApp {
                                     study.description.trim()
                                 };
                                 let title = if study.files_missing {
-                                    format!("⚠ [files missing] {desc} — {}", study.date)
+                                    format!("âš  [files missing] {desc} â€” {}", study.date)
                                 } else {
-                                    format!("{desc} — {}", study.date)
+                                    format!("{desc} â€” {}", study.date)
                                 };
                                 let hdr_resp =
                                     egui::CollapsingHeader::new(egui::RichText::new(title))
@@ -2591,18 +2592,18 @@ impl ViewerApp {
                                 sub.push(format!("Acc {}", study.accession));
                             }
                             if !sub.is_empty() {
-                                ui.small(sub.join(" · "));
+                                ui.small(sub.join(" Â· "));
                             }
                             if study.series.len() >= 2 {
                                 ui.horizontal(|ui| {
                                     ui.small(tr.compare);
-                                    if ui.small_button("1×2").clicked() {
+                                    if ui.small_button("1Ã—2").clicked() {
                                         tile_study = Some((si, ViewportTiling::new(1, 2)));
                                     }
-                                    if ui.small_button("2×2").clicked() {
+                                    if ui.small_button("2Ã—2").clicked() {
                                         tile_study = Some((si, ViewportTiling::new(2, 2)));
                                     }
-                                    if study.series.len() >= 5 && ui.small_button("2×3").clicked()
+                                    if study.series.len() >= 5 && ui.small_button("2Ã—3").clicked()
                                     {
                                         tile_study = Some((si, ViewportTiling::new(2, 3)));
                                     }
@@ -2620,7 +2621,7 @@ impl ViewerApp {
                                 } else {
                                     &series.description
                                 };
-                                let mpr_tag = if series.is_mpr_capable() { "·MPR" } else { "" };
+                                let mpr_tag = if series.is_mpr_capable() { "Â·MPR" } else { "" };
                                 let is_active = active_sel == Some((si, ri));
 
                                 // Queue low-priority background job for the middle slice thumbnail if not yet requested.
@@ -2684,7 +2685,7 @@ impl ViewerApp {
                                     );
 
                                     let text = format!(
-                                        "{:<2} {:>3} [{}{}] {}\n{} images · {}×{}",
+                                        "{:<2} {:>3} [{}{}] {}\n{} images Â· {}Ã—{}",
                                         series.modality,
                                         series.number,
                                         series.dominant_plane.badge(),
@@ -2700,13 +2701,13 @@ impl ViewerApp {
                                             egui::RichText::new(text).monospace().size(11.5),
                                         )
                                         .on_hover_text(format!(
-                                            "{} {}, {}×{}, plane: {}{} (click for active viewport, right-click to assign)",
+                                            "{} {}, {}Ã—{}, plane: {}{} (click for active viewport, right-click to assign)",
                                             series.slices.len(),
                                             tr.images,
                                             series.columns,
                                             series.rows,
                                             series.dominant_plane.badge(),
-                                            if series.is_mpr_capable() { " · 3D MPR Ready" } else { "" }
+                                            if series.is_mpr_capable() { " Â· 3D MPR Ready" } else { "" }
                                         ));
                                     if resp.clicked() || thumb_resp.clicked() {
                                         *clicked = Some((self.active_viewport, (si, ri), false));
@@ -2785,7 +2786,7 @@ impl ViewerApp {
                                             .inner_margin(egui::Margin::symmetric(6, 5))
                                             .show(ui, |ui| {
                                                 let grp_text = format!(
-                                                    "🧊 {}  [{}]",
+                                                    "ðŸ§Š {}  [{}]",
                                                     group.label, group.planes_badge
                                                 );
                                                 let hdr = ui
@@ -3010,7 +3011,7 @@ impl ViewerApp {
         let m = rs.min(cs).max(1e-6);
         let mut w = f.width as f32 * (cs / m) as f32;
         let mut h = f.height as f32 * (rs / m) as f32;
-        // Swap aspect ratio when rotated near 90° or 270°.
+        // Swap aspect ratio when rotated near 90Â° or 270Â°.
         let rot = vp.rotation.rem_euclid(180.0);
         if (45.0..135.0).contains(&rot) {
             std::mem::swap(&mut w, &mut h);
@@ -3153,7 +3154,7 @@ impl ViewerApp {
         let Some(mut frame) = frame_opt else {
             let text = match cur_key.and_then(|k| self.failed.get(&k)) {
                 Some(err) => format!("Could not display this image:\n{err}"),
-                None => "Loading…".to_string(),
+                None => "Loadingâ€¦".to_string(),
             };
             // Keep showing the previous image while the next slice decodes.
             if let Some((prev, key)) = self.viewports[vp_idx].last_gpu.clone() {
@@ -3313,7 +3314,7 @@ impl ViewerApp {
                 && leader_sel != cur_sel {
                     let align_text = if self.registrations_in_flight.contains(&(leader_sel, cur_sel))
                     {
-                        Some(("Aligning…".to_string(), Color32::from_rgb(130, 210, 255)))
+                        Some(("Aligningâ€¦".to_string(), Color32::from_rgb(130, 210, 255)))
                     } else if let Some(reg) = self.registrations.get(&(leader_sel, cur_sel)) {
                         let same_for = matches!(
                             (
@@ -3329,7 +3330,7 @@ impl ViewerApp {
                             ))
                         } else if reg.is_reliable() {
                             Some((
-                                format!("Auto-aligned (approximate) · score {:.2}", reg.correlation),
+                                format!("Auto-aligned (approximate) Â· score {:.2}", reg.correlation),
                                 Color32::from_rgb(130, 220, 155),
                             ))
                         } else {
@@ -3531,7 +3532,7 @@ impl ViewerApp {
         painter.text(
             prev_rect.center(),
             Align2::CENTER_CENTER,
-            "◀",
+            "â—€",
             FontId::proportional(11.0),
             if prev_hover {
                 Color32::from_rgb(110, 190, 255)
@@ -3542,7 +3543,7 @@ impl ViewerApp {
         painter.text(
             next_rect.center(),
             Align2::CENTER_CENTER,
-            "▶",
+            "â–¶",
             FontId::proportional(11.0),
             if next_hover {
                 Color32::from_rgb(110, 190, 255)
@@ -4144,792 +4145,6 @@ impl ViewerApp {
         }
     }
 
-    // ---------------------------------------- 3D Reference Lines & Overlays
-
-    /// Draws 3D cross-reference / scout cut lines of the active viewport onto non-active viewports
-    /// (and vice versa) using IsiX's `ReferenceLines` and `PlaneGeometry::slice_intersection`.
-    fn draw_reference_lines(
-        &self,
-        painter: &egui::Painter,
-        vp_idx: usize,
-        img: Rect,
-        self_frame: &Frame,
-    ) {
-        if !self_frame.is_3d_plane {
-            return;
-        }
-        let Some(self_se) = self.viewport_series(vp_idx) else {
-            return;
-        };
-        let self_sel = self.viewports[vp_idx].selected;
-        let (self_rs, self_cs) = self_frame.spacing.unwrap_or((1.0, 1.0));
-        let self_orient = self_frame.orientation.map(|v| v as f32);
-        let self_origin = self_frame.origin.unwrap_or([0.0; 3]).map(|v| v as f32);
-
-        // Which other viewport's plane(s) should we project onto `vp_idx`?
-        // - If `vp_idx` is a follower viewport, project the active viewport's current slice
-        //   (plus its first/last bounding slices).
-        // - If `vp_idx` is the active viewport, project any non-parallel follower viewport's current slice.
-        let cell_count = self.tiling.cell_count();
-        for other_idx in 0..cell_count {
-            if other_idx == vp_idx {
-                continue;
-            }
-            if vp_idx != self.active_viewport && other_idx != self.active_viewport {
-                continue;
-            }
-            let Some(other_se) = self.viewport_series(other_idx) else {
-                continue;
-            };
-            let (other_orient, other_origin, other_rs, other_cs, other_cols, other_rows, other_is_3d) =
-                if let Some(of) = self.viewport_frame(other_idx) {
-                    let (rs, cs) = of.spacing.unwrap_or((1.0, 1.0));
-                    (
-                        of.orientation.map(|v| v as f32),
-                        of.origin.unwrap_or([0.0; 3]).map(|v| v as f32),
-                        rs,
-                        cs,
-                        of.width as isize,
-                        of.height as isize,
-                        of.is_3d_plane,
-                    )
-                } else {
-                    let other_slice_idx = self.viewports[other_idx].slice;
-                    let Some(other_cur) = other_se.slices.get(other_slice_idx) else {
-                        continue;
-                    };
-                    let (rs, cs) = other_cur.spacing.unwrap_or((1.0, 1.0));
-                    (
-                        other_cur.orientation.map(|v| v as f32),
-                        other_cur.position.unwrap_or([0.0; 3]).map(|v| v as f32),
-                        rs,
-                        cs,
-                        other_se.columns as isize,
-                        other_se.rows as isize,
-                        other_cur.is_3d_plane,
-                    )
-                };
-            if !other_is_3d {
-                continue;
-            }
-            let same_for = match (
-                &self_se.frame_of_reference_uid,
-                &other_se.frame_of_reference_uid,
-            ) {
-                (Some(a), Some(b)) => a == b,
-                (None, None) => {
-                    self_sel.map(|s| s.0) == self.viewports[other_idx].selected.map(|s| s.0)
-                }
-                _ => false,
-            };
-
-            let pair = ReferenceLines::compute(
-                same_for,
-                || PlaneGeometry::plane_normal_difference_degrees(&self_orient, &other_orient),
-                || {
-                    let line_a = PlaneGeometry::slice_intersection(
-                        self_origin,
-                        &self_orient,
-                        self_cs,
-                        self_rs,
-                        self_frame.is_3d_plane,
-                        other_origin,
-                        &other_orient,
-                        other_cs,
-                        other_rs,
-                        other_cols,
-                        other_rows,
-                        other_is_3d,
-                    )
-                    .map(|(a, b)| [a, b])?;
-                    // Also compute first/last bounding slice intersection when `other` is the active stack.
-                    let line_b = if other_idx == self.active_viewport
-                        && !self.viewports[other_idx].mpr_enabled
-                        && other_se.slices.len() > 2
-                    {
-                        let first = other_se.slices.first()?;
-                        let last = other_se.slices.last()?;
-                        let first_origin = first.position.unwrap_or([0.0; 3]).map(|v| v as f32);
-                        let last_origin = last.position.unwrap_or([0.0; 3]).map(|v| v as f32);
-                        let first_orient = first.orientation.map(|v| v as f32);
-                        let last_orient = last.orientation.map(|v| v as f32);
-                        let (first_rs, first_cs) = first.spacing.unwrap_or((other_rs, other_cs));
-                        let (last_rs, last_cs) = last.spacing.unwrap_or((other_rs, other_cs));
-                        let l_first = PlaneGeometry::slice_intersection(
-                            self_origin,
-                            &self_orient,
-                            self_cs,
-                            self_rs,
-                            self_frame.is_3d_plane,
-                            first_origin,
-                            &first_orient,
-                            first_cs,
-                            first_rs,
-                            other_se.columns as isize,
-                            other_se.rows as isize,
-                            first.is_3d_plane,
-                        );
-                        let l_last = PlaneGeometry::slice_intersection(
-                            self_origin,
-                            &self_orient,
-                            self_cs,
-                            self_rs,
-                            self_frame.is_3d_plane,
-                            last_origin,
-                            &last_orient,
-                            last_cs,
-                            last_rs,
-                            other_se.columns as isize,
-                            other_se.rows as isize,
-                            last.is_3d_plane,
-                        )
-                        .map(|(a, b)| [a, b]);
-                        // Draw the first bounding slice directly if available.
-                        if let Some((lf0, lf1)) = l_first {
-                            let p0 = self.pixel_to_screen(vp_idx, img, self_frame, pos2(lf0[0], lf0[1]));
-                            let p1 = self.pixel_to_screen(vp_idx, img, self_frame, pos2(lf1[0], lf1[1]));
-                            Self::draw_dashed_line(
-                                painter,
-                                p0,
-                                p1,
-                                Stroke::new(1.0, Color32::from_rgba_unmultiplied(90, 200, 255, 130)),
-                            );
-                        }
-                        l_last
-                    } else {
-                        None
-                    };
-                    Some((line_a, line_b))
-                },
-            );
-
-            if pair.show_b {
-                let p0 = self.pixel_to_screen(
-                    vp_idx,
-                    img,
-                    self_frame,
-                    pos2(pair.b[0][0], pair.b[0][1]),
-                );
-                let p1 = self.pixel_to_screen(
-                    vp_idx,
-                    img,
-                    self_frame,
-                    pos2(pair.b[1][0], pair.b[1][1]),
-                );
-                Self::draw_dashed_line(
-                    painter,
-                    p0,
-                    p1,
-                    Stroke::new(1.0, Color32::from_rgba_unmultiplied(90, 200, 255, 130)),
-                );
-            }
-            if pair.show_a {
-                let p0 = self.pixel_to_screen(
-                    vp_idx,
-                    img,
-                    self_frame,
-                    pos2(pair.a[0][0], pair.a[0][1]),
-                );
-                let p1 = self.pixel_to_screen(
-                    vp_idx,
-                    img,
-                    self_frame,
-                    pos2(pair.a[1][0], pair.a[1][1]),
-                );
-                let color = if other_idx == self.active_viewport {
-                    Color32::from_rgb(80, 235, 140)
-                } else {
-                    Color32::from_rgba_unmultiplied(255, 200, 80, 170)
-                };
-                painter.line_segment([p0, p1], Stroke::new(1.5, color));
-            }
-        }
-    }
-
-    fn draw_dashed_line(painter: &egui::Painter, a: Pos2, b: Pos2, stroke: Stroke) {
-        let dir = b - a;
-        let len = dir.length();
-        if len < 1.0 {
-            return;
-        }
-        let u = dir / len;
-        let dash = 6.0;
-        let gap = 4.0;
-        let mut t = 0.0;
-        while t < len {
-            let t_end = (t + dash).min(len);
-            painter.line_segment([a + u * t, a + u * t_end], stroke);
-            t += dash + gap;
-        }
-    }
-
-    fn draw_orientation_letters(
-        &self,
-        painter: &egui::Painter,
-        vp_idx: usize,
-        view: Rect,
-        frame: &Frame,
-    ) {
-        if !frame.is_3d_plane {
-            return;
-        }
-        let vp = &self.viewports[vp_idx];
-        let corrected = ImagePlaneCoordinates::corrected_orientation_standard(
-            &frame.orientation,
-            vp.rotation,
-            vp.x_flipped,
-            vp.y_flipped,
-        );
-        let edges = OrientationLetters::edge_letters(&corrected);
-        let font = FontId::proportional(14.0);
-        let color = Color32::from_rgb(255, 215, 90);
-        let draw = |pos: Pos2, align: Align2, s: &str| {
-            if !s.is_empty() {
-                painter.text(pos + vec2(1.0, 1.0), align, s, font.clone(), Color32::BLACK);
-                painter.text(pos, align, s, font.clone(), color);
-            }
-        };
-        let pad = 8.0;
-        let bottom_pad = if Self::viewport_scrubber_rects(view, self.viewport_slice_count(vp_idx)).is_some() {
-            34.0
-        } else {
-            pad
-        };
-        draw(
-            pos2(view.center().x, view.top() + pad),
-            Align2::CENTER_TOP,
-            &edges.top,
-        );
-        draw(
-            pos2(view.center().x, view.bottom() - bottom_pad),
-            Align2::CENTER_BOTTOM,
-            &edges.bottom,
-        );
-        draw(
-            pos2(view.left() + pad, view.center().y),
-            Align2::LEFT_CENTER,
-            &edges.left,
-        );
-        draw(
-            pos2(view.right() - pad - 18.0, view.center().y),
-            Align2::RIGHT_CENTER,
-            &edges.right,
-        );
-    }
-
-    fn draw_scale_bar(
-        &self,
-        painter: &egui::Painter,
-        vp_idx: usize,
-        view: Rect,
-        img: Rect,
-        frame: &Frame,
-    ) {
-        let Some((rs, cs)) = frame.spacing else {
-            return;
-        };
-        if rs <= 0.0 || cs <= 0.0 || view.height() < 160.0 {
-            return;
-        }
-        let vp = &self.viewports[vp_idx];
-        let rot = vp.rotation.rem_euclid(180.0);
-        let vertical_mm = if (45.0..135.0).contains(&rot) {
-            frame.width as f64 * cs
-        } else {
-            frame.height as f64 * rs
-        };
-        if vertical_mm <= 0.0 {
-            return;
-        }
-        let px_per_mm = img.height() as f64 / vertical_mm;
-        if px_per_mm <= 0.05 {
-            return;
-        }
-
-        // Choose a clean ruler length in mm (10 mm, 50 mm, or 100 mm) that fits ~35% of viewport height.
-        let target_px = (view.height() * 0.35) as f64;
-        let candidates_mm = [10.0, 20.0, 50.0, 100.0, 200.0];
-        let bar_mm = candidates_mm
-            .into_iter()
-            .min_by(|a, b| {
-                ((a * px_per_mm) - target_px)
-                    .abs()
-                    .total_cmp(&((b * px_per_mm) - target_px).abs())
-            })
-            .unwrap_or(50.0);
-        let bar_px = (bar_mm * px_per_mm) as f32;
-        if bar_px < 24.0 || bar_px > view.height() * 0.75 {
-            return;
-        }
-
-        let x = view.right() - 10.0;
-        let y_top = view.center().y - bar_px * 0.5;
-        let y_bot = view.center().y + bar_px * 0.5;
-        let stroke = Stroke::new(1.2, Color32::from_gray(200));
-        painter.line_segment([pos2(x, y_top), pos2(x, y_bot)], stroke);
-
-        let ticks = if bar_mm >= 50.0 { 5 } else { 2 };
-        for i in 0..=ticks {
-            let ty = y_top + (i as f32 / ticks as f32) * bar_px;
-            let tick_w = if i == 0 || i == ticks { 6.0 } else { 3.5 };
-            painter.line_segment([pos2(x - tick_w, ty), pos2(x, ty)], stroke);
-        }
-
-        let label = if bar_mm >= 10.0 {
-            format!("{:.0} cm", bar_mm / 10.0)
-        } else {
-            format!("{bar_mm:.0} mm")
-        };
-        painter.text(
-            pos2(x - 4.0, y_bot + 4.0),
-            Align2::RIGHT_TOP,
-            label,
-            FontId::proportional(11.0),
-            Color32::from_gray(200),
-        );
-    }
-
-    fn draw_measures(&self, painter: &egui::Painter, vp_idx: usize, img: Rect, f: &Frame) {
-        let color = Color32::from_rgb(255, 220, 60);
-        let roi_color = Color32::from_rgb(90, 235, 130);
-        let stroke = Stroke::new(1.6, color);
-        let roi_stroke = Stroke::new(1.6, roi_color);
-        let s = |p: Pos2| self.pixel_to_screen(vp_idx, img, f, p);
-
-        let draw_callout = |anchor_scr: Pos2, lines: &[String], border_col: Color32| {
-            if lines.is_empty() {
-                return;
-            }
-            let text = lines.join("\n");
-            let font = FontId::monospace(11.5);
-            let galley = painter.layout_no_wrap(text.clone(), font.clone(), Color32::WHITE);
-            let box_min = anchor_scr + vec2(10.0, -galley.size().y - 6.0);
-            let box_rect = Rect::from_min_size(box_min, galley.size() + vec2(10.0, 6.0));
-            painter.rect_filled(
-                box_rect,
-                4.0,
-                Color32::from_rgba_unmultiplied(14, 18, 24, 215),
-            );
-            painter.rect_stroke(
-                box_rect,
-                4.0,
-                Stroke::new(1.0, border_col),
-                egui::StrokeKind::Inside,
-            );
-            painter.text(
-                box_rect.min + vec2(5.0, 3.0),
-                Align2::LEFT_TOP,
-                text,
-                font,
-                Color32::from_rgb(245, 248, 252),
-            );
-        };
-
-        let unverified_geom = self.viewports.get(vp_idx).is_some_and(|v| v.mpr_enabled)
-            && self
-                .viewport_volume(vp_idx)
-                .is_some_and(|v| !v.geometry_verified);
-        let roi_stats_disabled = unverified_geom
-            || (self.blend_siblings
-                && self.viewports.get(vp_idx).is_some_and(|v| v.mpr_enabled)
-                && !self.viewport_sibling_volumes(vp_idx).is_empty());
-
-        let unit = self
-            .viewport_series(vp_idx)
-            .map(|se| {
-                if se.modality == "CT" {
-                    "HU"
-                } else {
-                    f.value_unit
-                }
-            })
-            .unwrap_or(f.value_unit);
-
-        let mut items: Vec<Measure> = self
-            .viewport_measure_key(vp_idx)
-            .and_then(|k| self.measures.get(&k).cloned())
-            .unwrap_or_default();
-
-        if vp_idx == self.active_viewport {
-            match self.tool {
-                Tool::Length => {
-                    if self.drawing.len() == 2 {
-                        items.push(Measure::Length(self.drawing[0], self.drawing[1]));
-                    } else if self.drawing.len() == 1 {
-                        if let Some(b) = self.hover_px {
-                            items.push(Measure::Length(self.drawing[0], b));
-                        } else {
-                            painter.circle_filled(s(self.drawing[0]), 3.0, color);
-                        }
-                    }
-                }
-                Tool::Oval | Tool::Rect => {
-                    let is_oval = self.tool == Tool::Oval;
-                    if self.drawing.len() == 2 {
-                        let (a, b) = (self.drawing[0], self.drawing[1]);
-                        items.push(if is_oval {
-                            Measure::Oval(a, b)
-                        } else {
-                            Measure::Rect(a, b)
-                        });
-                    } else if self.drawing.len() == 1 {
-                        if let Some(b) = self.hover_px {
-                            let a = self.drawing[0];
-                            items.push(if is_oval {
-                                Measure::Oval(a, b)
-                            } else {
-                                Measure::Rect(a, b)
-                            });
-                        } else {
-                            painter.circle_filled(s(self.drawing[0]), 3.0, roi_color);
-                        }
-                    }
-                }
-                Tool::Pencil
-                    if self.drawing.len() >= 2 => {
-                        items.push(Measure::Pencil(self.drawing.clone()));
-                    }
-                _ => {}
-            }
-        }
-
-        for m in &items {
-            match m {
-                &Measure::Length(a, b) => {
-                    painter.line_segment([s(a), s(b)], stroke);
-                    painter.circle_filled(s(a), 2.5, color);
-                    painter.circle_filled(s(b), 2.5, color);
-                    let lines = if unverified_geom {
-                        vec!["Measurements disabled (unverified 3D geometry)".to_string()]
-                    } else {
-                        let eval = roi::evaluate_length(
-                            f,
-                            RoiPoint::new(a.x as f64, a.y as f64),
-                            RoiPoint::new(b.x as f64, b.y as f64),
-                        );
-                        eval.format_callout(RoiKind::Length, unit, "")
-                    };
-                    draw_callout(s(b), &lines, color);
-                }
-                &Measure::Angle(a, v, b) => {
-                    painter.line_segment([s(a), s(v)], stroke);
-                    painter.line_segment([s(v), s(b)], stroke);
-                    painter.circle_filled(s(a), 2.5, color);
-                    painter.circle_filled(s(v), 3.0, color);
-                    painter.circle_filled(s(b), 2.5, color);
-                    let lines = if unverified_geom {
-                        vec!["Measurements disabled (unverified 3D geometry)".to_string()]
-                    } else {
-                        let eval = roi::evaluate_angle(
-                            f,
-                            RoiPoint::new(a.x as f64, a.y as f64),
-                            RoiPoint::new(v.x as f64, v.y as f64),
-                            RoiPoint::new(b.x as f64, b.y as f64),
-                        );
-                        eval.format_callout(RoiKind::Angle, unit, "")
-                    };
-                    draw_callout(s(v), &lines, color);
-                }
-                &Measure::Oval(a, b) => {
-                    let roi_rect = RoiBoundingBox::rect(
-                        RoiPoint::new(a.x as f64, a.y as f64),
-                        RoiPoint::new(b.x as f64, b.y as f64),
-                        true,
-                    );
-                    let outline = RoiPlanarGeometry::outline_of_oval(roi_rect, 64);
-                    let scr_pts: Vec<Pos2> = outline
-                        .iter()
-                        .map(|p| s(pos2(p.x as f32, p.y as f32)))
-                        .collect();
-                    if scr_pts.len() >= 3 {
-                        painter.add(egui::Shape::closed_line(scr_pts, roi_stroke));
-                    }
-                    painter.circle_filled(s(a), 2.5, roi_color);
-                    painter.circle_filled(s(b), 2.5, roi_color);
-                    let lines = if roi_stats_disabled {
-                        vec!["ROI stats disabled (blended)".to_string()]
-                    } else {
-                        let eval = roi::evaluate_region(
-                            f,
-                            RoiKind::Oval,
-                            &outline,
-                            Some(RoiSize::new(roi_rect.size.width, roi_rect.size.height)),
-                        );
-                        eval.format_callout(RoiKind::Oval, unit, "")
-                    };
-                    let anchor = pos2(
-                        (roi_rect.origin.x + roi_rect.size.width) as f32,
-                        roi_rect.origin.y as f32,
-                    );
-                    draw_callout(s(anchor), &lines, roi_color);
-                }
-                &Measure::Rect(a, b) => {
-                    let roi_rect = RoiBoundingBox::rect(
-                        RoiPoint::new(a.x as f64, a.y as f64),
-                        RoiPoint::new(b.x as f64, b.y as f64),
-                        false,
-                    );
-                    let outline = RoiPlanarGeometry::outline_of_rectangle(roi_rect);
-                    let scr_pts: Vec<Pos2> = outline
-                        .iter()
-                        .map(|p| s(pos2(p.x as f32, p.y as f32)))
-                        .collect();
-                    painter.add(egui::Shape::closed_line(scr_pts, roi_stroke));
-                    for corner in &outline {
-                        painter.circle_filled(
-                            s(pos2(corner.x as f32, corner.y as f32)),
-                            2.5,
-                            roi_color,
-                        );
-                    }
-                    let lines = if roi_stats_disabled {
-                        vec!["ROI stats disabled (blended)".to_string()]
-                    } else {
-                        let eval = roi::evaluate_region(f, RoiKind::Rectangle, &outline, None);
-                        eval.format_callout(RoiKind::Rectangle, unit, "")
-                    };
-                    let anchor = pos2(roi_rect.max_x() as f32, roi_rect.min_y() as f32);
-                    draw_callout(s(anchor), &lines, roi_color);
-                }
-                Measure::Polygon(pts) => {
-                    if pts.len() >= 3 {
-                        let outline: Vec<RoiPoint> = pts
-                            .iter()
-                            .map(|p| RoiPoint::new(p.x as f64, p.y as f64))
-                            .collect();
-                        let scr_pts: Vec<Pos2> = pts.iter().copied().map(&s).collect();
-                        painter.add(egui::Shape::closed_line(scr_pts, roi_stroke));
-                        for &pt in pts {
-                            painter.circle_filled(s(pt), 2.5, roi_color);
-                        }
-                        let lines = if roi_stats_disabled {
-                            vec!["ROI stats disabled (blended)".to_string()]
-                        } else {
-                            let eval = roi::evaluate_region(f, RoiKind::ClosedPolygon, &outline, None);
-                            eval.format_callout(RoiKind::ClosedPolygon, unit, "")
-                        };
-                        draw_callout(s(pts[0]), &lines, roi_color);
-                    }
-                }
-                Measure::Pencil(pts) => {
-                    if pts.len() >= 2 {
-                        let raw_outline: Vec<RoiPoint> = pts
-                            .iter()
-                            .map(|p| RoiPoint::new(p.x as f64, p.y as f64))
-                            .collect();
-                        let (smoothed, _) = RoiSpline::smooth(&raw_outline, 1.5);
-                        let active_outline = if smoothed.len() >= 3 {
-                            &smoothed
-                        } else {
-                            &raw_outline
-                        };
-                        let scr_pts: Vec<Pos2> = active_outline
-                            .iter()
-                            .map(|p| s(pos2(p.x as f32, p.y as f32)))
-                            .collect();
-                        painter.add(egui::Shape::closed_line(scr_pts, roi_stroke));
-                        if active_outline.len() >= 3 {
-                            let lines = if roi_stats_disabled {
-                                vec!["ROI stats disabled (blended)".to_string()]
-                            } else {
-                                let eval =
-                                    roi::evaluate_region(f, RoiKind::Pencil, active_outline, None);
-                                eval.format_callout(RoiKind::Pencil, unit, "")
-                            };
-                            draw_callout(s(pts[0]), &lines, roi_color);
-                        }
-                    }
-                }
-                &Measure::Point(pt) => {
-                    let sp = s(pt);
-                    let r = 6.0;
-                    painter.line_segment([sp - vec2(r, 0.0), sp + vec2(r, 0.0)], stroke);
-                    painter.line_segment([sp - vec2(0.0, r), sp + vec2(0.0, r)], stroke);
-                    painter.circle_stroke(sp, 3.0, stroke);
-                    let lines = if roi_stats_disabled {
-                        vec!["ROI stats disabled (blended)".to_string()]
-                    } else {
-                        let eval = roi::evaluate_point(f, RoiPoint::new(pt.x as f64, pt.y as f64));
-                        eval.format_callout(RoiKind::Point, unit, "")
-                    };
-                    draw_callout(sp, &lines, color);
-                }
-            }
-        }
-
-        if vp_idx == self.active_viewport && self.tool == Tool::Polygon && !self.drawing.is_empty()
-        {
-            let mut scr_pts: Vec<Pos2> = self.drawing.iter().copied().map(&s).collect();
-            for &pt in &self.drawing {
-                painter.circle_filled(s(pt), 3.0, roi_color);
-            }
-            if let Some(hp) = self.hover_px {
-                scr_pts.push(s(hp));
-            }
-            if scr_pts.len() >= 2 {
-                painter.add(egui::Shape::line(scr_pts, roi_stroke));
-            }
-        }
-
-        if vp_idx == self.active_viewport && self.tool == Tool::Angle {
-            if let Some((a, v)) = self.angle_pending {
-                painter.line_segment([s(a), s(v)], stroke);
-                painter.circle_filled(s(a), 2.5, color);
-                painter.circle_filled(s(v), 3.5, color);
-                if let Some(b) = self.hover_px {
-                    painter.line_segment([s(v), s(b)], stroke);
-                    painter.circle_filled(s(b), 2.5, color);
-                    if v.distance(b) > 1.0 {
-                        let eval = roi::evaluate_angle(
-                            f,
-                            RoiPoint::new(a.x as f64, a.y as f64),
-                            RoiPoint::new(v.x as f64, v.y as f64),
-                            RoiPoint::new(b.x as f64, b.y as f64),
-                        );
-                        let lines = eval.format_callout(RoiKind::Angle, unit, "");
-                        draw_callout(s(v), &lines, color);
-                    }
-                }
-            } else if self.drawing.len() == 2 {
-                let (a, v) = (self.drawing[0], self.drawing[1]);
-                painter.line_segment([s(a), s(v)], stroke);
-                painter.circle_filled(s(a), 2.5, color);
-                painter.circle_filled(s(v), 3.0, color);
-            } else if self.drawing.len() == 1 {
-                let a = self.drawing[0];
-                painter.circle_filled(s(a), 3.0, color);
-                if let Some(v) = self.hover_px {
-                    painter.line_segment([s(a), s(v)], stroke);
-                    painter.circle_filled(s(v), 3.0, color);
-                }
-            }
-        }
-    }
-
-    fn draw_overlay(
-        &self,
-        painter: &egui::Painter,
-        vp_idx: usize,
-        view: Rect,
-        frame: Option<&Frame>,
-    ) {
-        let font = FontId::proportional(13.0);
-        let pad = 10.0;
-        let text = |pos: Pos2, align: Align2, s: String| {
-            painter.text(
-                pos + vec2(1.0, 1.0),
-                align,
-                &s,
-                font.clone(),
-                Color32::BLACK,
-            );
-            painter.text(pos, align, s, font.clone(), Color32::from_gray(230));
-        };
-
-        let vp = &self.viewports[vp_idx];
-        if let Some(study) = self.viewport_study(vp_idx) {
-            let mut tl = vec![study.patient_name.clone()];
-            if !study.patient_id.is_empty() {
-                tl.push(format!("ID: {}", study.patient_id));
-            }
-            if !study.birth_date.is_empty() {
-                tl.push(format!("DOB: {}", study.birth_date));
-            }
-            text(view.left_top() + vec2(pad, pad), Align2::LEFT_TOP, tl.join("\n"));
-
-            let mut tr = Vec::new();
-            if !study.description.is_empty() {
-                tr.push(study.description.clone());
-            }
-            if !study.date.is_empty() {
-                tr.push(study.date.clone());
-            }
-            if let Some(series) = self.viewport_series(vp_idx) {
-                tr.push(format!(
-                    "{} · Se {} · {}",
-                    series.modality, series.number, series.description
-                ));
-            }
-            text(view.right_top() + vec2(-pad, pad), Align2::RIGHT_TOP, tr.join("\n"));
-        }
-
-        let slice_count = self.viewport_slice_count(vp_idx);
-        let mut bl = vec![format!("Im: {} / {}", vp.slice + 1, slice_count)];
-        if vp.mpr_enabled {
-            let slab_info = vp
-                .mpr_plane
-                .as_ref()
-                .filter(|p| p.slab_mode != SlabMode::Thin)
-                .map(|p| format!(" · {} {:.1} mm", p.slab_mode.label(), p.slab_thickness_mm))
-                .unwrap_or_default();
-            let reg_corr = vp.selected.and_then(|sel| {
-                self.registrations
-                    .iter()
-                    .find(|&(&(a, b), _)| a == sel || b == sel)
-                    .map(|(_, r)| r.correlation)
-            });
-            if let Some(corr) = reg_corr.filter(|_| self.tiling.cell_count() > 1) {
-                bl.push(format!("3D MPR{slab_info} · Sync Locked (NCC {corr:.2})"));
-            } else {
-                bl.push(format!("3D MPR{slab_info}"));
-            }
-        }
-        if let Some(f) = frame {
-            let loc = f.slice_location.or_else(|| {
-                self.viewport_series(vp_idx)
-                    .and_then(|s| s.slices.get(vp.slice))
-                    .and_then(|sr| sr.slice_location)
-            });
-            if let Some(loc) = loc {
-                bl.push(format!("Loc: {loc:.2} mm"));
-            }
-            if let Some(t) = f.slice_thickness {
-                bl.push(format!("Thk: {t:.1} mm"));
-            }
-            bl.push(format!("{} × {}", f.width, f.height));
-        }
-        text(
-            view.left_bottom() + vec2(pad, -pad),
-            Align2::LEFT_BOTTOM,
-            bl.join("\n"),
-        );
-
-        let mut br = Vec::new();
-        if let Some(f) = frame {
-            let w = self.effective_window(vp_idx, f);
-            let digits = if w.width.abs() < 10.0 { 2 } else { 0 };
-            br.push(format!(
-                "WL: {:.*}  WW: {:.*}",
-                digits, w.level, digits, w.width
-            ));
-            br.push(self.window_name(vp_idx, f).label().to_string());
-        }
-        if let Some(clut_name) = vp.active_clut_name() {
-            br.push(format!("CLUT: {clut_name}"));
-        }
-        if let Some(conv_name) = vp
-            .convolution_idx
-            .and_then(|i| FACTORY_CONVOLUTIONS.get(i))
-            .map(|k| k.name)
-        {
-            br.push(format!("Filter: {conv_name}"));
-        }
-        br.push(format!("Zoom: {:.0}%", vp.zoom * 100.0));
-        if vp.rotation.abs() > 0.05 {
-            br.push(format!("Rot: {:.0}°", vp.rotation));
-        }
-        if vp.effective_invert() {
-            br.push("Inverted".into());
-        }
-        if frame.is_some_and(|f| f.voi_lut_applied) {
-            br.push("VOI LUT".into());
-        }
-        text(
-            view.right_bottom() + vec2(-pad, -pad),
-            Align2::RIGHT_BOTTOM,
-            br.join("\n"),
-        );
-    }
     /// Requests 3D MPR (`ortho = false`) or 3-pane Orthogonal MPR (`ortho = true`) on `vp_idx`.
     /// Normally 3D-capable series activate immediately (or as soon as decoding completes).
     /// Non-3D-capable series (too few slices or missing 3D geometry) prompt a Yes/No quality warning first.

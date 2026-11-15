@@ -1,7 +1,8 @@
-# Handoff: where the project stands (13 Nov 2026)
+# Handoff: where the project stands (v0.3.0, 14 Nov 2026)
 
 Written for whoever continues this, human or agent. It records what was
 built, what was decided and why, what was verified, and what comes next.
+- **v0.3.0 milestone status:** Security & privacy hardening (S1–S10: OS keyring credentials/cookies, HTTPS-only WebView origin checks, strict anonymized ZIP/DICOM export, scrubbed opt-in crash log), direct Virtual PACS login/hook/search/download (Orthanc, DICOMweb, Vue Motion, Trained DOM), internal build numbers (`build.rs`), typed settings (`src/settings.rs`), `cargo clippy --release -- -D warnings` in CI, and initial module splits (`src/app/`, `src/pacs_web/`). Horos upstream tracking has been removed.
 
 ## The owner and the goal
 

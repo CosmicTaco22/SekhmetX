@@ -2177,4 +2177,51 @@ mod tests {
             "ANONYMIZED"
         );
     }
+
+    #[test]
+    fn js_script_builders_inject_payload_and_vm_doc_helper() {
+        let payload = r#"{"query":"test"}"#;
+        let scripts = [
+            js_scripts::build_picker_js(payload),
+            js_scripts::build_trained_search_js(payload),
+            js_scripts::build_trained_download_js(payload),
+            js_scripts::build_vuemotion_search_js(payload),
+            js_scripts::build_vuemotion_open_patient_js(payload),
+            js_scripts::build_vuemotion_download_js(payload),
+            js_scripts::build_auto_login_js(payload),
+        ];
+        for s in scripts {
+            assert!(s.contains(payload), "script missing injected payload");
+            assert!(!s.contains("__PAYLOAD__"), "unreplaced __PAYLOAD__ placeholder");
+            assert!(!s.contains("__VM_DOC__"), "unreplaced __VM_DOC__ placeholder");
+        }
+    }
+
+    #[test]
+    fn trained_portal_profile_roundtrip_json() {
+        let profile = TrainedPortalProfile {
+            origin: "https://pacs.example.com".to_string(),
+            search_input_sel: "#search".to_string(),
+            row_list_sel: "tbody > tr".to_string(),
+            download_steps: vec![ClickStep {
+                selector: "#dl".to_string(),
+                in_row: true,
+                rel_selector: "button.dl".to_string(),
+            }],
+            anon_steps: vec![],
+        };
+        let json = serde_json::to_string(&profile).unwrap();
+        let decoded: TrainedPortalProfile = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.origin, profile.origin);
+        assert_eq!(decoded.download_steps.len(), 1);
+        assert!(decoded.download_steps[0].in_row);
+    }
+
+    #[test]
+    fn origin_of_extracts_http_and_https_origins_and_rejects_others() {
+        assert_eq!(origin_of("https://portal.example.com/a/b"), "https://portal.example.com");
+        assert_eq!(origin_of("http://localhost:8042/studies"), "http://localhost:8042");
+        assert_eq!(origin_of("file:///etc/passwd"), "");
+        assert_eq!(origin_of("javascript:alert(1)"), "");
+    }
 }
