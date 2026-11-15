@@ -1329,6 +1329,7 @@ impl RigidTransform3D {
 
     /// Maps a 3D slicing plane `source_plane` from `source` (Study A) into the corresponding
     /// 3D slicing plane in `target` (Study B), preserving both 3D slice position and 3D orientation.
+    #[allow(dead_code)]
     pub fn transform_plane(&self, source_plane: &MprPlane3D) -> MprPlane3D {
         let center_target = self.transform_point(source_plane.center_lps);
         let u_target = normalize3(mat3_mul_vec(self.rotation, source_plane.u_axis));

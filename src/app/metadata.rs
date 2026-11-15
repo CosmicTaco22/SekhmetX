@@ -1,0 +1,357 @@
+use std::path::{Path, PathBuf};
+
+use dicom_core::dictionary::DataDictionary;
+use dicom_core::value::Value;
+use dicom_dictionary_std::{tags, StandardDataDictionary};
+use dicom_object::{InMemDicomObject, OpenFileOptions};
+use eframe::egui::{self, Color32};
+
+use super::ViewerApp;
+
+#[derive(Clone, Debug)]
+pub(crate) struct DicomTagEntry {
+    pub(crate) tag_str: String,
+    pub(crate) name: String,
+    pub(crate) vr: String,
+    pub(crate) size_str: String,
+    pub(crate) value: String,
+    pub(crate) depth: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MetadataCache {
+    pub(crate) path: PathBuf,
+    pub(crate) file_size_bytes: u64,
+    pub(crate) entries: Vec<DicomTagEntry>,
+    pub(crate) error: Option<String>,
+}
+
+fn format_bytes(len: usize) -> String {
+    if len >= 1024 {
+        format!("{:.1} KB", len as f64 / 1024.0)
+    } else {
+        format!("{len} B")
+    }
+}
+
+fn format_tag_name(tag: dicom_core::Tag) -> String {
+    StandardDataDictionary
+        .by_tag(tag)
+        .map(|entry| entry.alias.to_string())
+        .unwrap_or_else(|| {
+            if tag.0 % 2 == 1 {
+                "PrivateTag".to_string()
+            } else {
+                "UnknownTag".to_string()
+            }
+        })
+}
+
+fn collect_dataset_entries(
+    obj: &InMemDicomObject,
+    depth: usize,
+    out: &mut Vec<DicomTagEntry>,
+) {
+    if depth > 4 {
+        return;
+    }
+    for elem in obj.iter() {
+        let tag = elem.header().tag;
+        let tag_str = format!("{:04X},{:04X}", tag.0, tag.1);
+        let vr = elem.vr().to_string().to_owned();
+        let name = format_tag_name(tag);
+
+        if tag == tags::PIXEL_DATA {
+            let len_str = elem
+                .header()
+                .len
+                .get()
+                .map(|l| format_bytes(l as usize))
+                .unwrap_or_else(|| "encapsulated".to_string());
+            out.push(DicomTagEntry {
+                tag_str,
+                name,
+                vr,
+                size_str: len_str.clone(),
+                value: format!("<Pixel Data ({len_str})>"),
+                depth,
+            });
+            continue;
+        }
+
+        match elem.value() {
+            Value::Sequence(seq) => {
+                let items = seq.items();
+                out.push(DicomTagEntry {
+                    tag_str,
+                    name,
+                    vr,
+                    size_str: format!("{} items", items.len()),
+                    value: format!("({} sequence item{})", items.len(), if items.len() == 1 { "" } else { "s" }),
+                    depth,
+                });
+                for (idx, item) in items.iter().enumerate().take(16) {
+                    out.push(DicomTagEntry {
+                        tag_str: "FFFE,E000".to_string(),
+                        name: format!("Item #{}", idx + 1),
+                        vr: "--".to_string(),
+                        size_str: String::new(),
+                        value: String::new(),
+                        depth: depth + 1,
+                    });
+                    collect_dataset_entries(item, depth + 2, out);
+                }
+            }
+            Value::PixelSequence(px_seq) => {
+                let n = px_seq.fragments().len();
+                out.push(DicomTagEntry {
+                    tag_str,
+                    name,
+                    vr,
+                    size_str: format!("{n} frags"),
+                    value: format!("<Pixel Sequence ({n} fragments)>"),
+                    depth,
+                });
+            }
+            Value::Primitive(prim) => {
+                let raw = prim.to_str();
+                let byte_len = elem
+                    .header()
+                    .len
+                    .get()
+                    .map(|l| format_bytes(l as usize))
+                    .unwrap_or_else(|| format_bytes(raw.len()));
+                let display = if raw.len() > 200 {
+                    format!("{}…", raw.chars().take(197).collect::<String>())
+                } else {
+                    raw.into_owned()
+                };
+                out.push(DicomTagEntry {
+                    tag_str,
+                    name,
+                    vr,
+                    size_str: byte_len,
+                    value: display,
+                    depth,
+                });
+            }
+        }
+    }
+}
+
+pub(crate) fn parse_dicom_metadata(path: &Path) -> MetadataCache {
+    let file_size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    match OpenFileOptions::new()
+        .read_until(tags::PIXEL_DATA)
+        .open_file(path)
+    {
+        Ok(obj) => {
+            let mut entries = Vec::new();
+            let meta = obj.meta();
+            let mut push_meta = |tag_str: &str, name: &str, vr: &str, val: &str| {
+                if !val.is_empty() {
+                    entries.push(DicomTagEntry {
+                        tag_str: tag_str.to_string(),
+                        name: name.to_string(),
+                        vr: vr.to_string(),
+                        size_str: format_bytes(val.len()),
+                        value: val.to_string(),
+                        depth: 0,
+                    });
+                }
+            };
+            push_meta("0002,0002", "MediaStorageSOPClassUID", "UI", &meta.media_storage_sop_class_uid);
+            push_meta("0002,0003", "MediaStorageSOPInstanceUID", "UI", &meta.media_storage_sop_instance_uid);
+            push_meta("0002,0010", "TransferSyntaxUID", "UI", &meta.transfer_syntax);
+            push_meta("0002,0012", "ImplementationClassUID", "UI", &meta.implementation_class_uid);
+            if let Some(ref ivn) = meta.implementation_version_name {
+                push_meta("0002,0013", "ImplementationVersionName", "SH", ivn);
+            }
+            collect_dataset_entries(&obj, 0, &mut entries);
+            MetadataCache {
+                path: path.to_path_buf(),
+                file_size_bytes,
+                entries,
+                error: None,
+            }
+        }
+        Err(err) => MetadataCache {
+            path: path.to_path_buf(),
+            file_size_bytes,
+            entries: Vec::new(),
+            error: Some(format!("Failed to read DICOM metadata: {err}")),
+        },
+    }
+}
+
+impl ViewerApp {
+    pub(crate) fn metadata_inspector_panel(&mut self, ui: &mut egui::Ui) {
+        let vp_idx = self.active_viewport;
+        let slice_path = self
+            .viewport_series(vp_idx)
+            .and_then(|s| s.slices.get(self.viewports[vp_idx].slice))
+            .map(|sr| sr.path.clone());
+        let series_title = self
+            .viewport_series(vp_idx)
+            .map(|s| format!("{} (Se {})", s.description, s.number))
+            .unwrap_or_else(|| "No active series".to_string());
+
+        if let Some(ref path) = slice_path
+            && self.metadata_cache.as_ref().map(|c| &c.path) != Some(path)
+        {
+            self.metadata_cache = Some(parse_dicom_metadata(path));
+        }
+
+        // Header bar (OsiriX Meta-Data Inspector style)
+        ui.horizontal(|ui| {
+            let size_kb = self
+                .metadata_cache
+                .as_ref()
+                .map(|c| c.file_size_bytes as f64 / 1024.0)
+                .unwrap_or(0.0);
+            ui.label(
+                egui::RichText::new(format!("Meta-Data: {series_title} ({size_kb:.0} KB)"))
+                    .strong()
+                    .size(12.5),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("✕").clicked() {
+                    self.show_metadata_inspector = false;
+                }
+                if let Some(cache) = &self.metadata_cache
+                    && !cache.entries.is_empty()
+                    && ui.small_button("Export Text").clicked()
+                    && let Some(save_path) = rfd::FileDialog::new()
+                        .set_file_name("dicom_metadata.txt")
+                        .save_file()
+                {
+                    let mut out = String::new();
+                    for e in &cache.entries {
+                        let indent = "  ".repeat(e.depth);
+                        out.push_str(&format!(
+                            "{indent}{}  {:<36}  {:<2}  {:<10}  {}\n",
+                            e.tag_str, e.name, e.vr, e.size_str, e.value
+                        ));
+                    }
+                    let _ = std::fs::write(save_path, out);
+                }
+            });
+        });
+
+        ui.separator();
+
+        // Search / Filter bar
+        ui.horizontal(|ui| {
+            ui.label("🔍");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.metadata_filter)
+                    .hint_text("Search tag, field name, or value…")
+                    .desired_width(ui.available_width() - 60.0),
+            );
+            if !self.metadata_filter.is_empty() && ui.small_button("Clear").clicked() {
+                self.metadata_filter.clear();
+            }
+        });
+
+        ui.separator();
+
+        let Some(cache) = &self.metadata_cache else {
+            ui.centered_and_justified(|ui| {
+                ui.label(
+                    egui::RichText::new("Select a DICOM slice to inspect its tags.")
+                        .color(Color32::from_gray(150)),
+                );
+            });
+            return;
+        };
+
+        if let Some(err) = &cache.error {
+            ui.colored_label(Color32::from_rgb(240, 110, 110), err);
+            return;
+        }
+
+        let needle = self.metadata_filter.trim().to_ascii_lowercase();
+        let filtered: Vec<&DicomTagEntry> = cache
+            .entries
+            .iter()
+            .filter(|e| {
+                needle.is_empty()
+                    || e.tag_str.to_ascii_lowercase().contains(&needle)
+                    || e.name.to_ascii_lowercase().contains(&needle)
+                    || e.vr.to_ascii_lowercase().contains(&needle)
+                    || e.value.to_ascii_lowercase().contains(&needle)
+            })
+            .collect();
+
+        ui.label(
+            egui::RichText::new(format!("{} tags", filtered.len()))
+                .size(10.5)
+                .color(Color32::from_gray(145)),
+        );
+
+        egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                egui::Grid::new("dicom_metadata_grid")
+                    .striped(true)
+                    .spacing([10.0, 3.0])
+                    .show(ui, |ui| {
+                        ui.label(egui::RichText::new("Field Name").strong().size(11.0));
+                        ui.label(egui::RichText::new("Tag").strong().size(11.0));
+                        ui.label(egui::RichText::new("VR").strong().size(11.0));
+                        ui.label(egui::RichText::new("Size").strong().size(11.0));
+                        ui.label(egui::RichText::new("Content").strong().size(11.0));
+                        ui.end_row();
+
+                        for entry in filtered {
+                            let indent = "  ".repeat(entry.depth);
+                            let name_resp = ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(format!("{indent}{}", entry.name))
+                                        .size(11.0)
+                                        .color(if entry.depth > 0 {
+                                            Color32::from_gray(180)
+                                        } else {
+                                            Color32::from_gray(230)
+                                        }),
+                                )
+                                .sense(egui::Sense::click()),
+                            );
+                            if name_resp.clicked() {
+                                ui.ctx().copy_text(format!(
+                                    "{}  {}  [{}]  {}",
+                                    entry.tag_str, entry.name, entry.vr, entry.value
+                                ));
+                            }
+                            name_resp.on_hover_text("Click to copy tag line");
+
+                            ui.label(
+                                egui::RichText::new(&entry.tag_str)
+                                    .monospace()
+                                    .size(10.5)
+                                    .color(Color32::from_rgb(150, 200, 255)),
+                            );
+                            ui.label(
+                                egui::RichText::new(&entry.vr)
+                                    .monospace()
+                                    .size(10.5)
+                                    .color(Color32::from_gray(165)),
+                            );
+                            ui.label(
+                                egui::RichText::new(&entry.size_str)
+                                    .monospace()
+                                    .size(10.5)
+                                    .color(Color32::from_gray(155)),
+                            );
+                            ui.label(
+                                egui::RichText::new(&entry.value)
+                                    .monospace()
+                                    .size(10.5)
+                                    .color(Color32::from_gray(225)),
+                            );
+                            ui.end_row();
+                        }
+                    });
+            });
+    }
+}

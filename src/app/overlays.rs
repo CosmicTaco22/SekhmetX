@@ -259,12 +259,12 @@ impl ViewerApp {
             &edges.bottom,
         );
         draw(
-            pos2(view.left() + pad, view.center().y),
+            pos2(view.left() + pad + 12.0, view.center().y),
             Align2::LEFT_CENTER,
             &edges.left,
         );
         draw(
-            pos2(view.right() - pad - 18.0, view.center().y),
+            pos2(view.right() - pad, view.center().y),
             Align2::RIGHT_CENTER,
             &edges.right,
         );
@@ -299,78 +299,129 @@ impl ViewerApp {
             return;
         }
 
-        // Choose a clean ruler length in mm (10 mm, 50 mm, or 100 mm) that fits ~35% of viewport height.
-        let target_px = (view.height() * 0.35) as f64;
+        let ruler_col = Color32::from_rgb(48, 209, 88);
+        let stroke = Stroke::new(1.2, ruler_col);
+
+        // Left-edge vertical green ruler (OsiriX style)
+        let target_v_px = (view.height() * 0.38) as f64;
         let candidates_mm = [10.0, 20.0, 50.0, 100.0, 200.0];
-        let bar_mm = candidates_mm
+        let v_bar_mm = candidates_mm
             .into_iter()
             .min_by(|a, b| {
-                ((a * px_per_mm) - target_px)
+                ((a * px_per_mm) - target_v_px)
                     .abs()
-                    .total_cmp(&((b * px_per_mm) - target_px).abs())
+                    .total_cmp(&((b * px_per_mm) - target_v_px).abs())
             })
             .unwrap_or(50.0);
-        let bar_px = (bar_mm * px_per_mm) as f32;
-        if bar_px < 24.0 || bar_px > view.height() * 0.75 {
-            return;
+        let v_bar_px = (v_bar_mm * px_per_mm) as f32;
+        if v_bar_px >= 24.0 && v_bar_px <= view.height() * 0.72 {
+            let x = view.left() + 5.0;
+            let y_top = view.center().y - v_bar_px * 0.5;
+            let y_bot = view.center().y + v_bar_px * 0.5;
+            painter.line_segment([pos2(x, y_top), pos2(x, y_bot)], stroke);
+
+            let ticks = if v_bar_mm >= 50.0 { 10 } else { 4 };
+            for i in 0..=ticks {
+                let ty = y_top + (i as f32 / ticks as f32) * v_bar_px;
+                let is_major = i == 0 || i == ticks || (ticks >= 10 && i % 2 == 0);
+                let tick_w = if is_major { 6.5 } else { 3.5 };
+                painter.line_segment([pos2(x, ty), pos2(x + tick_w, ty)], stroke);
+            }
+
+            let label = if v_bar_mm >= 10.0 {
+                format!("{:.0} cm", v_bar_mm / 10.0)
+            } else {
+                format!("{v_bar_mm:.0} mm")
+            };
+            painter.text(
+                pos2(x + 2.0, y_bot + 3.0),
+                Align2::LEFT_TOP,
+                label,
+                FontId::proportional(10.0),
+                ruler_col,
+            );
         }
 
-        let x = view.right() - 10.0;
-        let y_top = view.center().y - bar_px * 0.5;
-        let y_bot = view.center().y + bar_px * 0.5;
-        let stroke = Stroke::new(1.2, Color32::from_gray(200));
-        painter.line_segment([pos2(x, y_top), pos2(x, y_bot)], stroke);
-
-        let ticks = if bar_mm >= 50.0 { 5 } else { 2 };
-        for i in 0..=ticks {
-            let ty = y_top + (i as f32 / ticks as f32) * bar_px;
-            let tick_w = if i == 0 || i == ticks { 6.0 } else { 3.5 };
-            painter.line_segment([pos2(x - tick_w, ty), pos2(x, ty)], stroke);
-        }
-
-        let label = if bar_mm >= 10.0 {
-            format!("{:.0} cm", bar_mm / 10.0)
+        // Bottom-edge horizontal green ruler (OsiriX style)
+        let horiz_mm = if (45.0..135.0).contains(&rot) {
+            frame.height as f64 * rs
         } else {
-            format!("{bar_mm:.0} mm")
+            frame.width as f64 * cs
         };
-        painter.text(
-            pos2(x - 4.0, y_bot + 4.0),
-            Align2::RIGHT_TOP,
-            label,
-            FontId::proportional(11.0),
-            Color32::from_gray(200),
-        );
+        if horiz_mm > 0.0 && view.width() >= 220.0 {
+            let h_px_per_mm = img.width() as f64 / horiz_mm;
+            let target_h_px = (view.width() * 0.34) as f64;
+            let h_bar_mm = candidates_mm
+                .into_iter()
+                .min_by(|a, b| {
+                    ((a * h_px_per_mm) - target_h_px)
+                        .abs()
+                        .total_cmp(&((b * h_px_per_mm) - target_h_px).abs())
+                })
+                .unwrap_or(50.0);
+            let h_bar_px = (h_bar_mm * h_px_per_mm) as f32;
+            if h_bar_px >= 24.0 && h_bar_px <= view.width() * 0.60 {
+                let y = view.bottom() - 4.0;
+                let x_left = view.center().x - h_bar_px * 0.5;
+                let x_right = view.center().x + h_bar_px * 0.5;
+                painter.line_segment([pos2(x_left, y), pos2(x_right, y)], stroke);
+
+                let ticks = if h_bar_mm >= 50.0 { 10 } else { 4 };
+                for i in 0..=ticks {
+                    let tx = x_left + (i as f32 / ticks as f32) * h_bar_px;
+                    let is_major = i == 0 || i == ticks || (ticks >= 10 && i % 2 == 0);
+                    let tick_h = if is_major { 6.0 } else { 3.2 };
+                    painter.line_segment([pos2(tx, y - tick_h), pos2(tx, y)], stroke);
+                }
+            }
+        }
     }
 
-    pub(super) fn draw_measures(&self, painter: &egui::Painter, vp_idx: usize, img: Rect, f: &Frame) {
+    pub(super) fn draw_measures(
+        &self,
+        painter: &egui::Painter,
+        vp_idx: usize,
+        view: Rect,
+        img: Rect,
+        f: &Frame,
+    ) {
         let color = Color32::from_rgb(255, 220, 60);
         let roi_color = Color32::from_rgb(90, 235, 130);
         let stroke = Stroke::new(1.6, color);
         let roi_stroke = Stroke::new(1.6, roi_color);
         let s = |p: Pos2| self.pixel_to_screen(vp_idx, img, f, p);
 
+        let safe_bounds = view.shrink(6.0);
         let draw_callout = |anchor_scr: Pos2, lines: &[String], border_col: Color32| {
             if lines.is_empty() {
                 return;
             }
             let text = lines.join("\n");
-            let font = FontId::monospace(11.5);
+            let font = FontId::monospace(11.0);
             let galley = painter.layout_no_wrap(text.clone(), font.clone(), Color32::WHITE);
-            let box_min = anchor_scr + vec2(10.0, -galley.size().y - 6.0);
-            let box_rect = Rect::from_min_size(box_min, galley.size() + vec2(10.0, 6.0));
-            painter.rect_filled(
-                box_rect,
-                4.0,
-                Color32::from_rgba_unmultiplied(14, 18, 24, 215),
+            let box_size = galley.size() + vec2(12.0, 8.0);
+            let raw_min = anchor_scr + vec2(10.0, -box_size.y - 4.0);
+            let max_x = (safe_bounds.right() - box_size.x).max(safe_bounds.left());
+            let max_y = (safe_bounds.bottom() - box_size.y).max(safe_bounds.top());
+            let box_min = pos2(
+                raw_min.x.clamp(safe_bounds.left(), max_x),
+                raw_min.y.clamp(safe_bounds.top(), max_y),
             );
+            let box_rect = Rect::from_min_size(box_min, box_size);
+            let bg = if border_col == color {
+                Color32::from_rgba_unmultiplied(54, 20, 22, 215)
+            } else {
+                Color32::from_rgba_unmultiplied(16, 22, 28, 215)
+            };
+            painter.rect_filled(box_rect, 3.0, bg);
             painter.rect_stroke(
                 box_rect,
-                4.0,
-                Stroke::new(1.0, border_col),
+                3.0,
+                Stroke::new(1.0, border_col.linear_multiply(0.85)),
                 egui::StrokeKind::Inside,
             );
             painter.text(
-                box_rect.min + vec2(5.0, 3.0),
+                box_rect.min + vec2(6.0, 4.0),
                 Align2::LEFT_TOP,
                 text,
                 font,
@@ -666,36 +717,73 @@ impl ViewerApp {
         view: Rect,
         frame: Option<&Frame>,
     ) {
-        let font = FontId::proportional(13.0);
+        let font = FontId::proportional(11.5);
         let pad = 10.0;
         let text = |pos: Pos2, align: Align2, s: String| {
+            if s.is_empty() {
+                return;
+            }
             painter.text(
                 pos + vec2(1.0, 1.0),
                 align,
                 &s,
                 font.clone(),
-                Color32::BLACK,
+                Color32::from_black_alpha(220),
             );
-            painter.text(pos, align, s, font.clone(), Color32::from_gray(230));
+            painter.text(pos, align, s, font.clone(), Color32::from_gray(232));
         };
 
         let vp = &self.viewports[vp_idx];
+
+        // Top-Left: Image dimensions, WL/WW (+ CLUT/Filter), and live cursor readout (OsiriX style)
+        let mut tl = Vec::new();
+        if let Some(f) = frame {
+            tl.push(format!("Image size: {} × {}", f.width, f.height));
+            let w = self.effective_window(vp_idx, f);
+            let digits = if w.width.abs() < 10.0 { 2 } else { 0 };
+            let win_name = self.window_name(vp_idx, f);
+            let preset_name = win_name.label();
+            tl.push(format!(
+                "WL: {:.*}  WW: {:.*}  ({})",
+                digits, w.level, digits, w.width, preset_name
+            ));
+            if let Some(clut_name) = vp.active_clut_name() {
+                tl.push(format!("CLUT: {clut_name}"));
+            }
+            if let Some(conv_name) = vp
+                .convolution_idx
+                .and_then(|i| FACTORY_CONVOLUTIONS.get(i))
+                .map(|k| k.name)
+            {
+                tl.push(format!("Filter: {conv_name}"));
+            }
+            if vp_idx == self.active_viewport
+                && let Some(hp) = self.hover_px
+            {
+                let px = hp.x.round().clamp(0.0, (f.width.saturating_sub(1)) as f32) as u32;
+                let py = hp.y.round().clamp(0.0, (f.height.saturating_sub(1)) as f32) as u32;
+                if let Some(val) = f.value_at(px, py) {
+                    tl.push(format!("X: {px} px  Y: {py} px  Val: {val}"));
+                }
+            }
+        }
+        text(view.left_top() + vec2(pad, pad), Align2::LEFT_TOP, tl.join("\n"));
+
+        // Top-Right: Patient & Study / Series identity
         if let Some(study) = self.viewport_study(vp_idx) {
-            let mut tl = vec![study.patient_name.clone()];
+            let mut tr = vec![study.patient_name.clone()];
+            let mut id_line = Vec::new();
             if !study.patient_id.is_empty() {
-                tl.push(format!("ID: {}", study.patient_id));
+                id_line.push(format!("ID: {}", study.patient_id));
             }
             if !study.birth_date.is_empty() {
-                tl.push(format!("DOB: {}", study.birth_date));
+                id_line.push(format!("DOB: {}", study.birth_date));
             }
-            text(view.left_top() + vec2(pad, pad), Align2::LEFT_TOP, tl.join("\n"));
-
-            let mut tr = Vec::new();
+            if !id_line.is_empty() {
+                tr.push(id_line.join("  "));
+            }
             if !study.description.is_empty() {
                 tr.push(study.description.clone());
-            }
-            if !study.date.is_empty() {
-                tr.push(study.date.clone());
             }
             if let Some(series) = self.viewport_series(vp_idx) {
                 tr.push(format!(
@@ -706,6 +794,7 @@ impl ViewerApp {
             text(view.right_top() + vec2(-pad, pad), Align2::RIGHT_TOP, tr.join("\n"));
         }
 
+        // Bottom-Left: Slice index, MPR/Slab, Thickness/Location, Zoom & presentation flags
         let slice_count = self.viewport_slice_count(vp_idx);
         let mut bl = vec![format!("Im: {} / {}", vp.slice + 1, slice_count)];
         if vp.mpr_enabled {
@@ -733,50 +822,42 @@ impl ViewerApp {
                     .and_then(|s| s.slices.get(vp.slice))
                     .and_then(|sr| sr.slice_location)
             });
-            if let Some(loc) = loc {
-                bl.push(format!("Loc: {loc:.2} mm"));
-            }
+            let mut geom_parts = Vec::new();
             if let Some(t) = f.slice_thickness {
-                bl.push(format!("Thk: {t:.1} mm"));
+                geom_parts.push(format!("Thk: {t:.1} mm"));
             }
-            bl.push(format!("{} × {}", f.width, f.height));
+            if let Some(loc) = loc {
+                geom_parts.push(format!("Loc: {loc:.2} mm"));
+            }
+            if !geom_parts.is_empty() {
+                bl.push(geom_parts.join("  "));
+            }
         }
+        let mut view_flags = vec![format!("Zoom: {:.0}%", vp.zoom * 100.0)];
+        if vp.rotation.abs() > 0.05 {
+            view_flags.push(format!("Rot: {:.0}°", vp.rotation));
+        }
+        if vp.effective_invert() {
+            view_flags.push("Inverted".into());
+        }
+        if frame.is_some_and(|f| f.voi_lut_applied) {
+            view_flags.push("VOI LUT".into());
+        }
+        bl.push(view_flags.join("  "));
         text(
             view.left_bottom() + vec2(pad, -pad),
             Align2::LEFT_BOTTOM,
             bl.join("\n"),
         );
 
+        // Bottom-Right: Acquisition date & application stamp
         let mut br = Vec::new();
-        if let Some(f) = frame {
-            let w = self.effective_window(vp_idx, f);
-            let digits = if w.width.abs() < 10.0 { 2 } else { 0 };
-            br.push(format!(
-                "WL: {:.*}  WW: {:.*}",
-                digits, w.level, digits, w.width
-            ));
-            br.push(self.window_name(vp_idx, f).label().to_string());
-        }
-        if let Some(clut_name) = vp.active_clut_name() {
-            br.push(format!("CLUT: {clut_name}"));
-        }
-        if let Some(conv_name) = vp
-            .convolution_idx
-            .and_then(|i| FACTORY_CONVOLUTIONS.get(i))
-            .map(|k| k.name)
+        if let Some(study) = self.viewport_study(vp_idx)
+            && !study.date.is_empty()
         {
-            br.push(format!("Filter: {conv_name}"));
+            br.push(study.date.clone());
         }
-        br.push(format!("Zoom: {:.0}%", vp.zoom * 100.0));
-        if vp.rotation.abs() > 0.05 {
-            br.push(format!("Rot: {:.0}°", vp.rotation));
-        }
-        if vp.effective_invert() {
-            br.push("Inverted".into());
-        }
-        if frame.is_some_and(|f| f.voi_lut_applied) {
-            br.push("VOI LUT".into());
-        }
+        br.push("SekhmetX".into());
         text(
             view.right_bottom() + vec2(-pad, -pad),
             Align2::RIGHT_BOTTOM,

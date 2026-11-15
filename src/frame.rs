@@ -81,21 +81,21 @@ impl Frame {
         if x >= self.width || y >= self.height {
             return None;
         }
-        let i = (y * self.width + x) as usize;
-        Some(match &self.pixels {
+        let i = (y as usize) * (self.width as usize) + (x as usize);
+        match &self.pixels {
             Pixels::Gray(v) => {
-                let val = v[i];
-                if val.fract().abs() < 1e-3 {
+                let val = *v.get(i)?;
+                Some(if val.fract().abs() < 1e-3 {
                     format!("{:.0} {}", val, self.value_unit)
                 } else {
                     format!("{:.2} {}", val, self.value_unit)
-                }
+                })
             }
             Pixels::Rgba(v) => {
-                let p = &v[i * 4..i * 4 + 4];
-                format!("RGB {} {} {}", p[0], p[1], p[2])
+                let p = v.get(i * 4..i * 4 + 4)?;
+                Some(format!("RGB {} {} {}", p[0], p[1], p[2]))
             }
-        })
+        }
     }
 
     /// 3D patient coordinates `(X, Y, Z)` in mm at pixel `(x, y)` when this slice has a 3D plane.

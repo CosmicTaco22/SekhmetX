@@ -402,7 +402,7 @@ impl ViewerApp {
                     }
                 }
         }
-        self.draw_measures(&painter, vp_idx, img, &source_frame);
+        self.draw_measures(&painter, vp_idx, view, img, &source_frame);
         if self.show_annotations {
             self.draw_scale_bar(&painter, vp_idx, view, img, &frame);
             self.draw_orientation_letters(&painter, vp_idx, view, &frame);
@@ -410,6 +410,7 @@ impl ViewerApp {
         }
         self.draw_scrubber_bar(ui, &painter, vp_idx, view);
         self.draw_viewport_border(&painter, vp_idx, view);
+        self.draw_link_badge(ui, &painter, vp_idx, view);
     }
 
     fn ortho_crosshair_screen_pos(
@@ -635,6 +636,89 @@ impl ViewerApp {
         }
     }
 
+    fn draw_link_badge(&mut self, ui: &egui::Ui, painter: &egui::Painter, vp_idx: usize, view: Rect) {
+        let cell_count = self.tiling.cell_count();
+        if cell_count <= 1 || self.ortho_mpr_active {
+            return;
+        }
+        let any_link = self.any_link_enabled();
+        let raw_group = self.viewports[vp_idx].link_group;
+        let eff_group = if raw_group > 0 {
+            raw_group
+        } else if cell_count == 2 && any_link {
+            1
+        } else {
+            0
+        };
+        if eff_group == 0 && !any_link {
+            return;
+        }
+
+        let mut flags = Vec::new();
+        if self.link_zoom {
+            flags.push("Z");
+        }
+        if self.link_wl {
+            flags.push("WL");
+        }
+        if self.link_cut {
+            flags.push("Cut");
+        }
+
+        if eff_group > 0 && any_link {
+            let col = Self::link_group_color(eff_group);
+            painter.line_segment(
+                [view.left_top() + vec2(2.0, 2.0), view.right_top() + vec2(-2.0, 2.0)],
+                Stroke::new(2.5, col),
+            );
+            let label = format!("🔗{} {}", eff_group, flags.join("·"));
+            let font = FontId::proportional(10.5);
+            let galley = painter.layout_no_wrap(label.clone(), font.clone(), col);
+            let pill_size = galley.size() + vec2(12.0, 4.0);
+            let pill_rect = Rect::from_center_size(
+                pos2(view.center().x, view.top() + 28.0),
+                pill_size,
+            );
+            painter.rect_filled(pill_rect, 8.0, Color32::from_rgba_unmultiplied(12, 16, 22, 200));
+            painter.rect_stroke(pill_rect, 8.0, Stroke::new(1.0, col), egui::StrokeKind::Inside);
+            painter.text(pill_rect.center(), Align2::CENTER_CENTER, label, font, col);
+
+            if cell_count > 2 {
+                let resp = ui.interact(
+                    pill_rect,
+                    ui.scope_id().with(("vp_link_badge", vp_idx)),
+                    Sense::click(),
+                );
+                if resp.clicked() {
+                    self.viewports[vp_idx].link_group = (raw_group + 1) % 5;
+                }
+                resp.on_hover_text("Click to cycle Link Group (1–4 or Off)");
+            }
+        } else if cell_count > 2 && any_link {
+            let col = Color32::from_gray(145);
+            let label = "○ Link".to_string();
+            let font = FontId::proportional(10.5);
+            let galley = painter.layout_no_wrap(label.clone(), font.clone(), col);
+            let pill_size = galley.size() + vec2(12.0, 4.0);
+            let pill_rect = Rect::from_center_size(
+                pos2(view.center().x, view.top() + 28.0),
+                pill_size,
+            );
+            painter.rect_filled(pill_rect, 8.0, Color32::from_rgba_unmultiplied(12, 16, 22, 175));
+            painter.rect_stroke(pill_rect, 8.0, Stroke::new(1.0, Color32::from_gray(80)), egui::StrokeKind::Inside);
+            painter.text(pill_rect.center(), Align2::CENTER_CENTER, label, font, col);
+            let resp = ui.interact(
+                pill_rect,
+                ui.scope_id().with(("vp_link_badge", vp_idx)),
+                Sense::click(),
+            );
+            if resp.clicked() {
+                self.viewports[vp_idx].link_group = 1;
+            }
+            resp.on_hover_text("Click to assign this viewport to a Link Group");
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn gpu_mpr_callback(
         &self,
@@ -801,11 +885,11 @@ impl ViewerApp {
                 }
             } else {
                 self.viewports[vp_idx].reset_view();
-                if self.should_sync_viewports() {
+                if self.ortho_mpr_active || self.link_zoom {
                     let count = self.tiling.cell_count();
-                    for (i, vp) in self.viewports.iter_mut().enumerate().take(count) {
-                        if i != vp_idx && vp.selected.is_some() {
-                            vp.reset_view();
+                    for i in 0..count {
+                        if self.are_viewports_linked(vp_idx, i) && self.viewports[i].selected.is_some() {
+                            self.viewports[i].reset_view();
                         }
                     }
                 }

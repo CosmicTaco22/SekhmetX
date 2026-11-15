@@ -46,14 +46,27 @@ impl ToolbarGroup {
 
     fn default_width(self) -> f32 {
         match self {
-            Self::DatabaseOpen => 104.0,
-            Self::Tiling => 66.0,
-            Self::MouseTools => 240.0,
-            Self::RoiTools => 150.0,
-            Self::Presentation => 350.0,
-            Self::ThreeDAndView => 210.0,
+            Self::DatabaseOpen => 196.0,
+            Self::Tiling => 64.0,
+            Self::MouseTools => 228.0,
+            Self::RoiTools => 148.0,
+            Self::Presentation => 286.0,
+            Self::ThreeDAndView => 268.0,
             Self::Cine => 88.0,
             Self::App => 96.0,
+        }
+    }
+
+    fn caption(self, tr: &crate::i18n::Strings) -> &'static str {
+        match self {
+            Self::DatabaseOpen => tr.grp_database,
+            Self::Tiling => tr.grp_windows,
+            Self::MouseTools => tr.grp_mouse,
+            Self::RoiTools => tr.grp_roi,
+            Self::Presentation => tr.grp_wl_clut,
+            Self::ThreeDAndView => tr.grp_view_3d,
+            Self::Cine => tr.grp_cine,
+            Self::App => tr.grp_app,
         }
     }
 }
@@ -89,35 +102,63 @@ impl ViewerApp {
             }
         }
 
-        // Row 1: Horos-ordered toolbar with automatic "»" overflow menu.
+        // Row 1: OsiriX-style grouped toolbar with category captions and automatic "»" overflow menu.
+        let tr = crate::i18n::tr(self.lang);
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for (i, &group) in TOOLBAR_GROUPS[..visible_count].iter().enumerate() {
                 if i > 0 {
-                    ui.separator();
+                    let (sep_rect, _) = ui.allocate_exact_size(vec2(6.0, 48.0), Sense::hover());
+                    ui.painter().vline(
+                        sep_rect.center().x,
+                        sep_rect.y_range().shrink(4.0),
+                        Stroke::new(1.0, Color32::from_gray(60)),
+                    );
                 }
-                let resp = ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 4.0;
-                    self.render_toolbar_group(ui, group);
+                let caption = group.caption(tr);
+                let resp = ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    let row_resp = ui.horizontal(|ui| {
+                        ui.set_min_height(36.0);
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        self.render_toolbar_group(ui, group);
+                    });
+                    let group_w = row_resp.response.rect.width().max(48.0);
+                    ui.allocate_ui_with_layout(
+                        vec2(group_w, 12.0),
+                        egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                        |ui| {
+                            ui.label(
+                                egui::RichText::new(caption)
+                                    .size(9.5)
+                                    .color(Color32::from_gray(145)),
+                            );
+                        },
+                    );
                 });
-                widths[group.index()] = resp.response.rect.width().max(24.0);
+                widths[group.index()] = resp.response.rect.width().clamp(24.0, 420.0);
             }
 
             if visible_count < TOOLBAR_GROUPS.len() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.menu_button("»", |ui| {
-                        ui.set_min_width(220.0);
+                        ui.set_min_width(240.0);
                         for (j, &group) in TOOLBAR_GROUPS[visible_count..].iter().enumerate() {
                             if j > 0 {
                                 ui.separator();
                             }
+                            ui.label(
+                                egui::RichText::new(group.caption(tr))
+                                    .size(10.0)
+                                    .color(Color32::from_gray(155)),
+                            );
                             ui.horizontal_wrapped(|ui| {
                                 self.render_toolbar_group(ui, group);
                             });
                         }
                     })
                     .response
-                    .on_hover_text(crate::i18n::tr(self.lang).more_tools_hover);
+                    .on_hover_text(tr.more_tools_hover);
                 });
             }
         });
@@ -132,8 +173,16 @@ impl ViewerApp {
         let tr = crate::i18n::tr(self.lang);
         match group {
             ToolbarGroup::DatabaseOpen => {
-                ui.toggle_value(&mut self.show_browser, "◧")
-                    .on_hover_text(tr.browser_hover);
+                let db_lbl = match self.lang {
+                    crate::i18n::Lang::En => "🗄 Database",
+                    crate::i18n::Lang::Es => "🗄 Base de datos",
+                };
+                ui.toggle_value(&mut self.show_database_view, db_lbl)
+                    .on_hover_text("Toggle full Database Library view");
+                if !self.show_database_view {
+                    ui.toggle_value(&mut self.show_browser, "◧")
+                        .on_hover_text(tr.browser_hover);
+                }
                 ui.menu_button(format!("📂 {}", tr.open), |ui| {
                     let (lbl_folder, lbl_files) = match self.lang {
                         crate::i18n::Lang::En => ("Open Folder…", "Open Files / ZIP…"),
@@ -193,13 +242,73 @@ impl ViewerApp {
                     _ => format!("{} ▾", tr.roi),
                 };
                 ui.menu_button(roi_label, |ui| {
-                    ui.selectable_value(&mut self.tool, Tool::Length, tr.roi_length);
-                    ui.selectable_value(&mut self.tool, Tool::Angle, tr.roi_angle);
-                    ui.selectable_value(&mut self.tool, Tool::Oval, tr.roi_oval);
-                    ui.selectable_value(&mut self.tool, Tool::Rect, tr.roi_rect);
-                    ui.selectable_value(&mut self.tool, Tool::Polygon, tr.roi_polygon);
-                    ui.selectable_value(&mut self.tool, Tool::Pencil, tr.roi_pencil);
-                    ui.selectable_value(&mut self.tool, Tool::Point, tr.roi_point);
+                    let items: [(Tool, &str, &str); 7] = [
+                        (Tool::Length, tr.roi_length, "L"),
+                        (Tool::Angle, tr.roi_angle, "—"),
+                        (Tool::Oval, tr.roi_oval, "E"),
+                        (Tool::Rect, tr.roi_rect, "B"),
+                        (Tool::Polygon, tr.roi_polygon, "G"),
+                        (Tool::Pencil, tr.roi_pencil, "F"),
+                        (Tool::Point, tr.roi_point, "T"),
+                    ];
+                    let font_id = egui::TextStyle::Button.resolve(ui.style());
+                    let max_label_w = items
+                        .iter()
+                        .map(|(_, raw_label, _)| {
+                            let clean = raw_label
+                                .rfind(" (")
+                                .map(|idx| &raw_label[..idx])
+                                .unwrap_or(raw_label);
+                            ui.painter()
+                                .layout_no_wrap(
+                                    format!("✓ {clean}"),
+                                    font_id.clone(),
+                                    Color32::WHITE,
+                                )
+                                .size()
+                                .x
+                        })
+                        .fold(0.0f32, f32::max);
+                    let menu_w = (max_label_w + 38.0).ceil();
+                    ui.set_min_width(menu_w);
+                    ui.set_max_width(menu_w);
+                    for (target, raw_label, shortcut) in items {
+                        // Strip trailing " (X)" from legacy label so shortcut sits cleanly right-aligned
+                        let clean_label = raw_label
+                            .rfind(" (")
+                            .map(|idx| &raw_label[..idx])
+                            .unwrap_or(raw_label);
+                        let selected = self.tool == target;
+                        let clicked = ui
+                            .allocate_ui_with_layout(
+                                vec2(menu_w, 20.0),
+                                egui::Layout::left_to_right(egui::Align::Center),
+                                |ui| {
+                                    let prefix = if selected { "✓ " } else { "   " };
+                                    let btn = ui.selectable_label(
+                                        selected,
+                                        format!("{prefix}{clean_label}"),
+                                    );
+                                    ui.with_layout(
+                                        egui::Layout::right_to_left(egui::Align::Center),
+                                        |ui| {
+                                            ui.label(
+                                                egui::RichText::new(shortcut)
+                                                    .monospace()
+                                                    .size(11.0)
+                                                    .color(Color32::from_gray(145)),
+                                            );
+                                        },
+                                    );
+                                    btn.clicked()
+                                },
+                            )
+                            .inner;
+                        if clicked {
+                            self.tool = target;
+                            ui.close();
+                        }
+                    }
                     if self
                         .viewport_measure_key(self.active_viewport)
                         .and_then(|k| self.measures.get(&k))
@@ -223,105 +332,132 @@ impl ViewerApp {
                 }
             }
             ToolbarGroup::Presentation => {
-                // WL/WW Presets ComboBox
-                let active_win = self.active_cell().window;
-                let mut chosen_win: Option<Option<Window>> = None;
-                egui::ComboBox::from_id_salt("presets")
-                    .selected_text(self.preset_label())
-                    .width(106.0)
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(active_win.is_none(), tr.preset_default)
-                            .clicked()
-                        {
-                            chosen_win = Some(None);
-                        }
-                        if let Some(f) = self.viewport_frame(self.active_viewport) {
-                            let full = f.full_window;
-                            if ui
-                                .selectable_label(
-                                    active_win == Some(full),
-                                    format!(
-                                        "~   {}   L {:.0} W {:.0}",
-                                        tr.preset_full_dyn, full.level, full.width
-                                    ),
-                                )
-                                .clicked()
-                            {
-                                chosen_win = Some(Some(full));
-                            }
-                        }
-                        ui.separator();
-                        for (i, entry) in self.presets.hot_key_order().into_iter().enumerate() {
-                            let Some(w) = entry.window else { continue };
-                            let key = if i < 9 {
-                                format!("{}", i + 1)
-                            } else {
-                                " ".into()
-                            };
-                            let text =
-                                format!("{key}   {}   L {} W {}", entry.name, w.level, w.width);
-                            if ui.selectable_label(active_win == Some(w), text).clicked() {
-                                chosen_win = Some(Some(w));
-                            }
-                        }
-                    });
-                if let Some(w) = chosen_win {
-                    self.set_active_window(w);
-                }
+                // OsiriX-style 2-row compact stack: WL/WW + CLUT on left, Filter + quick toggles on right
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 2.0;
 
-                // CLUT Selector ComboBox
-                let current_clut_name = self.active_cell().clut_name.clone();
-                let mut chosen_clut: Option<String> = None;
-                egui::ComboBox::from_id_salt("clut_selector")
-                    .selected_text(format!("CLUT: {current_clut_name}"))
-                    .width(104.0)
-                    .show_ui(ui, |ui| {
-                        for name in ColourTableBook::menu_names() {
-                            if ui
-                                .selectable_label(current_clut_name == name, name)
-                                .clicked()
-                            {
-                                chosen_clut = Some(name.to_string());
-                            }
+                    // Row 1: WL/WW Presets + Filter
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.label(
+                            egui::RichText::new("WL/WW:")
+                                .size(10.0)
+                                .color(Color32::from_gray(155)),
+                        );
+                        let active_win = self.active_cell().window;
+                        let mut chosen_win: Option<Option<Window>> = None;
+                        egui::ComboBox::from_id_salt("presets")
+                            .selected_text(self.preset_label())
+                            .width(106.0)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(active_win.is_none(), tr.preset_default)
+                                    .clicked()
+                                {
+                                    chosen_win = Some(None);
+                                }
+                                if let Some(f) = self.viewport_frame(self.active_viewport) {
+                                    let full = f.full_window;
+                                    if ui
+                                        .selectable_label(
+                                            active_win == Some(full),
+                                            format!(
+                                                "~   {}   L {:.0} W {:.0}",
+                                                tr.preset_full_dyn, full.level, full.width
+                                            ),
+                                        )
+                                        .clicked()
+                                    {
+                                        chosen_win = Some(Some(full));
+                                    }
+                                }
+                                ui.separator();
+                                for (i, entry) in self.presets.hot_key_order().into_iter().enumerate() {
+                                    let Some(w) = entry.window else { continue };
+                                    let key = if i < 9 {
+                                        format!("{}", i + 1)
+                                    } else {
+                                        " ".into()
+                                    };
+                                    let text =
+                                        format!("{key}   {}   L {} W {}", entry.name, w.level, w.width);
+                                    if ui.selectable_label(active_win == Some(w), text).clicked() {
+                                        chosen_win = Some(Some(w));
+                                    }
+                                }
+                            });
+                        if let Some(w) = chosen_win {
+                            self.set_active_window(w);
                         }
-                    });
-                if let Some(name) = chosen_clut {
-                    self.active_cell_mut().clut_name = name;
-                }
 
-                // 2D Spatial Convolution Filter Selector
-                let cur_conv = self.active_cell().convolution_idx;
-                let conv_label = cur_conv
-                    .and_then(|i| FACTORY_CONVOLUTIONS.get(i))
-                    .map(|k| k.name)
-                    .unwrap_or(tr.filter_none);
-                let mut chosen_conv: Option<Option<usize>> = None;
-                egui::ComboBox::from_id_salt("conv_selector")
-                    .selected_text(format!("{}: {conv_label}", tr.filter_prefix))
-                    .width(100.0)
-                    .show_ui(ui, |ui| {
-                        if ui
-                            .selectable_label(cur_conv.is_none(), tr.filter_no_filter)
-                            .clicked()
-                        {
-                            chosen_conv = Some(None);
-                        }
-                        ui.separator();
-                        for (idx, k) in FACTORY_CONVOLUTIONS.iter().enumerate() {
-                            if ui
-                                .selectable_label(cur_conv == Some(idx), k.name)
-                                .clicked()
-                            {
-                                chosen_conv = Some(Some(idx));
-                            }
+                        // Filter
+                        let cur_conv = self.active_cell().convolution_idx;
+                        let conv_label = cur_conv
+                            .and_then(|i| FACTORY_CONVOLUTIONS.get(i))
+                            .map(|k| k.name)
+                            .unwrap_or(tr.filter_none);
+                        let mut chosen_conv: Option<Option<usize>> = None;
+                        egui::ComboBox::from_id_salt("conv_selector")
+                            .selected_text(format!("{}: {conv_label}", tr.filter_prefix))
+                            .width(96.0)
+                            .show_ui(ui, |ui| {
+                                if ui
+                                    .selectable_label(cur_conv.is_none(), tr.filter_no_filter)
+                                    .clicked()
+                                {
+                                    chosen_conv = Some(None);
+                                }
+                                ui.separator();
+                                for (idx, k) in FACTORY_CONVOLUTIONS.iter().enumerate() {
+                                    if ui
+                                        .selectable_label(cur_conv == Some(idx), k.name)
+                                        .clicked()
+                                    {
+                                        chosen_conv = Some(Some(idx));
+                                    }
+                                }
+                            });
+                        if let Some(next_conv) = chosen_conv {
+                            let vp = self.active_cell_mut();
+                            vp.convolution_idx = next_conv;
+                            vp.conv_cached = None;
                         }
                     });
-                if let Some(next_conv) = chosen_conv {
-                    let vp = self.active_cell_mut();
-                    vp.convolution_idx = next_conv;
-                    vp.conv_cached = None;
-                }
+
+                    // Row 2: CLUT + quick Invert / Overlays / Ref lines pills
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        ui.label(
+                            egui::RichText::new("CLUT:")
+                                .size(10.0)
+                                .color(Color32::from_gray(155)),
+                        );
+                        let current_clut_name = self.active_cell().clut_name.clone();
+                        let mut chosen_clut: Option<String> = None;
+                        egui::ComboBox::from_id_salt("clut_selector")
+                            .selected_text(&current_clut_name)
+                            .width(106.0)
+                            .show_ui(ui, |ui| {
+                                for name in ColourTableBook::menu_names() {
+                                    if ui
+                                        .selectable_label(current_clut_name == name, name)
+                                        .clicked()
+                                    {
+                                        chosen_clut = Some(name.to_string());
+                                    }
+                                }
+                            });
+                        if let Some(name) = chosen_clut {
+                            self.active_cell_mut().clut_name = name;
+                        }
+
+                        ui.toggle_value(&mut self.active_cell_mut().invert, tr.invert);
+                        ui.toggle_value(&mut self.show_reference_lines, "╋")
+                            .on_hover_text(tr.ref_lines);
+                        ui.toggle_value(&mut self.show_annotations, "HUD")
+                            .on_hover_text(tr.overlays);
+                    });
+                });
             }
             ToolbarGroup::ThreeDAndView => {
                 let has_series = self.active_cell().selected.is_some();
@@ -432,6 +568,14 @@ impl ViewerApp {
                 })
                 .response
                 .on_hover_text(tr.view_hover);
+                let meta_lbl = match self.lang {
+                    crate::i18n::Lang::En => "ℹ Meta-Data",
+                    crate::i18n::Lang::Es => "ℹ Metadatos",
+                };
+                ui.add_enabled_ui(!self.show_database_view && has_series, |ui| {
+                    ui.toggle_value(&mut self.show_metadata_inspector, meta_lbl)
+                        .on_hover_text("Toggle side-by-side DICOM Meta-Data Inspector");
+                });
             }
             ToolbarGroup::Cine => {
                 let cine_label = if self.playing { "⏸" } else { "▶" };
@@ -770,7 +914,61 @@ impl ViewerApp {
                 }
             }
 
-            if self.tiling.cell_count() > 1 && !self.ortho_mpr_active {
+            let cell_count = self.tiling.cell_count();
+            if cell_count > 1 && !self.ortho_mpr_active {
+                ui.separator();
+                let (lbl_zoom, lbl_wl, lbl_cut) = match self.lang {
+                    crate::i18n::Lang::En => ("🔗 Zoom", "🔗 WL", "🔗 Cut"),
+                    crate::i18n::Lang::Es => ("🔗 Zoom", "🔗 NV", "🔗 Corte"),
+                };
+                if ui
+                    .toggle_value(&mut self.link_zoom, lbl_zoom)
+                    .on_hover_text("Link Zoom & Pan across linked viewports")
+                    .changed()
+                {
+                    self.ensure_default_link_pair();
+                }
+                if ui
+                    .toggle_value(&mut self.link_wl, lbl_wl)
+                    .on_hover_text("Link Window Level / Width across linked viewports")
+                    .changed()
+                {
+                    self.ensure_default_link_pair();
+                }
+                if ui
+                    .toggle_value(&mut self.link_cut, lbl_cut)
+                    .on_hover_text("Link Slice / Cut position across linked viewports (without forcing Ax/Cor/Sag)")
+                    .changed()
+                {
+                    self.ensure_default_link_pair();
+                }
+                if cell_count > 2 {
+                    ui.separator();
+                    let active_g = self.viewports[self.active_viewport].link_group;
+                    ui.label(
+                        egui::RichText::new("Link:")
+                            .size(10.5)
+                            .color(Color32::from_gray(160)),
+                    );
+                    if ui
+                        .selectable_label(active_g == 0, "○")
+                        .on_hover_text("Unlink active viewport")
+                        .clicked()
+                    {
+                        self.viewports[self.active_viewport].link_group = 0;
+                    }
+                    for g in 1u8..=4 {
+                        let col = Self::link_group_color(g);
+                        let txt = egui::RichText::new(format!("{g}")).strong().color(col);
+                        if ui
+                            .selectable_label(active_g == g, txt)
+                            .on_hover_text(format!("Assign active viewport to Link Group {g}"))
+                            .clicked()
+                        {
+                            self.viewports[self.active_viewport].link_group = g;
+                        }
+                    }
+                }
                 ui.separator();
                 if ui
                     .small_button(tr.lock_3d_sync)

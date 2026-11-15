@@ -16,42 +16,83 @@ impl ViewerApp {
         self.viewports[vp_idx].mpr_cached = None;
     }
 
-    pub(super) fn should_sync_viewports(&self) -> bool {
-        self.ortho_mpr_active
-            || (self.tiling.cell_count() > 1 && self.sync_mode != SliceSynchronization::Off)
+    pub(crate) fn link_group_color(group: u8) -> Color32 {
+        match group {
+            1 => Color32::from_rgb(56, 189, 248),  // Blue / Cyan
+            2 => Color32::from_rgb(251, 191, 36),  // Gold / Amber
+            3 => Color32::from_rgb(52, 211, 153),  // Emerald
+            4 => Color32::from_rgb(244, 114, 182), // Pink / Magenta
+            _ => Color32::from_gray(140),
+        }
+    }
+
+    pub(crate) fn any_link_enabled(&self) -> bool {
+        self.link_zoom || self.link_wl || self.link_cut
+    }
+
+    pub(crate) fn ensure_default_link_pair(&mut self) {
+        if self.tiling.cell_count() == 2
+            && self.any_link_enabled()
+            && self.viewports.iter().take(2).all(|v| v.link_group == 0)
+        {
+            self.viewports[0].link_group = 1;
+            self.viewports[1].link_group = 1;
+        }
+    }
+
+    pub(crate) fn are_viewports_linked(&self, a: usize, b: usize) -> bool {
+        if a == b {
+            return false;
+        }
+        if self.ortho_mpr_active {
+            return a < 3 && b < 3;
+        }
+        if self.tiling.cell_count() <= 1 {
+            return false;
+        }
+        let ga = self.viewports.get(a).map_or(0, |v| v.link_group);
+        let gb = self.viewports.get(b).map_or(0, |v| v.link_group);
+        if ga != 0 && ga == gb {
+            true
+        } else if self.tiling.cell_count() == 2 && ga == 0 && gb == 0 {
+            self.any_link_enabled()
+        } else {
+            false
+        }
     }
 
     pub(super) fn sync_zoom_from(&mut self, leader_idx: usize, factor: f32) {
-        if !self.should_sync_viewports() {
+        if !self.ortho_mpr_active && !self.link_zoom {
             return;
         }
         let count = self.tiling.cell_count();
-        for (i, vp) in self.viewports.iter_mut().enumerate().take(count) {
-            if i != leader_idx && vp.selected.is_some() {
+        for i in 0..count {
+            if self.are_viewports_linked(leader_idx, i) && self.viewports[i].selected.is_some() {
+                let vp = &mut self.viewports[i];
                 vp.zoom = (vp.zoom * factor).clamp(0.05, 50.0);
             }
         }
     }
 
     pub(super) fn sync_pan_from(&mut self, leader_idx: usize, delta: Vec2) {
-        if !self.should_sync_viewports() {
+        if !self.ortho_mpr_active && !self.link_zoom {
             return;
         }
         let count = self.tiling.cell_count();
-        for (i, vp) in self.viewports.iter_mut().enumerate().take(count) {
-            if i != leader_idx && vp.selected.is_some() {
-                vp.pan += delta;
+        for i in 0..count {
+            if self.are_viewports_linked(leader_idx, i) && self.viewports[i].selected.is_some() {
+                self.viewports[i].pan += delta;
             }
         }
     }
 
     pub(super) fn sync_window_delta(&mut self, leader_idx: usize, d_level: f32, d_width: f32) {
-        if !self.should_sync_viewports() {
+        if !self.ortho_mpr_active && !self.link_wl {
             return;
         }
         let count = self.tiling.cell_count();
         for i in 0..count {
-            if i == leader_idx || self.viewports[i].selected.is_none() {
+            if !self.are_viewports_linked(leader_idx, i) || self.viewports[i].selected.is_none() {
                 continue;
             }
             let base = if let Some(w) = self.viewports[i].window {
@@ -246,7 +287,7 @@ impl ViewerApp {
     }
 
     pub(super) fn synchronize_mpr_followers(&mut self, leader_idx: usize) -> bool {
-        if self.sync_mode == SliceSynchronization::Off {
+        if !self.ortho_mpr_active && (!self.link_cut || self.sync_mode == SliceSynchronization::Off) {
             return false;
         }
         let cell_count = self.tiling.cell_count();
@@ -263,9 +304,8 @@ impl ViewerApp {
         let mut synced_any = false;
         let mut updates: Vec<(usize, MprPlane3D)> = Vec::new();
         let mut slice_2d_updates: Vec<(usize, usize)> = Vec::new();
-        let leader_mpr = self.viewports[leader_idx].mpr_enabled;
         for other_idx in 0..cell_count {
-            if other_idx == leader_idx {
+            if !self.are_viewports_linked(leader_idx, other_idx) {
                 continue;
             }
             let Some(other_sel) = self.viewports[other_idx].selected else {
@@ -273,30 +313,43 @@ impl ViewerApp {
             };
             let other_mpr = self.viewports[other_idx].mpr_enabled;
             if other_sel == leader_sel {
-                if leader_mpr || other_mpr {
-                    updates.push((other_idx, leader_plane.clone()));
+                if other_mpr && let Some(mut other_plane) = self.effective_mpr_plane(other_idx) {
+                    if dot3(leader_plane.normal, other_plane.normal).abs() > 0.99 {
+                        other_plane.offset_mm = leader_plane.offset_mm;
+                        updates.push((other_idx, other_plane));
+                    } else {
+                        let lps = leader_plane.slice_center_lps();
+                        other_plane.offset_mm =
+                            dot3(sub3(lps, other_plane.center_lps), other_plane.normal);
+                        updates.push((other_idx, other_plane));
+                    }
                 }
                 continue;
             }
             if let Some(reg) = self.registrations.get(&(leader_sel, other_sel)) {
-                let target_plane = if reg.is_reliable() {
-                    reg.transform_plane(&leader_plane)
+                let leader_lps = leader_plane.slice_center_lps();
+                let target_lps = if reg.is_reliable() {
+                    reg.transform_point(leader_lps)
                 } else {
-                    leader_plane.clone()
+                    leader_lps
                 };
-                if leader_mpr || other_mpr {
-                    updates.push((other_idx, target_plane));
+                if other_mpr && let Some(mut other_plane) = self.effective_mpr_plane(other_idx) {
+                    // Never force-change the follower's plane orientation (Ax/Cor/Sag);
+                    // only project the cut position onto the follower's own normal.
+                    other_plane.offset_mm =
+                        dot3(sub3(target_lps, other_plane.center_lps), other_plane.normal);
+                    updates.push((other_idx, other_plane));
                 } else if let Some(vol) = self.volumes.get(&other_sel)
-                    && vol.depth > 0 {
-                        let vox = vol.lps_to_voxel(target_plane.slice_center_lps());
-                        let mapped = (vox[2].round() as isize).clamp(0, vol.depth as isize - 1) as usize;
-                        slice_2d_updates.push((other_idx, mapped));
-                    }
+                    && vol.depth > 0
+                {
+                    let vox = vol.lps_to_voxel(target_lps);
+                    let mapped = (vox[2].round() as isize).clamp(0, vol.depth as isize - 1) as usize;
+                    slice_2d_updates.push((other_idx, mapped));
+                }
             }
         }
 
         for (other_idx, target_plane) in updates {
-            self.viewports[other_idx].mpr_enabled = true;
             self.viewports[other_idx].mpr_plane = Some(target_plane);
             self.sync_slice_index_from_mpr_plane(other_idx);
             synced_any = true;
@@ -323,7 +376,7 @@ impl ViewerApp {
 
         let mut new_regs = Vec::new();
         for other_idx in 0..cell_count {
-            if other_idx == leader_idx {
+            if !self.are_viewports_linked(leader_idx, other_idx) {
                 continue;
             }
             let Some(other_sel) = self.viewports[other_idx].selected else {
@@ -669,7 +722,11 @@ impl ViewerApp {
             self.angle_pending = None;
         }
 
-        if synchronize_others && self.sync_mode != SliceSynchronization::Off && !self.ortho_mpr_active {
+        if synchronize_others
+            && self.link_cut
+            && self.sync_mode != SliceSynchronization::Off
+            && !self.ortho_mpr_active
+        {
             self.synchronize_mpr_followers(vp_idx);
             self.synchronize_from_leader(vp_idx, prev_slice, new_slice);
         }
@@ -716,7 +773,7 @@ impl ViewerApp {
         leader_new_slice: usize,
     ) {
         let mode = self.sync_mode;
-        if mode == SliceSynchronization::Off {
+        if !self.link_cut || mode == SliceSynchronization::Off {
             return;
         }
         let cell_count = self.tiling.cell_count();
@@ -765,7 +822,7 @@ impl ViewerApp {
         // In IsiX, Relative mode passes `before` as `targetCurrentSlice` and `after` as `sourceSlice`.
         let mut updates: Vec<(usize, usize)> = Vec::new();
         for other_idx in 0..cell_count {
-            if other_idx == leader_idx {
+            if !self.are_viewports_linked(leader_idx, other_idx) {
                 continue;
             }
             let Some(other_sel) = self.viewports[other_idx].selected else {

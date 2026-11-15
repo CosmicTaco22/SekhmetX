@@ -4,6 +4,7 @@
 //! orientation edge markers in the center.
 
 mod browser;
+mod metadata;
 mod modals;
 mod mpr_sync;
 mod overlays;
@@ -173,6 +174,7 @@ pub(crate) struct ViewportCell {
     pub(crate) mpr_auto_applied: bool,
     pub(crate) mpr_plane: Option<MprPlane3D>,
     pub(crate) mpr_cached: Option<(MprPlane3D, Arc<Frame>, SliceKey)>,
+    pub(crate) link_group: u8,
     mpr_seq: usize,
     texture: Option<TextureHandle>,
     rendered: Option<RenderKey>,
@@ -200,6 +202,7 @@ impl ViewportCell {
             mpr_auto_applied: false,
             mpr_plane: None,
             mpr_cached: None,
+            link_group: 0,
             mpr_seq: 0,
             texture: None,
             rendered: None,
@@ -273,6 +276,9 @@ pub(crate) struct ViewerApp {
     pub(crate) viewports: Vec<ViewportCell>,
     pub(crate) active_viewport: usize,
     pub(crate) sync_mode: SliceSynchronization,
+    pub(crate) link_zoom: bool,
+    pub(crate) link_wl: bool,
+    pub(crate) link_cut: bool,
     pub(crate) show_reference_lines: bool,
     pub(crate) show_annotations: bool,
 
@@ -317,6 +323,11 @@ pub(crate) struct ViewerApp {
     cursor_info: Option<String>,
 
     pub(crate) show_browser: bool,
+    pub(crate) show_database_view: bool,
+    pub(crate) selected_db_study: Option<usize>,
+    pub(crate) show_metadata_inspector: bool,
+    pub(crate) metadata_filter: String,
+    pub(crate) metadata_cache: Option<metadata::MetadataCache>,
     pub(crate) ortho_mpr_active: bool,
     pub(crate) ortho_crosshair_lps: Option<[f64; 3]>,
     ortho_saved_tiling: Option<ViewportTiling>,
@@ -449,6 +460,9 @@ impl ViewerApp {
             viewports,
             active_viewport: 0,
             sync_mode: SliceSynchronization::Absolute,
+            link_zoom: false,
+            link_wl: false,
+            link_cut: false,
             show_reference_lines: true,
             show_annotations: true,
             loader: Loader::new(move || ctx.request_repaint()),
@@ -487,6 +501,11 @@ impl ViewerApp {
             last_tick: 0.0,
             cursor_info: None,
             show_browser: true,
+            show_database_view: false,
+            selected_db_study: None,
+            show_metadata_inspector: false,
+            metadata_filter: String::new(),
+            metadata_cache: None,
             ortho_mpr_active: false,
             ortho_crosshair_lps: None,
             ortho_saved_tiling: None,
@@ -541,9 +560,11 @@ impl ViewerApp {
             let has_studies = !saved.studies.is_empty();
             app.index = Some(saved);
             if initial.is_empty() && has_studies {
+                app.selected_db_study = Some(0);
                 app.assign_series_to_viewport(0, Some((0, 0)));
                 app.populate_unassigned_viewports();
             } else if initial.is_empty() {
+                app.show_database_view = true;
                 let studies_dir = crate::db::managed_studies_dir();
                 if studies_dir.is_dir()
                     && std::fs::read_dir(&studies_dir)
@@ -655,11 +676,11 @@ impl ViewerApp {
         let leader_idx = self.active_viewport;
         self.viewports[leader_idx].window = w;
         self.wl_drag = None;
-        if self.should_sync_viewports() {
+        if self.ortho_mpr_active || self.link_wl {
             let count = self.tiling.cell_count();
-            for (i, vp) in self.viewports.iter_mut().enumerate().take(count) {
-                if i != leader_idx && vp.selected.is_some() {
-                    vp.window = w;
+            for i in 0..count {
+                if self.are_viewports_linked(leader_idx, i) && self.viewports[i].selected.is_some() {
+                    self.viewports[i].window = w;
                 }
             }
         }
@@ -907,7 +928,7 @@ impl ViewerApp {
                         }
                         let tkey = (key.scan_gen, key.study, key.series);
                         self.thumbnails.entry(tkey).or_insert_with(|| {
-                            let (tw, th, rgba) = frame.render_thumbnail(44);
+                            let (tw, th, rgba) = frame.render_thumbnail(128);
                             let cimg = ColorImage::from_rgba_unmultiplied(
                                 [tw as usize, th as usize],
                                 &rgba,
@@ -1420,7 +1441,7 @@ impl ViewerApp {
                 if name.is_empty() {
                     tr.pacs_connected.to_string()
                 } else {
-                    format!("â— {name}")
+                    format!("● {name}")
                 }
             } else {
                 tr.pacs_login_btn.to_string()
@@ -1591,13 +1612,25 @@ impl eframe::App for ViewerApp {
 
         egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
         egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
-        if self.show_browser {
-            egui::Panel::left("browser")
-                .resizable(true)
-                .default_size(300.0)
-                .show(ui, |ui| self.browser(ui));
+        if self.show_database_view {
+            egui::CentralPanel::default().show(ui, |ui| self.database_view(ui));
+        } else {
+            if self.show_browser {
+                egui::Panel::left("browser")
+                    .resizable(true)
+                    .default_size(290.0)
+                    .min_size(220.0)
+                    .show(ui, |ui| self.browser(ui));
+            }
+            if self.show_metadata_inspector {
+                egui::Panel::right("metadata_inspector")
+                    .resizable(true)
+                    .default_size(430.0)
+                    .min_size(300.0)
+                    .show(ui, |ui| self.metadata_inspector_panel(ui));
+            }
+            egui::CentralPanel::no_frame().show(ui, |ui| self.viewport_grid(ui));
         }
-        egui::CentralPanel::no_frame().show(ui, |ui| self.viewport_grid(ui));
         self.draw_force_mpr_modal(&ctx);
         self.draw_update_modal(&ctx);
         self.draw_pacs_modal(&ctx);
