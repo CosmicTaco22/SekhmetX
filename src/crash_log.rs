@@ -14,22 +14,23 @@ static LOG_LOCK: Mutex<()> = Mutex::new(());
 static HAD_ERROR_OR_PANIC: AtomicBool = AtomicBool::new(false);
 
 /// Returns the persistent SekhmetX data directory.
-/// On Windows, prefers an `AppData` folder next to the portable executable
-/// when writable, falling back to `%LOCALAPPDATA%\SekhmetX`.
+/// Defaults to `%LOCALAPPDATA%\SekhmetX` on Windows (and standard OS app data
+/// directories on macOS/Linux). Uses an `AppData` folder beside the executable
+/// only when a `portable.txt` marker file exists next to it.
 pub fn app_data_dir() -> PathBuf {
     #[cfg(windows)]
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(exe_dir) = exe.parent() {
-            let portable = exe_dir.join("AppData");
-            if fs::create_dir_all(&portable).is_ok() {
-                let probe = portable.join(".write_probe");
-                if fs::write(&probe, b"").is_ok() {
-                    let _ = fs::remove_file(&probe);
-                    return portable;
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(exe_dir) = exe.parent()
+            && exe_dir.join("portable.txt").exists() {
+                let portable = exe_dir.join("AppData");
+                if fs::create_dir_all(&portable).is_ok() {
+                    let probe = portable.join(".write_probe");
+                    if fs::write(&probe, b"").is_ok() {
+                        let _ = fs::remove_file(&probe);
+                        return portable;
+                    }
                 }
             }
-        }
-    }
     #[cfg(windows)]
     if let Some(local) = std::env::var_os("LOCALAPPDATA") {
         return PathBuf::from(local).join("SekhmetX");
@@ -108,11 +109,10 @@ pub fn init() {
         let _ = fs::create_dir_all(parent);
     }
     // Keep log bounded (~1 MB max).
-    if let Ok(meta) = fs::metadata(&path) {
-        if meta.len() > 1_048_576 {
+    if let Ok(meta) = fs::metadata(&path)
+        && meta.len() > 1_048_576 {
             let _ = fs::remove_file(&path);
         }
-    }
 
     log_line(
         "INFO",
@@ -160,8 +160,55 @@ fn url_encode_component(s: &str) -> String {
     out
 }
 
-pub fn github_issue_url(log_text: &str) -> String {
-    let tail: String = log_text
+pub fn scrub_log_for_public(raw: &str) -> String {
+    let mut s = raw.to_string();
+    for var in ["USERPROFILE", "HOME"] {
+        if let Some(val) = std::env::var_os(var) {
+            let home = val.to_string_lossy();
+            if !home.is_empty() {
+                s = s.replace(home.as_ref(), "~");
+                let fwd = home.replace('\\', "/");
+                if fwd != home.as_ref() {
+                    s = s.replace(&fwd, "~");
+                }
+            }
+        }
+    }
+    // Scrub http(s) URLs (host, path, query) so portal URLs or tokens are never leaked.
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s.as_str();
+    while let Some(pos) = rest
+        .find("https://")
+        .into_iter()
+        .chain(rest.find("http://"))
+        .min()
+    {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos..];
+        let end = after
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | ']' | '>' | '"' | '\''))
+            .unwrap_or(after.len());
+        out.push_str("<url>");
+        rest = &after[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+fn tail_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut start = s.len() - max_bytes;
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
+}
+
+pub fn prepared_public_report(log_text: &str) -> String {
+    let scrubbed = scrub_log_for_public(log_text);
+    let tail: String = scrubbed
         .lines()
         .rev()
         .take(50)
@@ -170,12 +217,16 @@ pub fn github_issue_url(log_text: &str) -> String {
         .rev()
         .collect::<Vec<_>>()
         .join("\n");
-    let clipped = if tail.len() > 3000 {
-        &tail[tail.len() - 3000..]
-    } else {
-        &tail
-    };
-    let title = format!("Crash Report: SekhmetX v{} ({})", crate::BUILD_VERSION, std::env::consts::OS);
+    tail_char_boundary(&tail, 3000).to_string()
+}
+
+pub fn github_issue_url(log_text: &str) -> String {
+    let clipped = prepared_public_report(log_text);
+    let title = format!(
+        "Crash Report: SekhmetX v{} ({})",
+        crate::BUILD_VERSION,
+        std::env::consts::OS
+    );
     let body = format!(
         "**Version:** v{}\n**OS:** {} ({})\n\n```text\n{}\n```",
         crate::BUILD_VERSION,
@@ -188,4 +239,27 @@ pub fn github_issue_url(log_text: &str) -> String {
         url_encode_component(&title),
         url_encode_component(&body)
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn public_report_handles_accented_text_over_3000_bytes() {
+        let long = "Diagnóstico Maipú — error de conexión\n".repeat(200);
+        assert!(long.len() > 3000);
+        let report = prepared_public_report(&long);
+        assert!(report.len() <= 3000);
+        assert!(report.contains("Diagnóstico Maipú"));
+    }
+
+    #[test]
+    fn scrub_log_strips_urls_and_home_dir() {
+        let sample = "Spawning WebView for https://portal.clinic.org/login?token=secret123\n";
+        let scrubbed = scrub_log_for_public(sample);
+        assert!(!scrubbed.contains("portal.clinic.org"));
+        assert!(!scrubbed.contains("secret123"));
+        assert!(scrubbed.contains("<url>"));
+    }
 }

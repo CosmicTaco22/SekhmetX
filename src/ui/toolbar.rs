@@ -386,14 +386,12 @@ impl ViewerApp {
                     if ui
                         .toggle_value(&mut self.gpu_bilinear, tr.smooth_interp)
                         .changed()
-                    {
-                        if let Some(ref db) = self.db {
+                        && let Some(ref db) = self.db {
                             let _ = db.set_setting(
                                 "gpu_bilinear",
                                 if self.gpu_bilinear { "1" } else { "0" },
                             );
                         }
-                    }
                     ui.separator();
                     ui.label(tr.sync_label);
                     for mode in [
@@ -604,12 +602,11 @@ impl ViewerApp {
                 );
             });
 
-            if clicked {
-                if let Some((hr, hc)) = hovered_rc {
+            if clicked
+                && let Some((hr, hc)) = hovered_rc {
                     new_tiling = Some(ViewportTiling::new(hr + 1, hc + 1));
                     ui.close();
                 }
-            }
         })
         .response
         .on_hover_text(crate::i18n::tr(self.lang).tiling_hover);
@@ -708,15 +705,13 @@ impl ViewerApp {
                     .small_button("Nat")
                     .on_hover_text(tr.nat_hover)
                     .clicked()
-                {
-                    if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
+                    && let Some(vol) = self.viewport_volume(vp_idx).cloned() {
                         self.set_viewport_mpr_plane(
                             vp_idx,
                             MprPlane3D::from_volume_native(&vol),
                             true,
                         );
                     }
-                }
                 if let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
                     let mut changed = false;
                     egui::ComboBox::from_id_salt("mpr_slab_mode")
@@ -735,8 +730,8 @@ impl ViewerApp {
                                 }
                             }
                         });
-                    if plane.slab_mode != SlabMode::Thin {
-                        if ui
+                    if plane.slab_mode != SlabMode::Thin
+                        && ui
                             .add(
                                 egui::Slider::new(&mut plane.slab_thickness_mm, 1.0..=50.0)
                                     .suffix(" mm")
@@ -746,7 +741,6 @@ impl ViewerApp {
                         {
                             changed = true;
                         }
-                    }
                     if changed {
                         self.set_viewport_mpr_plane(vp_idx, plane, true);
                     }

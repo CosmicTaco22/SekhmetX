@@ -104,7 +104,7 @@ impl Frame {
             return None;
         }
         let origin = self.origin?;
-        let (row_sp, col_sp) = self.spacing.unwrap_or((1.0, 1.0));
+        let (row_sp, col_sp) = self.spacing?;
         Some(ImagePlaneCoordinates::pixel_to_patient_double(
             x,
             y,
@@ -217,18 +217,19 @@ fn read_voi_lut(obj: &DefaultDicomObject, signed: bool) -> Option<VoiLut> {
 /// from disk on every frame.
 const MULTIFRAME_CACHE_LEN: usize = 4;
 
+type DicomCache = VecDeque<(PathBuf, Arc<DefaultDicomObject>)>;
+
 fn open_dicom_cached(path: &Path) -> Result<Arc<DefaultDicomObject>> {
-    static CACHE: OnceLock<Mutex<VecDeque<(PathBuf, Arc<DefaultDicomObject>)>>> = OnceLock::new();
+    static CACHE: OnceLock<Mutex<DicomCache>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| Mutex::new(VecDeque::with_capacity(MULTIFRAME_CACHE_LEN)));
 
-    if let Ok(mut guard) = cache.lock() {
-        if let Some(pos) = guard.iter().position(|(p, _)| p == path) {
+    if let Ok(mut guard) = cache.lock()
+        && let Some(pos) = guard.iter().position(|(p, _)| p == path) {
             let entry = guard.remove(pos).unwrap();
             let obj = entry.1.clone();
             guard.push_back(entry);
             return Ok(obj);
         }
-    }
 
     let obj = Arc::new(
         OpenFileOptions::new()
@@ -237,16 +238,14 @@ fn open_dicom_cached(path: &Path) -> Result<Arc<DefaultDicomObject>> {
     );
 
     let num_frames = get_int(&obj, tags::NUMBER_OF_FRAMES).unwrap_or(1);
-    if num_frames > 1 {
-        if let Ok(mut guard) = cache.lock() {
-            if !guard.iter().any(|(p, _)| p == path) {
+    if num_frames > 1
+        && let Ok(mut guard) = cache.lock()
+            && !guard.iter().any(|(p, _)| p == path) {
                 while guard.len() >= MULTIFRAME_CACHE_LEN {
                     guard.pop_front();
                 }
                 guard.push_back((path.to_path_buf(), obj.clone()));
             }
-        }
-    }
 
     Ok(obj)
 }
@@ -334,8 +333,8 @@ pub fn load_frame(path: &Path, frame: u32) -> Result<Frame> {
         // Horos applies a VOI LUT table only where the rescale is the identity:
         // the table's input is the stored value, and with a rescale in the way
         // the index would be wrong.
-        if slope == 1.0 && intercept == 0.0 {
-            if let Some(lut) = read_voi_lut(&obj, signed) {
+        if slope == 1.0 && intercept == 0.0
+            && let Some(lut) = read_voi_lut(&obj, signed) {
                 let original = values.clone();
                 if lut.apply(&mut values, signed) {
                     voi_lut_applied = true;
@@ -344,7 +343,6 @@ pub fn load_frame(path: &Path, frame: u32) -> Result<Frame> {
                     values = original; // a table that maps nothing is corrupt
                 }
             }
-        }
 
         let full = window::full(&values, false);
         let bits = defaults::stored_range(

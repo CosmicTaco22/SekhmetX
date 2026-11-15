@@ -37,7 +37,8 @@ impl VoiLut {
 
         let entries: Vec<u32> = if let Some(words) = data_words.filter(|w| w.len() >= count) {
             words[..count].iter().map(|&w| w as u32).collect()
-        } else if let Some(bytes) = data_bytes {
+        } else {
+            let bytes = data_bytes?;
             // 8-bit entries are one byte each when written as OB and one
             // 16-bit word each when written as OW: the length settles it.
             if bytes.len() >= count * 2 {
@@ -47,8 +48,6 @@ impl VoiLut {
             } else {
                 return None;
             }
-        } else {
-            return None;
         };
         Some(Self { first_mapped, entries, depth: depth as u32 })
     }

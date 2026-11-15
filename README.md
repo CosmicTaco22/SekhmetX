@@ -31,7 +31,11 @@ A fast, native radiological DICOM viewer for Windows, macOS, and Linux, written 
 - **GPU Window/Level with Bilinear Interpolation, 31 Horos CLUTs & 22 Horos 2D Convolution Filters:**
   - Hardware-accelerated WGSL shader pipeline (`wgpu`) with post-windowing **Bilinear Interpolation** (toggleable in View), CPU fallback (`RDICOM_CPU=1`), **31 Horos CLUTs**, and **22 Horos 2D Convolution Filters**.
 - **In-App Auto-Updater:**
-  - Checks GitHub Releases (`CosmicTaco22/SekhmetX`), displays release notes, verifies `SHA256SUMS` before replacing the binary in-place, and supports a startup-check toggle.
+  - Checks GitHub Releases (`CosmicTaco22/SekhmetX`), displays release notes, verifies `SHA256SUMS` before replacing the binary in-place, and supports a startup-check toggle. *(Note: release binaries are currently **unsigned**; `SHA256SUMS` protects against corrupted downloads, and Windows SmartScreen / macOS Gatekeeper may ask for confirmation on first launch.)*
+- **Virtual PACS Integration:**
+  - Connects to institution-authorized PACS portals (Orthanc, DICOMweb, VueMotion, or trained portals). **Note:** users must have their institution's permission to connect and download studies.
+  - Saved portal passwords and session cookies are stored in the operating system's secure keychain (`keyring`), never as plaintext in SQLite.
+  - **Platform packaging:** Windows and macOS ship as a single self-contained executable (statically linked `WebView2Loader` on Windows; system `WKWebView` on macOS). Linux requires `webkit2gtk-4.1` installed for the `--pacs-login` WebView subprocess.
 - **Export & DICOM De-Identification:**
   - Export individual slices or entire series to PNG (preserving active WL/WW, CLUT, invert, and convolution filter) or export anonymized DICOM series with private tags stripped, patient/institution identifiers scrubbed, and UIDs consistently remapped.
 

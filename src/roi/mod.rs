@@ -171,8 +171,8 @@ impl RoiEvaluation {
                     let perim_px = self.length_cm_or_px.unwrap_or(0.0);
                     lines.push(format!("Area: {px2:.0} px²  Perim: {perim_px:.1} px"));
                 }
-                if let Some(st) = &self.stats {
-                    if st.count > 0 {
+                if let Some(st) = &self.stats
+                    && st.count > 0 {
                         let u_suffix = if unit.is_empty() {
                             String::new()
                         } else {
@@ -187,7 +187,6 @@ impl RoiEvaluation {
                             st.minimum, st.maximum, st.count
                         ));
                     }
-                }
             }
         }
         lines

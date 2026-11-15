@@ -15,6 +15,7 @@ mod loader;
 mod navigation;
 mod pacs_web;
 mod roi;
+mod settings;
 mod ui;
 mod updater;
 mod volume;
@@ -24,7 +25,7 @@ use std::sync::atomic::AtomicUsize;
 
 use eframe::egui;
 
-pub const BUILD_VERSION: &str = "0.2.8";
+pub const BUILD_VERSION: &str = env!("SEKHMETX_INTERNAL_VERSION");
 
 const USAGE: &str = "\
 SekhmetX

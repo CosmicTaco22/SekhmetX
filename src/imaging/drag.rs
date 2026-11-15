@@ -98,6 +98,7 @@ mod tests {
 
     /// The Objective-C drag IsiX's test compares against (WindowLevelTests.swift,
     /// `formerViewDrag` / `formerOrthogonalDrag`), written out again.
+    #[allow(clippy::too_many_arguments)]
     fn former(variant: Variant, wl: f32, ww: f32, dx: f64, dy: f64, slope: f32, pet: bool, mode: i32, pet_min: i32) -> (f32, f32) {
         let (min, max) = (wl - ww / 2.0, wl + ww / 2.0);
         let mut adapter = match variant {

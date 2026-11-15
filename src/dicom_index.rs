@@ -476,15 +476,19 @@ fn extract_zip_streaming(
         if entry.is_dir() {
             continue;
         }
+        if entry.unix_mode().is_some_and(|m| (m & 0o170000) == 0o120000) {
+            continue;
+        }
+        let entry_name = entry.name()?.into_owned();
         let Some(safe_rel) = entry.enclosed_name() else {
-            anyhow::bail!("unsafe zip entry path rejected: {}", entry.name());
+            anyhow::bail!("unsafe zip entry path rejected: {entry_name}");
         };
         let rel_str = safe_rel.to_string_lossy();
         if rel_str.contains("__MACOSX") || rel_str.contains(".git") {
             continue;
         }
         if entry.size() > max_entry_bytes {
-            anyhow::bail!("zip entry `{}` exceeds per-file size limit", entry.name());
+            anyhow::bail!("zip entry `{entry_name}` exceeds per-file size limit");
         }
         if total_written.saturating_add(entry.size()) > max_total_bytes {
             anyhow::bail!("zip archive exceeds total extracted size limit");
@@ -792,11 +796,10 @@ fn series_compatible_for_mpr(a: &Series, b: &Series) -> bool {
     if series_is_mip(&a.description) != series_is_mip(&b.description) {
         return false;
     }
-    if let (Some(ka), Some(kb)) = (&a.convolution_kernel, &b.convolution_kernel) {
-        if !ka.trim().eq_ignore_ascii_case(kb.trim()) {
+    if let (Some(ka), Some(kb)) = (&a.convolution_kernel, &b.convolution_kernel)
+        && !ka.trim().eq_ignore_ascii_case(kb.trim()) {
             return false;
         }
-    }
     if let (Some(wla), Some(wwa), Some(wlb), Some(wwb)) =
         (a.window_center, a.window_width, b.window_center, b.window_width)
     {
@@ -893,11 +896,10 @@ pub fn build_mpr_groups(series: &mut [Series], study_desc: &str) -> Vec<MprGroup
                         coronal_best = Some(idx);
                     }
                 }
-                DominantPlane::Sagittal => {
-                    if sagittal_best.is_none_or(|b| series[idx].slices.len() > series[b].slices.len()) {
+                DominantPlane::Sagittal
+                    if sagittal_best.is_none_or(|b| series[idx].slices.len() > series[b].slices.len()) => {
                         sagittal_best = Some(idx);
                     }
-                }
                 _ => {}
             }
         }

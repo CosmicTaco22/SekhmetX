@@ -31,6 +31,7 @@ pub struct Volume3D {
     /// Intensity-weighted 3D centroid of foreground anatomy (excluding air/background) in LPS mm.
     pub foreground_centroid_lps: [f64; 3],
     /// Half-diagonal radius of the physical bounding box in mm.
+    #[allow(dead_code)]
     pub bounding_radius_mm: f64,
     /// Native 9-element direction cosine matrix of the stack.
     pub native_orientation: [f64; 9],
@@ -174,6 +175,7 @@ impl VolumeError {
 
 impl Volume3D {
     /// Builds a `Volume3D` from a `Series` and its decoded `Frame`s (one per slice).
+    #[allow(dead_code)]
     pub fn from_series(series: &Series, frames: &[Arc<Frame>]) -> Option<Arc<Self>> {
         Self::from_series_checked(series, frames, false).ok()
     }
@@ -182,6 +184,7 @@ impl Volume3D {
     /// When `force` is `true`, even 1-2 slice stacks or RGB/irregular series are
     /// promoted into a 3D volume using fallback slice thickness / orientation,
     /// with `geometry_verified = false`.
+    #[allow(dead_code)]
     pub fn from_series_with_force(
         series: &Series,
         frames: &[Arc<Frame>],
@@ -345,14 +348,14 @@ impl Volume3D {
             match &f.pixels {
                 Pixels::Gray(src) => dst.copy_from_slice(src),
                 Pixels::Rgba(rgba) => {
-                    for (i, px) in rgba.chunks_exact(4).take(slice_len).enumerate() {
+                    for (i, px) in rgba.as_chunks::<4>().0.iter().take(slice_len).enumerate() {
                         dst[i] =
                             0.299 * (px[0] as f32) + 0.587 * (px[1] as f32) + 0.114 * (px[2] as f32);
                     }
                 }
             }
-            let fw_min = (f.full_window.level - 0.5 * f.full_window.width) as f32;
-            let fw_max = (f.full_window.level + 0.5 * f.full_window.width) as f32;
+            let fw_min = f.full_window.level - 0.5 * f.full_window.width;
+            let fw_max = f.full_window.level + 0.5 * f.full_window.width;
             if fw_min < min_val {
                 min_val = fw_min;
             }
@@ -569,7 +572,7 @@ impl Volume3D {
 
     /// Background air value used outside the volume bounds during oblique reslicing.
     pub fn background_value(&self) -> f32 {
-        (self.full_window.level - 0.5 * self.full_window.width) as f32
+        self.full_window.level - 0.5 * self.full_window.width
     }
 
     /// Computes the half-span (in mm) of the volume projected along any unit direction `dir_lps`.
@@ -1014,11 +1017,10 @@ impl RigidTransform3D {
         if let (Some(a), Some(b)) = (
             source.frame_of_reference_uid.as_deref(),
             target.frame_of_reference_uid.as_deref(),
-        ) {
-            if !a.is_empty() && a == b {
+        )
+            && !a.is_empty() && a == b {
                 return Self::identity(1.0);
             }
-        }
         let pivot_a = source.foreground_centroid_lps;
         let pivot_b_init = target.foreground_centroid_lps;
 
@@ -1404,15 +1406,15 @@ mod tests {
         let vol = Volume3D::from_series(&make_series(&frames), &frames).unwrap();
         let sib = Volume3D::from_series(&make_series(&sib_frames), &sib_frames).unwrap();
 
-        for k in 0..4 {
+        for (k, frame) in frames.iter().enumerate().take(4) {
             let mut plane = MprPlane3D::from_volume_native(&vol);
             let z_lps = vol.voxel_to_lps([2.0, 2.0, k as f64]);
             plane.offset_mm = dot3(sub3(z_lps, plane.center_lps), plane.normal);
-            let resliced = vol.reslice_plane(&[sib.clone()], &plane);
+            let resliced = vol.reslice_plane(std::slice::from_ref(&sib), &plane);
             let Pixels::Gray(out) = &resliced.pixels else {
                 panic!("expected gray");
             };
-            let Pixels::Gray(src) = &frames[k].pixels else {
+            let Pixels::Gray(src) = &frame.pixels else {
                 panic!("expected gray");
             };
             assert_eq!(out, src, "slice {k} must be bit-identical");
@@ -1427,6 +1429,216 @@ mod tests {
             panic!("expected gray");
         };
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn three_series_group_switches_to_native_sagittal_and_reslices_when_absent() {
+        let make_frame = |vals: Vec<f32>, orig: [f64; 3], orient: [f64; 9]| {
+            Arc::new(Frame {
+                width: 4,
+                height: 4,
+                pixels: Pixels::Gray(vals),
+                stored_window: None,
+                full_window: Window { level: 50.0, width: 100.0 },
+                bits_window: None,
+                inverts: false,
+                voi_lut_applied: false,
+                slope: 1.0,
+                spacing: Some((1.0, 1.0)),
+                pixel_ratio: 1.0,
+                origin: Some(orig),
+                orientation: orient,
+                is_3d_plane: true,
+                frame_of_reference_uid: None,
+                slice_thickness: Some(1.0),
+                slice_location: None,
+                value_unit: "HU",
+            })
+        };
+        let make_series = |fs: &[Arc<Frame>], dp: crate::dicom_index::DominantPlane| Series {
+            uid: "1.2.3".into(),
+            number: 1,
+            description: String::new(),
+            modality: "CT".into(),
+            rows: 4,
+            columns: 4,
+            normal: None,
+            dominant_plane: dp,
+            frame_of_reference_uid: None,
+            acquisition_time_secs: None,
+            acquisition_number: None,
+            convolution_kernel: None,
+            window_center: None,
+            window_width: None,
+            mpr_group_id: Some(1),
+            slices: fs
+                .iter()
+                .enumerate()
+                .map(|(i, f)| crate::dicom_index::SliceRef {
+                    path: std::path::PathBuf::from(format!("s_{i}.dcm")),
+                    frame: 0,
+                    instance: i as i64 + 1,
+                    position: f.origin,
+                    orientation: f.orientation,
+                    is_3d_plane: true,
+                    spacing: f.spacing,
+                    slice_location: None,
+                    frame_of_reference_uid: None,
+                })
+                .collect(),
+        };
+
+        let ax_orient = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let cor_orient = [1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0];
+        let sag_orient = [0.0, 1.0, 0.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0];
+
+        let ax_frames: Vec<_> = (0..4)
+            .map(|k| make_frame(vec![10.0 + k as f32; 16], [0.0, 0.0, k as f64], ax_orient))
+            .collect();
+        let cor_frames: Vec<_> = (0..4)
+            .map(|k| make_frame(vec![200.0 + k as f32; 16], [0.0, k as f64, 3.0], cor_orient))
+            .collect();
+        let sag_frames: Vec<_> = (0..4)
+            .map(|k| {
+                let vals: Vec<f32> = (0..16).map(|p| 500.0 + (k * 16 + p) as f32).collect();
+                make_frame(vals, [k as f64, 0.0, 3.0], sag_orient)
+            })
+            .collect();
+
+        let ax_vol = Volume3D::from_series(&make_series(&ax_frames, crate::dicom_index::DominantPlane::Axial), &ax_frames).unwrap();
+        let cor_vol = Volume3D::from_series(&make_series(&cor_frames, crate::dicom_index::DominantPlane::Coronal), &cor_frames).unwrap();
+        let sag_vol = Volume3D::from_series(&make_series(&sag_frames, crate::dicom_index::DominantPlane::Sagittal), &sag_frames).unwrap();
+
+        let mut sag_plane = MprPlane3D::from_volume_native(&sag_vol);
+        let target_lps = sag_vol.voxel_to_lps([1.0, 1.0, 2.0]);
+        sag_plane.offset_mm = dot3(sub3(target_lps, sag_plane.center_lps), sag_plane.normal);
+
+        // With sagittal sibling present in the group, selecting Sagittal uses `sag_vol` directly
+        // and produces pixels bit-identical to opening the sagittal series alone.
+        let with_group = sag_vol.reslice_plane(&[ax_vol.clone(), cor_vol.clone()], &sag_plane);
+        let alone = sag_vol.reslice_plane(&[], &sag_plane);
+        let Pixels::Gray(got_native) = &with_group.pixels else { panic!("gray"); };
+        let Pixels::Gray(got_alone) = &alone.pixels else { panic!("gray"); };
+        let Pixels::Gray(expected_sag) = &sag_frames[2].pixels else { panic!("gray"); };
+        assert_eq!(got_native, expected_sag);
+        assert_eq!(got_native, got_alone);
+
+        // Without sagittal sibling, reslicing falls back to the axial volume.
+        let without_sag = ax_vol.reslice_plane(&[cor_vol], &sag_plane);
+        let Pixels::Gray(got_resliced) = &without_sag.pixels else { panic!("gray"); };
+        assert_ne!(got_resliced, expected_sag);
+    }
+
+    #[test]
+    fn registration_recovers_10_deg_rotation_and_15_mm_shift() {
+        let dim = 24usize;
+        let sp = 2.0f64;
+        let phantom_at = |lps: [f64; 3]| -> f32 {
+            let dx = (lps[0] - 24.0) / 14.0;
+            let dy = (lps[1] - 24.0) / 9.0;
+            let dz = (lps[2] - 24.0) / 6.0;
+            let ell = dx * dx + dy * dy + dz * dz;
+            let in_bar = (lps[0] - 32.0).abs() < 3.0 && (lps[1] - 27.0).abs() < 3.0 && (lps[2] - 24.0).abs() < 4.0;
+            if in_bar {
+                800.0
+            } else if ell <= 1.0 {
+                400.0 * (1.0 - ell as f32) + 100.0
+            } else {
+                0.0
+            }
+        };
+
+        let true_rot = euler_deg_to_matrix(0.0, 0.0, 10.0);
+        let true_rot_inv = [
+            [true_rot[0][0], true_rot[1][0], true_rot[2][0]],
+            [true_rot[0][1], true_rot[1][1], true_rot[2][1]],
+            [true_rot[0][2], true_rot[1][2], true_rot[2][2]],
+        ];
+        let true_shift = [12.0, -9.0, 0.0];
+        let build_vol = |is_target: bool| {
+            let mut frames = Vec::new();
+            let mut slices = Vec::new();
+            for z in 0..dim {
+                let mut pix = vec![0.0f32; dim * dim];
+                for y in 0..dim {
+                    for x in 0..dim {
+                        let lps = [x as f64 * sp, y as f64 * sp, z as f64 * sp];
+                        let q = if is_target {
+                            let rel = sub3(lps, add3([24.0, 24.0, 24.0], true_shift));
+                            add3([24.0, 24.0, 24.0], mat3_mul_vec(true_rot_inv, rel))
+                        } else {
+                            lps
+                        };
+                        pix[y * dim + x] = phantom_at(q);
+                    }
+                }
+                let orig = [0.0, 0.0, z as f64 * sp];
+                let orient = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+                frames.push(Arc::new(Frame {
+                    width: dim as u32,
+                    height: dim as u32,
+                    pixels: Pixels::Gray(pix),
+                    stored_window: None,
+                    full_window: Window { level: 300.0, width: 800.0 },
+                    bits_window: None,
+                    inverts: false,
+                    voi_lut_applied: false,
+                    slope: 1.0,
+                    spacing: Some((sp, sp)),
+                    pixel_ratio: 1.0,
+                    origin: Some(orig),
+                    orientation: orient,
+                    is_3d_plane: true,
+                    frame_of_reference_uid: None,
+                    slice_thickness: Some(sp),
+                    slice_location: None,
+                    value_unit: "HU",
+                }));
+                slices.push(crate::dicom_index::SliceRef {
+                    path: std::path::PathBuf::from(format!("r_{z}.dcm")),
+                    frame: 0,
+                    instance: z as i64 + 1,
+                    position: Some(orig),
+                    orientation: orient,
+                    is_3d_plane: true,
+                    spacing: Some((sp, sp)),
+                    slice_location: None,
+                    frame_of_reference_uid: None,
+                });
+            }
+            let series = Series {
+                uid: if is_target { "2" } else { "1" }.into(),
+                number: 1,
+                description: String::new(),
+                modality: "CT".into(),
+                rows: dim as u32,
+                columns: dim as u32,
+                normal: None,
+                dominant_plane: crate::dicom_index::DominantPlane::Axial,
+                frame_of_reference_uid: None,
+                acquisition_time_secs: None,
+                acquisition_number: None,
+                convolution_kernel: None,
+                window_center: None,
+                window_width: None,
+                mpr_group_id: None,
+                slices,
+            };
+            Volume3D::from_series(&series, &frames).unwrap()
+        };
+
+        let src_vol = build_vol(false);
+        let dst_vol = build_vol(true);
+        let reg = RigidTransform3D::register(&src_vol, &dst_vol);
+        assert!(reg.correlation > 0.90, "correlation = {}", reg.correlation);
+
+        let expected_pt = |p: [f64; 3]| add3(add3([24.0, 24.0, 24.0], true_shift), mat3_mul_vec(true_rot, sub3(p, [24.0, 24.0, 24.0])));
+        for test_p in [[24.0, 24.0, 24.0], [34.0, 24.0, 24.0], [24.0, 32.0, 26.0]] {
+            let got = add3(reg.pivot_target_lps, mat3_mul_vec(reg.rotation, sub3(test_p, reg.pivot_source_lps)));
+            let exp = expected_pt(test_p);
+            let err = ((got[0] - exp[0]).powi(2) + (got[1] - exp[1]).powi(2) + (got[2] - exp[2]).powi(2)).sqrt();
+            assert!(err < 1.0, "registration error {err:.3} mm for {test_p:?}");
+        }
     }
 
     #[test]

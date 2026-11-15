@@ -78,7 +78,7 @@ impl BezierSegment {
         let line_len = line.length();
 
         let c1_proj = line.dot_product(vec_to_c1) / line_len;
-        let end_flat1 = c1_proj * -1.0;
+        let end_flat1 = -c1_proj;
         let flat1 = (vec_to_c1 - line * (c1_proj / line_len)).length();
 
         let c2_proj = line.dot_product(vec_to_c2) / line_len;
@@ -949,10 +949,10 @@ impl BezierCore {
         let start = first.endpoint;
         let mut lengths = vec![0.0];
         let limit = count.min(self.segments.len()).max(1);
-        for index in 1..limit {
+        for segment in self.segments.iter().skip(1).take(limit.saturating_sub(1)) {
             let mut seg = Self::new();
             seg.add(BezierSegmentKind::MoveTo, Vector3::ZERO, Vector3::ZERO, start);
-            seg.add_segment(self.segments[index]);
+            seg.add_segment(*segment);
             lengths.push(seg.flattened_copy(flatness).length());
         }
         lengths
@@ -1182,6 +1182,7 @@ impl BezierCore {
         normal
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn samples(
         &self,
         spacing: f64,

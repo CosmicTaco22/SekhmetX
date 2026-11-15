@@ -276,8 +276,8 @@ impl ColourTableBook {
 
         // 2. B/W Inverse
         let mut inv = [0u8; 256];
-        for i in 0..256 {
-            inv[i] = (255 - i) as u8;
+        for (i, slot) in inv.iter_mut().enumerate() {
+            *slot = (255 - i) as u8;
         }
         out.push(("B/W Inverse", ColorLookupTable::new(inv, inv, inv)));
 
@@ -406,24 +406,24 @@ mod tests {
 
     fn grey() -> [u8; 256] {
         let mut a = [0u8; 256];
-        for i in 0..256 {
-            a[i] = i as u8;
+        for (i, slot) in a.iter_mut().enumerate() {
+            *slot = i as u8;
         }
         a
     }
 
     fn hot() -> [u8; 256] {
         let mut a = [0u8; 256];
-        for i in 0..256 {
-            a[i] = (i * 3).min(255) as u8;
+        for (i, slot) in a.iter_mut().enumerate() {
+            *slot = (i * 3).min(255) as u8;
         }
         a
     }
 
     fn inverse() -> [u8; 256] {
         let mut a = [0u8; 256];
-        for i in 0..256 {
-            a[i] = (255 - i) as u8;
+        for (i, slot) in a.iter_mut().enumerate() {
+            *slot = (255 - i) as u8;
         }
         a
     }

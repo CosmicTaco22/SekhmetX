@@ -3,6 +3,8 @@
 //! synchronized scrolling, 3D cross-reference/scout lines, CLUTs, and
 //! orientation edge markers in the center.
 
+mod modals;
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -247,7 +249,17 @@ impl ViewportCell {
     }
 }
 
-pub struct ViewerApp {
+pub type SeriesPair = ((usize, usize), (usize, usize));
+type LeaderSyncInfo = (
+    (usize, usize),
+    [f32; 9],
+    SynchronizableSlice,
+    SynchronizableSlice,
+    Option<[f32; 3]>,
+    Option<String>,
+);
+
+pub(crate) struct ViewerApp {
     index: Option<Index>,
     scan: Option<Scan>,
     scan_gen: u64,
@@ -266,10 +278,10 @@ pub struct ViewerApp {
     keep_radius: usize,
     volumes: HashMap<(usize, usize), Arc<Volume3D>>,
     volume_errors: HashMap<(usize, usize), crate::volume::VolumeError>,
-    registrations: HashMap<((usize, usize), (usize, usize)), RigidTransform3D>,
-    registrations_in_flight: std::collections::HashSet<((usize, usize), (usize, usize))>,
-    reg_tx: std::sync::mpsc::Sender<(((usize, usize), (usize, usize)), RigidTransform3D)>,
-    reg_rx: Receiver<(((usize, usize), (usize, usize)), RigidTransform3D)>,
+    registrations: HashMap<SeriesPair, RigidTransform3D>,
+    registrations_in_flight: std::collections::HashSet<SeriesPair>,
+    reg_tx: std::sync::mpsc::Sender<(SeriesPair, RigidTransform3D)>,
+    reg_rx: Receiver<(SeriesPair, RigidTransform3D)>,
     thumbnails: HashMap<(u64, usize, usize), TextureHandle>,
     thumbnails_queued: std::collections::HashSet<(u64, usize, usize)>,
     browser_search: String,
@@ -317,6 +329,7 @@ pub struct ViewerApp {
     pub(crate) blend_siblings: bool,
     pub(crate) gpu_bilinear: bool,
     check_updates_on_startup: bool,
+    crash_report_opt_in: bool,
     pub(crate) copy_policy: crate::db::CopyToLibraryPolicy,
     pending_copy_prompt: bool,
     pub(crate) pacs_web: crate::pacs_web::PacsWebController,
@@ -327,6 +340,8 @@ pub struct ViewerApp {
     show_add_portal_note: bool,
     pub(crate) previous_crash_pending: bool,
     show_crash_modal: bool,
+    show_first_run_notice: bool,
+    confirm_delete_local_data: bool,
     patient_links: HashMap<String, String>,
     linking_source: Option<(String, Vec<String>)>,
 }
@@ -352,68 +367,74 @@ impl ViewerApp {
         let viewports = (0..MAX_VIEWPORTS).map(ViewportCell::new).collect();
         let db = crate::db::Database::open_default().ok();
         let (reg_tx, reg_rx) = std::sync::mpsc::channel();
-        let saved_lang = db
+        let settings = db.as_ref().map(crate::settings::AppSettings::new);
+        let saved_lang = settings
             .as_ref()
-            .and_then(|d| d.get_setting("lang"))
-            .map(|s| crate::i18n::Lang::from_code(&s))
+            .map(|s| s.language())
             .unwrap_or(crate::i18n::Lang::En);
         let saved_bilinear = db
             .as_ref()
             .and_then(|d| d.get_setting("gpu_bilinear"))
             .map(|s| s != "0")
             .unwrap_or(true);
-        let saved_startup_updates = db
+        let saved_startup_updates = settings
             .as_ref()
-            .and_then(|d| d.get_setting("check_updates_on_startup"))
-            .map(|s| s != "0")
+            .map(|s| s.check_updates_on_startup())
             .unwrap_or(true);
-        let saved_copy_policy = db
+        let saved_crash_opt_in = settings
             .as_ref()
-            .and_then(|d| d.get_setting("copy_to_library_policy"))
-            .map(|s| crate::db::CopyToLibraryPolicy::from_str(&s))
+            .map(|s| s.crash_report_opt_in())
+            .unwrap_or(true);
+        let saved_copy_policy = settings
+            .as_ref()
+            .map(|s| s.copy_to_library_policy())
             .unwrap_or(crate::db::CopyToLibraryPolicy::Ask);
-        let saved_pacs_inst = db
+        let saved_pacs_inst = settings
             .as_ref()
-            .and_then(|d| d.get_setting("pacs_institution_name"))
+            .map(|s| s.pacs_institution_name())
             .unwrap_or_default();
-        let saved_pacs_url = db
+        let saved_pacs_url = settings
             .as_ref()
-            .and_then(|d| d.get_setting("pacs_login_url"))
+            .map(|s| s.pacs_login_url())
             .unwrap_or_default();
-        let saved_custom_studies = db
+        let saved_custom_studies = settings
             .as_ref()
-            .and_then(|d| d.get_setting("custom_studies_dir"))
-            .filter(|s| !s.trim().is_empty())
-            .map(PathBuf::from);
+            .and_then(|s| s.custom_studies_dir());
         crate::db::set_custom_studies_dir(saved_custom_studies);
-        let saved_storage_zip = db
+        let saved_storage_zip = settings
             .as_ref()
-            .and_then(|d| d.get_setting("study_storage_format"))
-            .as_deref()
-            == Some("zip");
-        let saved_pacs_dir = db
+            .map(|s| s.study_storage_zip())
+            .unwrap_or(false);
+        let saved_pacs_dir = settings
             .as_ref()
-            .and_then(|d| d.get_setting("pacs_watch_dir"))
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from);
+            .and_then(|s| s.pacs_watch_dir());
         let mut pacs_web = crate::pacs_web::PacsWebController::new(
             saved_pacs_inst,
             saved_pacs_url,
             saved_pacs_dir,
         );
         if let Some(ref d) = db {
-            pacs_web.remember_credentials = d.get_setting("pacs_remember_creds").as_deref() == Some("1");
-            if pacs_web.remember_credentials {
-                pacs_web.saved_username = d.get_setting("pacs_cred_user").unwrap_or_default();
-                if let Some(enc) = d.get_setting("pacs_cred_pass") {
-                    pacs_web.saved_password = crate::pacs_web::unprotect_secret(&enc).unwrap_or_default();
+            let s = crate::settings::AppSettings::new(d);
+            pacs_web.remember_credentials = s.pacs_remember_creds();
+            if let Ok(origin) = crate::pacs_web::parse_https_origin(&pacs_web.login_url) {
+                crate::pacs_web::migrate_legacy_secret_if_any(d, &origin);
+                if pacs_web.remember_credentials {
+                    pacs_web.saved_username = s.pacs_cred_user();
+                    if let Ok(pw) = crate::pacs_web::load_pacs_password(&origin) {
+                        pacs_web.saved_password = pw;
+                    }
                 }
+            } else if pacs_web.remember_credentials {
+                pacs_web.saved_username = s.pacs_cred_user();
             }
         }
-        let saved_patient_links: HashMap<String, String> = db
+        let first_run_ack = settings
             .as_ref()
-            .and_then(|d| d.get_setting("patient_links"))
-            .and_then(|json| serde_json::from_str(&json).ok())
+            .map(|s| s.first_run_notice_ack())
+            .unwrap_or(false);
+        let saved_patient_links: HashMap<String, String> = settings
+            .as_ref()
+            .map(|s| s.patient_links())
             .unwrap_or_default();
         let mut app = Self {
             index: None,
@@ -478,6 +499,7 @@ impl ViewerApp {
             blend_siblings: false,
             gpu_bilinear: saved_bilinear,
             check_updates_on_startup: saved_startup_updates,
+            crash_report_opt_in: saved_crash_opt_in,
             copy_policy: saved_copy_policy,
             pending_copy_prompt: false,
             pacs_web,
@@ -488,11 +510,13 @@ impl ViewerApp {
             show_add_portal_note: false,
             previous_crash_pending: false,
             show_crash_modal: false,
+            show_first_run_notice: !first_run_ack,
+            confirm_delete_local_data: false,
             patient_links: saved_patient_links,
             linking_source: None,
         };
-        if let Some(db) = &app.db {
-            if let Ok(saved_rois) = db.load_all_rois() {
+        if let Some(db) = &app.db
+            && let Ok(saved_rois) = db.load_all_rois() {
                 for (k, list) in saved_rois {
                     let converted: Vec<Measure> = list.into_iter().map(Measure::from_persisted).collect();
                     if !converted.is_empty() {
@@ -500,7 +524,6 @@ impl ViewerApp {
                     }
                 }
             }
-        }
         app.pacs_web.lang = app.lang;
         if app.db.as_ref().and_then(|d| d.get_setting("pacs_auto_connect")).as_deref() == Some("1") {
             app.pacs_web.try_auto_reconnect();
@@ -510,15 +533,13 @@ impl ViewerApp {
         }
         if !initial.is_empty() {
             app.start_scan(initial);
-        } else if let Some(db) = &app.db {
-            if let Ok(saved) = db.load_index() {
-                if !saved.studies.is_empty() {
+        } else if let Some(db) = &app.db
+            && let Ok(saved) = db.load_index()
+                && !saved.studies.is_empty() {
                     app.index = Some(saved);
                     app.assign_series_to_viewport(0, Some((0, 0)));
                     app.populate_unassigned_viewports();
                 }
-            }
-        }
         app
     }
 
@@ -564,9 +585,9 @@ impl ViewerApp {
     }
 
     pub(crate) fn viewport_slice_count(&self, vp_idx: usize) -> usize {
-        if let Some(vp) = self.viewports.get(vp_idx) {
-            if vp.mpr_enabled {
-                if let (Some(vol), Some(plane)) = (self.viewport_volume(vp_idx), &vp.mpr_plane) {
+        if let Some(vp) = self.viewports.get(vp_idx)
+            && vp.mpr_enabled
+                && let (Some(vol), Some(plane)) = (self.viewport_volume(vp_idx), &vp.mpr_plane) {
                     if dot3(plane.normal, vol.slice_dir).abs() > 0.99 && vol.depth > 0 {
                         return vol.depth;
                     }
@@ -577,8 +598,6 @@ impl ViewerApp {
                         .clamp(0.5, 2.0);
                     return ((2.0 * half / step).round() as usize + 1).clamp(15, 2048);
                 }
-            }
-        }
         self.viewport_series(vp_idx).map_or(0, |s| s.slices.len())
     }
 
@@ -586,13 +605,12 @@ impl ViewerApp {
         if let (Some(vol), Some(plane)) = (
             self.viewport_volume(vp_idx).cloned(),
             self.viewports[vp_idx].mpr_plane.clone(),
-        ) {
-            if vol.depth > 0 {
+        )
+            && vol.depth > 0 {
                 let vox = vol.lps_to_voxel(plane.slice_center_lps());
                 let mapped = (vox[2].round() as isize).clamp(0, vol.depth as isize - 1) as usize;
                 self.viewports[vp_idx].slice = mapped;
             }
-        }
         self.viewports[vp_idx].mpr_enabled = false;
         self.viewports[vp_idx].mpr_plane = None;
         self.viewports[vp_idx].mpr_cached = None;
@@ -608,9 +626,9 @@ impl ViewerApp {
             return;
         }
         let count = self.tiling.cell_count();
-        for i in 0..count {
-            if i != leader_idx && self.viewports[i].selected.is_some() {
-                self.viewports[i].zoom = (self.viewports[i].zoom * factor).clamp(0.05, 50.0);
+        for (i, vp) in self.viewports.iter_mut().enumerate().take(count) {
+            if i != leader_idx && vp.selected.is_some() {
+                vp.zoom = (vp.zoom * factor).clamp(0.05, 50.0);
             }
         }
     }
@@ -620,9 +638,9 @@ impl ViewerApp {
             return;
         }
         let count = self.tiling.cell_count();
-        for i in 0..count {
-            if i != leader_idx && self.viewports[i].selected.is_some() {
-                self.viewports[i].pan += delta;
+        for (i, vp) in self.viewports.iter_mut().enumerate().take(count) {
+            if i != leader_idx && vp.selected.is_some() {
+                vp.pan += delta;
             }
         }
     }
@@ -670,11 +688,10 @@ impl ViewerApp {
         };
         let mut out = Vec::new();
         for &other_se in &group.series_indices {
-            if other_se != se_idx {
-                if let Some(v) = self.volumes.get(&(st_idx, other_se)) {
+            if other_se != se_idx
+                && let Some(v) = self.volumes.get(&(st_idx, other_se)) {
                     out.push(v.clone());
                 }
-            }
         }
         out
     }
@@ -691,11 +708,10 @@ impl ViewerApp {
 
     pub(crate) fn viewport_frame(&self, vp_idx: usize) -> Option<&Arc<Frame>> {
         let vp = self.viewports.get(vp_idx)?;
-        if vp.mpr_enabled {
-            if let Some((_, ref f, _)) = vp.mpr_cached {
+        if vp.mpr_enabled
+            && let Some((_, ref f, _)) = vp.mpr_cached {
                 return Some(f);
             }
-        }
         let slice = vp.slice;
         let key = self.viewport_slice_key(vp_idx, slice)?;
         self.cache.get(&key)
@@ -718,11 +734,10 @@ impl ViewerApp {
             self.viewports[vp_idx].mpr_plane = Some(p);
         }
         let plane = self.viewports[vp_idx].mpr_plane.clone()?;
-        if let Some((ref cached_p, ref cached_f, cached_k)) = self.viewports[vp_idx].mpr_cached {
-            if *cached_p == plane {
+        if let Some((ref cached_p, ref cached_f, cached_k)) = self.viewports[vp_idx].mpr_cached
+            && *cached_p == plane {
                 return Some((cached_f.clone(), cached_k));
             }
-        }
         let siblings = if self.blend_siblings {
             self.viewport_sibling_volumes(vp_idx)
         } else {
@@ -743,11 +758,10 @@ impl ViewerApp {
 
     pub(crate) fn effective_mpr_plane(&self, vp_idx: usize) -> Option<MprPlane3D> {
         let vp = self.viewports.get(vp_idx)?;
-        if vp.mpr_enabled {
-            if let Some(ref p) = vp.mpr_plane {
+        if vp.mpr_enabled
+            && let Some(ref p) = vp.mpr_plane {
                 return Some(p.clone());
             }
-        }
         let vol = self.viewport_volume(vp_idx)?;
         let mut p = MprPlane3D::from_volume_native(vol);
         let cur_s = vp.slice.min(vol.depth.saturating_sub(1));
@@ -831,13 +845,12 @@ impl ViewerApp {
                 };
                 if leader_mpr || other_mpr {
                     updates.push((other_idx, target_plane));
-                } else if let Some(vol) = self.volumes.get(&other_sel) {
-                    if vol.depth > 0 {
+                } else if let Some(vol) = self.volumes.get(&other_sel)
+                    && vol.depth > 0 {
                         let vox = vol.lps_to_voxel(target_plane.slice_center_lps());
                         let mapped = (vox[2].round() as isize).clamp(0, vol.depth as isize - 1) as usize;
                         slice_2d_updates.push((other_idx, mapped));
                     }
-                }
             }
         }
 
@@ -938,8 +951,8 @@ impl ViewerApp {
 
         if let Some((study, series)) = sel {
             // Queue the middle slice urgently so the series default window is ready immediately.
-            if let Some(se) = self.series_at((study, series)) {
-                if let Some(idx) = defaults::reference_index(se.slices.len()) {
+            if let Some(se) = self.series_at((study, series))
+                && let Some(idx) = defaults::reference_index(se.slices.len()) {
                     let s = &se.slices[idx];
                     self.loader.request(Job {
                         key: SliceKey {
@@ -954,7 +967,6 @@ impl ViewerApp {
                         distance: 0,
                     });
                 }
-            }
         }
     }
 
@@ -1012,8 +1024,8 @@ impl ViewerApp {
             .effective_mpr_plane(vp_idx)
             .map(|p| add3(p.center_lps, scale3(p.normal, p.offset_mm)));
 
-        if let Some(sib_sel) = self.mpr_group_series_for_plane(cur_sel, target_plane) {
-            if sib_sel != cur_sel {
+        if let Some(sib_sel) = self.mpr_group_series_for_plane(cur_sel, target_plane)
+            && sib_sel != cur_sel {
                 let win = self.viewports[vp_idx].window;
                 let clut = self.viewports[vp_idx].clut_name.clone();
                 let inv = self.viewports[vp_idx].invert;
@@ -1041,7 +1053,6 @@ impl ViewerApp {
                 }
                 return;
             }
-        }
 
         if let Some(vol) = self.viewport_volume(vp_idx).cloned() {
             let mut plane = match target_plane {
@@ -1168,8 +1179,8 @@ impl ViewerApp {
 
         let cell_count = self.tiling.cell_count();
         let mut to_assign = Vec::new();
-        for vp_idx in 0..cell_count {
-            if self.viewports[vp_idx].selected.is_none() {
+        for (vp_idx, vp) in self.viewports.iter().enumerate().take(cell_count) {
+            if vp.selected.is_none() {
                 let candidate = start_series + vp_idx;
                 if candidate < series_len {
                     to_assign.push((vp_idx, (study_idx, candidate)));
@@ -1192,8 +1203,8 @@ impl ViewerApp {
             return;
         }
         self.viewports[vp_idx].slice = new_slice;
-        if self.viewports[vp_idx].mpr_enabled {
-            if let (Some(vol), Some(mut plane)) = (
+        if self.viewports[vp_idx].mpr_enabled
+            && let (Some(vol), Some(mut plane)) = (
                 self.viewport_volume(vp_idx).cloned(),
                 self.viewports[vp_idx].mpr_plane.clone(),
             ) {
@@ -1207,13 +1218,11 @@ impl ViewerApp {
                 plane.offset_mm = (t * 2.0 - 1.0) * half;
                 let normal = plane.normal;
                 self.viewports[vp_idx].mpr_plane = Some(plane);
-                if self.ortho_mpr_active && vp_idx < 3 {
-                    if let Some(cur_pt) = self.ortho_crosshair_lps {
+                if self.ortho_mpr_active && vp_idx < 3
+                    && let Some(cur_pt) = self.ortho_crosshair_lps {
                         self.ortho_crosshair_lps = Some(add3(cur_pt, scale3(normal, delta_off)));
                     }
-                }
             }
-        }
         if vp_idx == self.active_viewport {
             self.drawing.clear();
             self.angle_pending = None;
@@ -1276,14 +1285,7 @@ impl ViewerApp {
 
         // Gather leader geometry from the index so synchronization works even before
         // adjacent frames finish decoding.
-        let leader_info: Option<(
-            (usize, usize),
-            [f32; 9],
-            SynchronizableSlice,
-            SynchronizableSlice,
-            Option<[f32; 3]>,
-            Option<String>,
-        )> = self.viewport_series(leader_idx).and_then(|se| {
+        let leader_info: Option<LeaderSyncInfo> = self.viewport_series(leader_idx).and_then(|se| {
             let sel = self.viewports[leader_idx].selected?;
             let prev_ref = se.slices.get(leader_prev_slice)?;
             let new_ref = se.slices.get(leader_new_slice)?;
@@ -1478,9 +1480,9 @@ impl ViewerApp {
         self.wl_drag = None;
         if self.should_sync_viewports() {
             let count = self.tiling.cell_count();
-            for i in 0..count {
-                if i != leader_idx && self.viewports[i].selected.is_some() {
-                    self.viewports[i].window = w;
+            for (i, vp) in self.viewports.iter_mut().enumerate().take(count) {
+                if i != leader_idx && vp.selected.is_some() {
+                    vp.window = w;
                 }
             }
         }
@@ -1604,8 +1606,8 @@ impl ViewerApp {
     // ------------------------------------------------------- background work
 
     fn poll_background(&mut self, ctx: &egui::Context) {
-        if let Some(rx) = &self.update_rx {
-            if let Ok(res) = rx.try_recv() {
+        if let Some(rx) = &self.update_rx
+            && let Ok(res) = rx.try_recv() {
                 self.update_rx = None;
                 self.update_status = match res {
                     Ok(Some(info)) => crate::updater::UpdateStatus::Available(info),
@@ -1615,16 +1617,14 @@ impl ViewerApp {
                     Err(e) => crate::updater::UpdateStatus::Error(format!("{e:#}")),
                 };
             }
-        }
-        if let Some(rx) = &self.install_rx {
-            if let Ok(res) = rx.try_recv() {
+        if let Some(rx) = &self.install_rx
+            && let Ok(res) = rx.try_recv() {
                 self.install_rx = None;
                 self.update_status = match res {
                     Ok(tag) => crate::updater::UpdateStatus::Installed(tag),
                     Err(e) => crate::updater::UpdateStatus::Error(format!("{e:#}")),
                 };
             }
-        }
 
         if let Some(scan) = &self.scan {
             match scan.rx.try_recv() {
@@ -1729,19 +1729,19 @@ impl ViewerApp {
                             }
                         }
                         let tkey = (key.scan_gen, key.study, key.series);
-                        if !self.thumbnails.contains_key(&tkey) {
+                        self.thumbnails.entry(tkey).or_insert_with(|| {
                             let (tw, th, rgba) = frame.render_thumbnail(44);
                             let cimg = ColorImage::from_rgba_unmultiplied(
                                 [tw as usize, th as usize],
                                 &rgba,
                             );
-                            let tex = ctx.load_texture(
+                            
+                            ctx.load_texture(
                                 format!("thumb-{}-{}-{}", key.scan_gen, key.study, key.series),
                                 cimg,
                                 TextureOptions::LINEAR,
-                            );
-                            self.thumbnails.insert(tkey, tex);
-                        }
+                            )
+                        });
                     }
                     if self.cache.is_empty() {
                         let per = frame.bytes().max(1);
@@ -1763,9 +1763,9 @@ impl ViewerApp {
                 let raw_len = self.series_at((st, se)).map_or(1, |s| s.slices.len());
                 let cur_s = self.viewports[vp_idx].slice.min(raw_len.saturating_sub(1));
                 focuses.push((st, se, cur_s));
-                if let Some(study) = self.study_at(st) {
-                    if let Some(gid) = study.series.get(se).and_then(|s| s.mpr_group_id) {
-                        if let Some(group) = study.mpr_groups.get(gid) {
+                if let Some(study) = self.study_at(st)
+                    && let Some(gid) = study.series.get(se).and_then(|s| s.mpr_group_id)
+                        && let Some(group) = study.mpr_groups.get(gid) {
                             for &sib_se in &group.series_indices {
                                 if sib_se != se && !focuses.iter().any(|&(a, b, _)| a == st && b == sib_se) {
                                     let sib_mid = study.series.get(sib_se).map_or(0, |s| s.slices.len() / 2);
@@ -1773,8 +1773,6 @@ impl ViewerApp {
                                 }
                             }
                         }
-                    }
-                }
             }
         }
 
@@ -1963,8 +1961,8 @@ impl ViewerApp {
                     if let (Some(other_sel), Some(vol_b)) = (
                         self.viewports[other_idx].selected,
                         self.viewport_volume(other_idx).cloned(),
-                    ) {
-                        if other_sel != leader_sel
+                    )
+                        && other_sel != leader_sel
                             && !self.registrations.contains_key(&(leader_sel, other_sel))
                             && !self.registrations_in_flight.contains(&(leader_sel, other_sel))
                         {
@@ -1991,7 +1989,6 @@ impl ViewerApp {
                                 });
                             }
                         }
-                    }
                 }
                 if auto_sync_needed && self.sync_mode == SliceSynchronization::Absolute {
                     self.synchronize_mpr_followers(leader_idx);
@@ -2003,14 +2000,12 @@ impl ViewerApp {
         let now_secs = ctx.input(|i| i.time);
         self.pacs_web.lang = self.lang;
         let new_pacs_zips = self.pacs_web.poll(now_secs);
-        if let Some(profile) = self.pacs_web.newly_trained_profile.take() {
-            if let Some(ref db) = self.db {
-                if let Ok(json) = serde_json::to_string(&profile) {
+        if let Some(profile) = self.pacs_web.newly_trained_profile.take()
+            && let Some(ref db) = self.db
+                && let Ok(json) = serde_json::to_string(&profile) {
                     let key = format!("pacs_trained_{}", profile.origin);
                     let _ = db.set_setting(&key, &json);
                 }
-            }
-        }
         if self.pacs_web.just_hooked {
             self.pacs_web.just_hooked = false;
             self.show_pacs_modal = false;
@@ -2042,12 +2037,11 @@ impl ViewerApp {
             let now = ctx.input(|i| i.time);
             if now - self.last_tick >= 1.0 / self.fps as f64 {
                 let next = (self.active_cell().slice + 1) % active_count;
-                if let Some(key) = self.viewport_slice_key(self.active_viewport, next) {
-                    if self.cache.contains_key(&key) || self.failed.contains_key(&key) {
+                if let Some(key) = self.viewport_slice_key(self.active_viewport, next)
+                    && (self.cache.contains_key(&key) || self.failed.contains_key(&key)) {
                         self.set_viewport_slice(self.active_viewport, next as isize, true);
                         self.last_tick = now;
                     }
-                }
             }
             ctx.request_repaint();
         }
@@ -2277,8 +2271,43 @@ impl ViewerApp {
             {
                 self.show_pacs_finder = !self.show_pacs_finder;
             }
+            if ui
+                .add_enabled(
+                    self.pacs_web.watch_dir.is_some() && self.scan.is_none(),
+                    egui::Button::new(egui::RichText::new(tr.pacs_refresh_watch_btn).small()),
+                )
+                .on_hover_text(tr.pacs_refresh_watch_hover)
+                .clicked()
+            {
+                let zips = self.pacs_web.scan_watch_folder_now();
+                if !zips.is_empty() {
+                    self.start_scan(zips);
+                } else if let Some(dir) = self.pacs_web.watch_dir.clone() {
+                    let has_entries = std::fs::read_dir(&dir)
+                        .ok()
+                        .into_iter()
+                        .flatten()
+                        .flatten()
+                        .any(|e| e.file_name() != ".sekhmetx_zips.json");
+                    if has_entries {
+                        self.start_scan(vec![dir]);
+                    } else {
+                        self.message = Some(tr.pacs_msg_watch_empty.into());
+                    }
+                }
+            }
             ui.separator();
 
+        if let Some(ref dl) = self.pacs_web.downloading {
+                ui.add(
+                    egui::ProgressBar::new(0.0)
+                        .desired_width(220.0)
+                        .animate(true)
+                        .text(format!("{} {dl}…", tr.pacs_msg_starting_dl)),
+                );
+                ui.separator();
+                ui.ctx().request_repaint();
+            }
         if let Some(scan) = &self.scan {
                 let done = scan.done.load(Ordering::Relaxed);
                 let total = scan.total.load(Ordering::Relaxed);
@@ -2598,11 +2627,9 @@ impl ViewerApp {
                                 let tkey = (scan_gen, si, ri);
                                 if !self.thumbnails.contains_key(&tkey)
                                     && !self.thumbnails_queued.contains(&tkey)
-                                {
-                                    if let Some(ref_idx) =
+                                    && let Some(ref_idx) =
                                         defaults::reference_index(series.slices.len())
-                                    {
-                                        if let Some(sref) = series.slices.get(ref_idx) {
+                                        && let Some(sref) = series.slices.get(ref_idx) {
                                             thumb_jobs.push(Job {
                                                 key: SliceKey {
                                                     scan_gen,
@@ -2616,8 +2643,6 @@ impl ViewerApp {
                                                 distance: 800 + ri,
                                             });
                                         }
-                                    }
-                                }
 
                                 ui.horizontal(|ui| {
                                     // Draw 38x38 Horos-style series thumbnail box
@@ -2728,13 +2753,12 @@ impl ViewerApp {
                                         group.coronal_series,
                                         group.sagittal_series,
                                     ] {
-                                        if let Some(pri) = opt_ri {
-                                            if matching_series.contains(&pri)
+                                        if let Some(pri) = opt_ri
+                                            && matching_series.contains(&pri)
                                                 && !ordered_planes.contains(&pri)
                                             {
                                                 ordered_planes.push(pri);
                                             }
-                                        }
                                     }
                                     for &gri in &group.series_indices {
                                         if matching_series.contains(&gri)
@@ -2807,14 +2831,12 @@ impl ViewerApp {
                             }
                         });
                                     hdr_resp.header_response.context_menu(|ui| {
-                                        if pg.studies.len() > 1
-                                            || self.patient_links.contains_key(&study.uid)
-                                        {
-                                            if ui.button(tr.unlink_study).clicked() {
+                                        if (pg.studies.len() > 1
+                                            || self.patient_links.contains_key(&study.uid))
+                                            && ui.button(tr.unlink_study).clicked() {
                                                 unlink_study_uid = Some(study.uid.clone());
                                                 ui.close();
                                             }
-                                        }
                                         if ui.button(tr.link_patient).clicked() {
                                             start_link = Some((
                                                 format!("{} ({})", study.patient_name, study.date),
@@ -2854,25 +2876,22 @@ impl ViewerApp {
         if let Some(src) = start_link {
             self.linking_source = Some(src);
         }
-        if let Some(target_key) = commit_link_target {
-            if let Some((_, uids)) = self.linking_source.take() {
+        if let Some(target_key) = commit_link_target
+            && let Some((_, uids)) = self.linking_source.take() {
                 for uid in uids {
                     self.patient_links.insert(uid, target_key.clone());
                 }
-                if let Some(ref db) = self.db {
-                    if let Ok(json) = serde_json::to_string(&self.patient_links) {
+                if let Some(ref db) = self.db
+                    && let Ok(json) = serde_json::to_string(&self.patient_links) {
                         let _ = db.set_setting("patient_links", &json);
                     }
-                }
             }
-        }
         if let Some(uid) = unlink_study_uid {
             self.patient_links.insert(uid.clone(), format!("solo:{uid}"));
-            if let Some(ref db) = self.db {
-                if let Ok(json) = serde_json::to_string(&self.patient_links) {
+            if let Some(ref db) = self.db
+                && let Ok(json) = serde_json::to_string(&self.patient_links) {
                     let _ = db.set_setting("patient_links", &json);
                 }
-            }
         }
 
         if self.pending_copy_prompt {
@@ -3057,13 +3076,12 @@ impl ViewerApp {
 
     fn render_single_viewport(&mut self, ui: &mut egui::Ui, vp_idx: usize, view: Rect) {
         let response = ui.allocate_rect(view, Sense::click_and_drag());
-        if response.clicked() || response.drag_started() || response.secondary_clicked() {
-            if self.active_viewport != vp_idx {
+        if (response.clicked() || response.drag_started() || response.secondary_clicked())
+            && self.active_viewport != vp_idx {
                 self.active_viewport = vp_idx;
                 self.drawing.clear();
                 self.angle_pending = None;
             }
-        }
 
         let painter = ui.painter_at(view);
         painter.rect_filled(view, 0.0, Color32::BLACK);
@@ -3099,8 +3117,8 @@ impl ViewerApp {
                 || (response.clicked() && interact_pos.is_some_and(|p| bar.contains(p)))
         });
 
-        if on_scrubber {
-            if let Some((_, prev_r, track_r, next_r)) = scrubber {
+        if on_scrubber
+            && let Some((_, prev_r, track_r, next_r)) = scrubber {
                 if response.clicked() {
                     if let Some(pos) = interact_pos {
                         if prev_r.contains(pos) {
@@ -3116,15 +3134,12 @@ impl ViewerApp {
                 } else if (response.dragged_by(egui::PointerButton::Primary)
                     || response.drag_started())
                     && press_origin.is_some_and(|p| track_r.expand(6.0).contains(p))
-                {
-                    if let Some(pos) = interact_pos {
+                    && let Some(pos) = interact_pos {
                         let t = ((pos.x - track_r.min.x) / track_r.width().max(1.0)).clamp(0.0, 1.0);
                         let idx = (t * (slice_count.saturating_sub(1)) as f32).round() as isize;
                         self.set_viewport_slice(vp_idx, idx, true);
                     }
-                }
             }
-        }
 
         let mpr_pair = self.ensure_mpr_frame(vp_idx);
         let cur_slice = self.viewports[vp_idx].slice;
@@ -3189,8 +3204,7 @@ impl ViewerApp {
 
         // Apply 2D Spatial Convolution Filter if active on this viewport (cached per slice & filter).
         if let (Some(conv_idx), Some(base_key)) = (self.viewports[vp_idx].convolution_idx, cur_key)
-        {
-            if let Some(kernel_def) = FACTORY_CONVOLUTIONS.get(conv_idx) {
+            && let Some(kernel_def) = FACTORY_CONVOLUTIONS.get(conv_idx) {
                 let hit = self
                     .viewports[vp_idx]
                     .conv_cached
@@ -3211,7 +3225,6 @@ impl ViewerApp {
                     cur_key = Some(ck);
                 }
             }
-        }
 
         let window = self.effective_window(vp_idx, &frame);
         let img = self.image_rect(vp_idx, view, &frame);
@@ -3256,8 +3269,8 @@ impl ViewerApp {
         } else if self.show_reference_lines && self.tiling.cell_count() > 1 {
             self.draw_reference_lines(&painter, vp_idx, img, &frame);
         }
-        if let Some((a_vp, anchor_pos, _)) = self.orbit_anchor {
-            if a_vp == vp_idx {
+        if let Some((a_vp, anchor_pos, _)) = self.orbit_anchor
+            && a_vp == vp_idx {
                 let clipped = painter.with_clip_rect(view);
                 let col = Color32::from_rgb(255, 200, 75);
                 clipped.circle_stroke(anchor_pos, 10.0, Stroke::new(1.5, col));
@@ -3277,7 +3290,6 @@ impl ViewerApp {
                     );
                 }
             }
-        }
 
         let unverified_geom = self.viewports.get(vp_idx).is_some_and(|v| v.mpr_enabled)
             && self
@@ -3297,8 +3309,8 @@ impl ViewerApp {
             if let (Some(leader_sel), Some(cur_sel)) = (
                 self.viewports[leader_idx].selected,
                 self.viewports[vp_idx].selected,
-            ) {
-                if leader_sel != cur_sel {
+            )
+                && leader_sel != cur_sel {
                     let align_text = if self.registrations_in_flight.contains(&(leader_sel, cur_sel))
                     {
                         Some(("Aligning…".to_string(), Color32::from_rgb(130, 210, 255)))
@@ -3339,7 +3351,6 @@ impl ViewerApp {
                         );
                     }
                 }
-            }
         }
         self.draw_measures(&painter, vp_idx, img, &source_frame);
         if self.show_annotations {
@@ -3401,9 +3412,9 @@ impl ViewerApp {
             && (shift_held
                 || pointer_pos.is_some_and(|p| cross.is_some_and(|c| c.distance(p) <= 18.0)));
 
-        if self.crosshair_drag == Some(vp_idx) || clicked_near {
-            if let Some(pos) = pointer_pos {
-                if let Some(plane) = self.viewports.get(vp_idx).and_then(|v| v.mpr_plane.clone()) {
+        if (self.crosshair_drag == Some(vp_idx) || clicked_near)
+            && let Some(pos) = pointer_pos
+                && let Some(plane) = self.viewports.get(vp_idx).and_then(|v| v.mpr_plane.clone()) {
                     let px = self.screen_to_pixel(vp_idx, img, frame, pos);
                     let (sy, sx) = frame.spacing.unwrap_or((1.0, 1.0));
                     let sx = sx.max(1e-6);
@@ -3417,8 +3428,6 @@ impl ViewerApp {
                     self.set_ortho_crosshair_lps(new_lps);
                     return true;
                 }
-            }
-        }
         false
     }
 
@@ -3606,6 +3615,7 @@ impl ViewerApp {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_on_cpu(
         &mut self,
         ui: &egui::Ui,
@@ -3712,9 +3722,9 @@ impl ViewerApp {
                 self.viewports[vp_idx].reset_view();
                 if self.should_sync_viewports() {
                     let count = self.tiling.cell_count();
-                    for i in 0..count {
-                        if i != vp_idx && self.viewports[i].selected.is_some() {
-                            self.viewports[i].reset_view();
+                    for (i, vp) in self.viewports.iter_mut().enumerate().take(count) {
+                        if i != vp_idx && vp.selected.is_some() {
+                            vp.reset_view();
                         }
                     }
                 }
@@ -3764,8 +3774,7 @@ impl ViewerApp {
                 }
                 if let (Some((id, start, d)), Some(now)) =
                     (self.wl_drag, response.interact_pointer_pos())
-                {
-                    if id == vp_idx {
+                    && id == vp_idx {
                         let prev_w = self.effective_window(vp_idx, frame);
                         let dx = (now.x - start.x) as f64;
                         let dy = (start.y - now.y) as f64;
@@ -3777,7 +3786,6 @@ impl ViewerApp {
                             self.sync_window_delta(vp_idx, d_level, d_width);
                         }
                     }
-                }
                 if response.drag_stopped() {
                     self.wl_drag = None;
                 }
@@ -3796,8 +3804,7 @@ impl ViewerApp {
                 }
                 if let (Some((id, start_y, start_slice)), Some(now)) =
                     (self.scroll_drag, response.interact_pointer_pos())
-                {
-                    if id == vp_idx {
+                    && id == vp_idx {
                         let n = self.viewport_slice_count(vp_idx);
                         if n > 1 {
                             let px_per_slice = (view.height() * 0.75 / n as f32).clamp(2.5, 14.0);
@@ -3809,7 +3816,6 @@ impl ViewerApp {
                             );
                         }
                     }
-                }
                 if response.drag_stopped() {
                     self.scroll_drag = None;
                 }
@@ -3844,13 +3850,11 @@ impl ViewerApp {
                 }
                 if let (Some((id, a0, init_rot)), Some(now)) =
                     (self.rot_drag, response.interact_pointer_pos())
-                {
-                    if id == vp_idx {
+                    && id == vp_idx {
                         let a1 = (now.y - center.y).atan2(now.x - center.x).to_degrees();
                         self.viewports[vp_idx].rotation =
                             (init_rot + (a1 - a0)).rem_euclid(360.0);
                     }
-                }
                 if response.drag_stopped() {
                     self.rot_drag = None;
                 }
@@ -3859,8 +3863,8 @@ impl ViewerApp {
                 if !is_drag {
                     return;
                 }
-                if response.drag_started() {
-                    if let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
+                if response.drag_started()
+                    && let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
                         let press_pos = response
                             .ctx
                             .input(|i| i.pointer.press_origin())
@@ -3880,9 +3884,8 @@ impl ViewerApp {
                         plane.offset_mm = dot3(sub3(anchor_lps, plane.center_lps), plane.normal);
                         self.set_viewport_mpr_plane(vp_idx, plane, true);
                     }
-                }
-                if delta.length_sq() > 0.0 {
-                    if let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
+                if delta.length_sq() > 0.0
+                    && let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
                         let (shift, alt) = response
                             .ctx
                             .input(|i| (i.modifiers.shift, i.modifiers.alt));
@@ -3892,15 +3895,13 @@ impl ViewerApp {
                         } else {
                             plane.orbit_3d(delta.x as f64 * speed, -delta.y as f64 * speed, 0.0);
                         }
-                        if let Some((a_vp, _, anchor_lps)) = self.orbit_anchor {
-                            if a_vp == vp_idx {
+                        if let Some((a_vp, _, anchor_lps)) = self.orbit_anchor
+                            && a_vp == vp_idx {
                                 plane.offset_mm =
                                     dot3(sub3(anchor_lps, plane.center_lps), plane.normal);
                             }
-                        }
                         self.set_viewport_mpr_plane(vp_idx, plane, true);
                     }
-                }
                 if response.drag_stopped() {
                     self.orbit_drag = None;
                     self.orbit_anchor = None;
@@ -3916,14 +3917,13 @@ impl ViewerApp {
                             self.drawing.push(px);
                             self.drawing.push(px);
                         }
-                    } else if is_click {
-                        if let Some(px) = cur_px {
+                    } else if is_click
+                        && let Some(px) = cur_px {
                             self.drawing.push(px);
                         }
-                    }
                 } else if self.drawing.len() == 1 {
-                    if is_click || response.drag_stopped() {
-                        if let Some(b) = cur_px {
+                    if (is_click || response.drag_stopped())
+                        && let Some(b) = cur_px {
                             let a = self.drawing[0];
                             if a.distance(b) > 2.0 {
                                 if let Some(k) = self.viewport_measure_key(vp_idx) {
@@ -3936,7 +3936,6 @@ impl ViewerApp {
                                 self.drawing.clear();
                             }
                         }
-                    }
                 } else if self.drawing.len() == 2 {
                     if let Some(p) = cur_px {
                         self.drawing[1] = p;
@@ -3964,9 +3963,9 @@ impl ViewerApp {
                 // Step 2: First arm (a -> v) is already placed in `angle_pending`.
                 // Commit the angle on either click or drag-release of the third point `b`.
                 if let Some((a, v)) = self.angle_pending {
-                    if is_click || response.drag_stopped() {
-                        if let Some(b) = cur_px {
-                            if v.distance(b) > 2.0 {
+                    if (is_click || response.drag_stopped())
+                        && let Some(b) = cur_px
+                            && v.distance(b) > 2.0 {
                                 if let Some(k) = self.viewport_measure_key(vp_idx) {
                                     self.measures
                                         .entry(k.clone())
@@ -3977,8 +3976,6 @@ impl ViewerApp {
                                 self.angle_pending = None;
                                 self.drawing.clear();
                             }
-                        }
-                    }
                     return;
                 }
 
@@ -3991,21 +3988,19 @@ impl ViewerApp {
                             self.drawing.push(px);
                             self.drawing.push(px);
                         }
-                    } else if is_click {
-                        if let Some(px) = cur_px {
+                    } else if is_click
+                        && let Some(px) = cur_px {
                             self.drawing.push(px);
                         }
-                    }
                 } else if self.drawing.len() == 1 {
-                    if is_click || response.drag_stopped() {
-                        if let Some(v) = cur_px {
+                    if (is_click || response.drag_stopped())
+                        && let Some(v) = cur_px {
                             let a = self.drawing[0];
                             if a.distance(v) > 2.0 {
                                 self.angle_pending = Some((a, v));
                                 self.drawing.clear();
                             }
                         }
-                    }
                 } else if self.drawing.len() == 2 {
                     if let Some(p) = cur_px {
                         self.drawing[1] = p;
@@ -4033,14 +4028,13 @@ impl ViewerApp {
                             self.drawing.push(px);
                             self.drawing.push(px);
                         }
-                    } else if is_click {
-                        if let Some(px) = cur_px {
+                    } else if is_click
+                        && let Some(px) = cur_px {
                             self.drawing.push(px);
                         }
-                    }
                 } else if self.drawing.len() == 1 {
-                    if is_click || response.drag_stopped() {
-                        if let Some(b) = cur_px {
+                    if (is_click || response.drag_stopped())
+                        && let Some(b) = cur_px {
                             let a = self.drawing[0];
                             if a.distance(b) > 2.5 {
                                 if let Some(k) = self.viewport_measure_key(vp_idx) {
@@ -4055,7 +4049,6 @@ impl ViewerApp {
                                 self.drawing.clear();
                             }
                         }
-                    }
                 } else if self.drawing.len() == 2 {
                     if let Some(p) = cur_px {
                         self.drawing[1] = p;
@@ -4081,8 +4074,8 @@ impl ViewerApp {
             }
             Tool::Polygon => {
                 let cur_px = pointer_px.or(self.hover_px);
-                if is_click {
-                    if let Some(px) = cur_px {
+                if is_click
+                    && let Some(px) = cur_px {
                         // Close polygon if clicking near the first vertex and we already have >= 3 points.
                         if self.drawing.len() >= 3 {
                             let first_scr = self.pixel_to_screen(vp_idx, img, frame, self.drawing[0]);
@@ -4101,7 +4094,6 @@ impl ViewerApp {
                         }
                         self.drawing.push(px);
                     }
-                }
             }
             Tool::Pencil => {
                 let cur_px = pointer_px.or(self.hover_px);
@@ -4112,8 +4104,8 @@ impl ViewerApp {
                         self.drawing.push(self.screen_to_pixel(vp_idx, img, frame, p));
                     }
                 }
-                if response.dragged_by(egui::PointerButton::Primary) {
-                    if let Some(px) = cur_px {
+                if response.dragged_by(egui::PointerButton::Primary)
+                    && let Some(px) = cur_px {
                         let add = self
                             .drawing
                             .last()
@@ -4122,7 +4114,6 @@ impl ViewerApp {
                             self.drawing.push(px);
                         }
                     }
-                }
                 if response.drag_stopped() {
                     if self.drawing.len() >= 3 {
                         let pts = std::mem::take(&mut self.drawing);
@@ -4140,17 +4131,15 @@ impl ViewerApp {
             }
             Tool::Point => {
                 let cur_px = pointer_px.or(self.hover_px);
-                if is_click || response.drag_stopped() {
-                    if let Some(px) = cur_px {
-                        if let Some(k) = self.viewport_measure_key(vp_idx) {
+                if (is_click || response.drag_stopped())
+                    && let Some(px) = cur_px
+                        && let Some(k) = self.viewport_measure_key(vp_idx) {
                             self.measures
                                 .entry(k.clone())
                                 .or_default()
                                 .push(Measure::Point(px));
                             self.persist_measures_for(&k);
                         }
-                    }
-                }
             }
         }
     }
@@ -4596,11 +4585,10 @@ impl ViewerApp {
                         }
                     }
                 }
-                Tool::Pencil => {
-                    if self.drawing.len() >= 2 {
+                Tool::Pencil
+                    if self.drawing.len() >= 2 => {
                         items.push(Measure::Pencil(self.drawing.clone()));
                     }
-                }
                 _ => {}
             }
         }
@@ -4972,874 +4960,6 @@ impl ViewerApp {
         }
     }
 
-    /// Modal confirmation dialog when the user forces 3D / Orthogonal MPR on a non-3D-capable series.
-    fn draw_force_mpr_modal(&mut self, ctx: &egui::Context) {
-        let Some(req) = self.pending_force_mpr else {
-            return;
-        };
-        let tr = crate::i18n::tr(self.lang);
-        let mut open = true;
-        let mut decision: Option<bool> = None;
-
-        egui::Window::new(tr.force_3d_title)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.set_max_width(420.0);
-                ui.label(egui::RichText::new(tr.force_3d_headline).strong());
-                ui.add_space(6.0);
-                if let Some(err) = self.volume_errors.get(&req.key) {
-                    ui.colored_label(Color32::from_rgb(255, 200, 80), err.reason());
-                    ui.add_space(6.0);
-                }
-                ui.label(tr.force_3d_body);
-                ui.add_space(12.0);
-                ui.horizontal(|ui| {
-                    if ui
-                        .button(egui::RichText::new(tr.force_3d_yes).strong())
-                        .clicked()
-                    {
-                        decision = Some(true);
-                    }
-                    if ui.button(tr.force_3d_no).clicked() {
-                        decision = Some(false);
-                    }
-                });
-            });
-
-        if !open && decision.is_none() {
-            decision = Some(false);
-        }
-
-        if let Some(yes) = decision {
-            self.pending_force_mpr = None;
-            if yes {
-                self.forced_mpr_series.insert(req.key);
-                self.viewports[req.vp_idx].selected = Some(req.key);
-                self.pending_mpr_activate = Some((req.vp_idx, req.key, req.ortho));
-            }
-        }
-    }
-
-    pub(crate) fn start_update_check(&mut self, open_modal: bool, ctx: &egui::Context) {
-        if open_modal {
-            self.show_update_modal = true;
-        }
-        if self.update_rx.is_some() || self.install_rx.is_some() {
-            return;
-        }
-        self.update_status = crate::updater::UpdateStatus::Checking;
-        let ctx_clone = ctx.clone();
-        self.update_rx = Some(crate::updater::spawn_check(move || {
-            ctx_clone.request_repaint();
-        }));
-    }
-
-    fn draw_update_modal(&mut self, ctx: &egui::Context) {
-        if !self.show_update_modal {
-            return;
-        }
-        let tr = crate::i18n::tr(self.lang);
-        let mut open = true;
-        let status = self.update_status.clone();
-        let mut action_check = false;
-        let mut action_install: Option<(String, Option<String>, Option<String>, String)> = None;
-        let mut action_restart = false;
-
-        egui::Window::new(tr.updates_title)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.set_min_width(380.0);
-                ui.set_max_width(460.0);
-                ui.label(
-                    egui::RichText::new(format!(
-                        "{}: v{}",
-                        tr.current_version,
-                        env!("CARGO_PKG_VERSION")
-                    ))
-                    .monospace()
-                    .color(Color32::from_gray(170)),
-                );
-                ui.add_space(6.0);
-
-                match &status {
-                    crate::updater::UpdateStatus::Idle
-                    | crate::updater::UpdateStatus::Checking => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(tr.checking_updates);
-                        });
-                    }
-                    crate::updater::UpdateStatus::UpToDate(v) => {
-                        ui.label(
-                            egui::RichText::new(format!("{} (v{v}).", tr.up_to_date))
-                                .strong()
-                                .color(Color32::from_rgb(130, 220, 155)),
-                        );
-                        ui.add_space(8.0);
-                        if ui.button(tr.check_again).clicked() {
-                            action_check = true;
-                        }
-                    }
-                    crate::updater::UpdateStatus::Available(info) => {
-                        ui.label(
-                            egui::RichText::new(format!("{}: {}", tr.new_version, info.tag_name))
-                                .strong()
-                                .color(Color32::from_rgb(130, 210, 255)),
-                        );
-                        if !info.notes.trim().is_empty() {
-                            ui.add_space(6.0);
-                            egui::ScrollArea::vertical()
-                                .max_height(160.0)
-                                .show(ui, |ui| {
-                                    ui.label(info.notes.trim());
-                                });
-                        }
-                        ui.add_space(10.0);
-                        ui.horizontal(|ui| {
-                            if let Some(url) = &info.download_url {
-                                if ui
-                                    .button(egui::RichText::new(tr.download_install).strong())
-                                    .clicked()
-                                {
-                                    action_install = Some((
-                                        url.clone(),
-                                        info.asset_name.clone(),
-                                        info.sha256sums_url.clone(),
-                                        info.tag_name.clone(),
-                                    ));
-                                }
-                            }
-                            ui.hyperlink_to(tr.open_github, &info.html_url);
-                        });
-                        ui.add_space(6.0);
-                        ui.label(
-                            egui::RichText::new(
-                                "Note: Release binaries are unsigned; integrity is verified via SHA256SUMS.",
-                            )
-                            .small()
-                            .color(Color32::from_gray(160)),
-                        );
-                    }
-                    crate::updater::UpdateStatus::Installing => {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label(tr.installing_update);
-                        });
-                    }
-                    crate::updater::UpdateStatus::Installed(tag) => {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "SekhmetX {tag} installed! Restart to launch the new version."
-                            ))
-                            .strong()
-                            .color(Color32::from_rgb(130, 220, 155)),
-                        );
-                        ui.add_space(10.0);
-                        if ui
-                            .button(egui::RichText::new(tr.restart_sekhmetx).strong())
-                            .clicked()
-                        {
-                            action_restart = true;
-                        }
-                    }
-                    crate::updater::UpdateStatus::Error(err) => {
-                        ui.label(
-                            egui::RichText::new(format!("Update check failed: {err}"))
-                                .color(Color32::from_rgb(240, 120, 120)),
-                        );
-                        ui.add_space(8.0);
-                        if ui.button(tr.retry).clicked() {
-                            action_check = true;
-                        }
-                    }
-                }
-                ui.add_space(8.0);
-                ui.separator();
-                if ui
-                    .checkbox(&mut self.check_updates_on_startup, "Check for updates on startup")
-                    .changed()
-                {
-                    if let Some(ref db) = self.db {
-                        let _ = db.set_setting(
-                            "check_updates_on_startup",
-                            if self.check_updates_on_startup { "1" } else { "0" },
-                        );
-                    }
-                }
-            });
-
-        if !open {
-            self.show_update_modal = false;
-        }
-        if action_check {
-            self.start_update_check(true, ctx);
-        }
-        if let Some((url, asset_name, sha256sums_url, tag)) = action_install {
-            self.update_status = crate::updater::UpdateStatus::Installing;
-            let ctx_clone = ctx.clone();
-            self.install_rx = Some(crate::updater::spawn_install(
-                url,
-                asset_name,
-                sha256sums_url,
-                tag,
-                move || {
-                    ctx_clone.request_repaint();
-                },
-            ));
-        }
-        if action_restart {
-            if let Err(e) = crate::updater::restart_application() {
-                self.update_status = crate::updater::UpdateStatus::Error(format!("{e:#}"));
-            }
-        }
-    }
-
-    fn draw_pacs_modal(&mut self, ctx: &egui::Context) {
-        let tr = crate::i18n::tr(self.lang);
-        if self.show_pacs_modal {
-            let mut open = true;
-            egui::Window::new(tr.pacs_modal_title)
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .default_width(480.0)
-                .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(tr.pacs_known_portals);
-                        let selected_label = if self.pacs_web.institution_name.to_lowercase().contains("maip") {
-                            "Diagnóstico Maipú"
-                        } else {
-                            tr.pacs_select_portal
-                        };
-                        egui::ComboBox::from_id_salt("pacs_known_portals_cb")
-                            .selected_text(selected_label)
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_label(
-                                        self.pacs_web.institution_name.to_lowercase().contains("maip"),
-                                        "Diagnóstico Maipú",
-                                    )
-                                    .clicked()
-                                {
-                                    self.show_add_portal_note = false;
-                                    self.pacs_web.institution_name = "Diagnóstico Maipú".into();
-                                    if let Some(ref db) = self.db {
-                                        let _ = db.set_setting("pacs_institution_name", "Diagnóstico Maipú");
-                                        if let Some(url) = db.get_setting("pacs_known_maipu_url") {
-                                            if !url.trim().is_empty() {
-                                                self.pacs_web.login_url = url.clone();
-                                                let _ = db.set_setting("pacs_login_url", &url);
-                                            }
-                                        }
-                                    }
-                                }
-                                if ui.selectable_label(false, tr.pacs_add_portal).clicked() {
-                                    self.show_add_portal_note = true;
-                                }
-                            });
-                    });
-                    if self.show_add_portal_note {
-                        ui.label(
-                            egui::RichText::new(tr.pacs_add_portal_note)
-                                .small()
-                                .color(Color32::from_rgb(175, 200, 235)),
-                        );
-                    }
-                    ui.add_space(4.0);
-                    ui.label(tr.pacs_inst_name);
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.pacs_web.institution_name)
-                                .desired_width(440.0)
-                                .hint_text(tr.pacs_inst_hint),
-                        )
-                        .changed()
-                    {
-                        if let Some(ref db) = self.db {
-                            let _ = db.set_setting(
-                                "pacs_institution_name",
-                                &self.pacs_web.institution_name,
-                            );
-                        }
-                    }
-
-                    ui.add_space(4.0);
-                    ui.label(tr.pacs_login_url);
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.pacs_web.login_url)
-                                .desired_width(440.0)
-                                .hint_text("https://pacs.example.com/login"),
-                        )
-                        .changed()
-                    {
-                        if let Some(ref db) = self.db {
-                            let _ =
-                                db.set_setting("pacs_login_url", &self.pacs_web.login_url);
-                        }
-                    }
-
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(tr.pacs_username);
-                            if ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut self.pacs_web.saved_username)
-                                        .desired_width(210.0),
-                                )
-                                .changed()
-                                && self.pacs_web.remember_credentials
-                            {
-                                if let Some(ref db) = self.db {
-                                    let _ = db.set_setting(
-                                        "pacs_cred_user",
-                                        self.pacs_web.saved_username.trim(),
-                                    );
-                                }
-                            }
-                        });
-                        ui.vertical(|ui| {
-                            ui.label(tr.pacs_password);
-                            if ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut self.pacs_web.saved_password)
-                                        .password(true)
-                                        .desired_width(210.0),
-                                )
-                                .changed()
-                                && self.pacs_web.remember_credentials
-                            {
-                                if let Some(ref db) = self.db {
-                                    let enc = crate::pacs_web::protect_secret(
-                                        &self.pacs_web.saved_password,
-                                    );
-                                    let _ = db.set_setting("pacs_cred_pass", &enc);
-                                }
-                            }
-                        });
-                    });
-                    if ui
-                        .checkbox(
-                            &mut self.pacs_web.remember_credentials,
-                            tr.pacs_remember_creds,
-                        )
-                        .changed()
-                    {
-                        if let Some(ref db) = self.db {
-                            if self.pacs_web.remember_credentials {
-                                let _ = db.set_setting("pacs_remember_creds", "1");
-                                let _ = db.set_setting(
-                                    "pacs_cred_user",
-                                    self.pacs_web.saved_username.trim(),
-                                );
-                                let enc = crate::pacs_web::protect_secret(
-                                    &self.pacs_web.saved_password,
-                                );
-                                let _ = db.set_setting("pacs_cred_pass", &enc);
-                            } else {
-                                let _ = db.set_setting("pacs_remember_creds", "0");
-                                let _ = db.set_setting("pacs_cred_user", "");
-                                let _ = db.set_setting("pacs_cred_pass", "");
-                            }
-                        }
-                    }
-
-                    ui.add_space(4.0);
-                    ui.label(tr.pacs_watch_folder);
-                    ui.horizontal(|ui| {
-                        let dir_text = self
-                            .pacs_web
-                            .watch_dir
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| tr.pacs_none_selected.into());
-                        ui.monospace(dir_text);
-                        if ui.button(tr.pacs_choose_folder).clicked() {
-                            if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                                if let Some(ref db) = self.db {
-                                    let _ = db.set_setting(
-                                        "pacs_watch_dir",
-                                        &dir.to_string_lossy(),
-                                    );
-                                }
-                                self.pacs_web.watch_dir = Some(dir);
-                                self.pacs_web.reload_watch_cache();
-                            }
-                        }
-                    });
-
-                    ui.add_space(8.0);
-                    let is_hooked = matches!(
-                        self.pacs_web.state,
-                        crate::pacs_web::PacsHookState::Hooked { .. }
-                    );
-                    ui.horizontal(|ui| {
-                        if is_hooked {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(tr.pacs_disconnect)
-                                            .color(Color32::WHITE),
-                                    )
-                                    .fill(Color32::from_rgb(165, 55, 55)),
-                                )
-                                .clicked()
-                            {
-                                self.pacs_web.disconnect();
-                                self.show_pacs_finder = false;
-                                if let Some(ref db) = self.db {
-                                    let _ = db.set_setting("pacs_auto_connect", "");
-                                }
-                            }
-                        } else if ui.button(tr.pacs_open_login).clicked() {
-                            self.pacs_web.open_login_webview(ctx.clone());
-                        }
-                        if self.pacs_web.is_webview_open() {
-                            if ui.button(tr.pacs_hook_session).clicked() {
-                                self.pacs_web.trigger_hook_session();
-                            }
-                            if ui.button(tr.pacs_train_portal).clicked() {
-                                self.pacs_web.start_training();
-                            }
-                            if ui.button(tr.pacs_close_login).clicked() {
-                                self.pacs_web.close_webview();
-                            }
-                        }
-                    });
-
-                    if self.pacs_web.is_webview_open()
-                        && self.pacs_web.training_step != crate::pacs_web::TrainingStep::Idle
-                    {
-                        ui.add_space(6.0);
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            use crate::pacs_web::TrainingStep;
-                            match self.pacs_web.training_step {
-                                TrainingStep::PickSearchInput => {
-                                    if ui.button(tr.pacs_pick_search).clicked() {
-                                        self.pacs_web.trigger_pick_step(TrainingStep::PickSearchInput);
-                                    }
-                                }
-                                TrainingStep::PickResultsRow => {
-                                    if ui.button(tr.pacs_pick_row).clicked() {
-                                        self.pacs_web.trigger_pick_step(TrainingStep::PickResultsRow);
-                                    }
-                                }
-                                TrainingStep::PickDownloadBtn => {
-                                    if ui.button(tr.pacs_pick_dl).clicked() {
-                                        self.pacs_web.trigger_pick_step(TrainingStep::PickDownloadBtn);
-                                    }
-                                    if !self.pacs_web.training_draft.download_steps.is_empty()
-                                        && ui.button(tr.pacs_done_picking).clicked()
-                                    {
-                                        self.pacs_web.finish_download_picking();
-                                    }
-                                }
-                                TrainingStep::PickAnonBtn => {
-                                    if ui.button(tr.pacs_pick_anon).clicked() {
-                                        self.pacs_web.trigger_pick_step(TrainingStep::PickAnonBtn);
-                                    }
-                                    if !self.pacs_web.training_draft.anon_steps.is_empty()
-                                        && ui.button(tr.pacs_done_picking).clicked()
-                                    {
-                                        self.pacs_web.finish_training();
-                                    }
-                                    if ui.button(tr.pacs_skip_finish).clicked() {
-                                        self.pacs_web.finish_training();
-                                    }
-                                }
-                                TrainingStep::Idle => {}
-                            }
-                            if ui.button(tr.pacs_cancel).clicked() {
-                                self.pacs_web.training_step = TrainingStep::Idle;
-                            }
-                        });
-                        if matches!(
-                            self.pacs_web.training_step,
-                            crate::pacs_web::TrainingStep::PickDownloadBtn
-                                | crate::pacs_web::TrainingStep::PickAnonBtn
-                        ) {
-                            ui.label(
-                                egui::RichText::new(tr.pacs_ctrl_click_hint)
-                                    .small()
-                                    .color(Color32::from_gray(170)),
-                            );
-                        }
-                    }
-
-                    if let Some(ref msg) = self.pacs_web.status_msg {
-                        ui.add_space(6.0);
-                        let color = match self.pacs_web.state {
-                            crate::pacs_web::PacsHookState::Hooked { .. } => {
-                                Color32::from_rgb(130, 220, 140)
-                            }
-                            crate::pacs_web::PacsHookState::Incompatible(_) => {
-                                Color32::from_rgb(255, 130, 130)
-                            }
-                            _ => Color32::from_rgb(240, 200, 110),
-                        };
-                        ui.colored_label(color, msg);
-                    }
-                });
-            if !open {
-                self.show_pacs_modal = false;
-            }
-        }
-
-        if self.show_pacs_finder
-            && matches!(
-                self.pacs_web.state,
-                crate::pacs_web::PacsHookState::Hooked { .. }
-            )
-        {
-            let mut open = true;
-            let finder_title = {
-                let name = self.pacs_web.institution_name.trim();
-                if name.is_empty() {
-                    tr.pacs_finder_default_title.to_string()
-                } else {
-                    format!("{} {name}", tr.pacs_finder_prefix)
-                }
-            };
-            egui::Window::new(finder_title)
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(true)
-                .default_width(540.0)
-                .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        let enter = ui
-                            .add(
-                                egui::TextEdit::singleline(&mut self.pacs_web.search_query)
-                                    .desired_width(360.0)
-                                    .hint_text(tr.pacs_search_input_hint),
-                            )
-                            .lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if (ui.button(tr.pacs_search_action).clicked() || enter)
-                            && !self.pacs_web.searching
-                        {
-                            self.pacs_web.start_search(ctx.clone());
-                        }
-                        if self.pacs_web.searching {
-                            ui.spinner();
-                        }
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.checkbox(
-                            &mut self.pacs_web.download_anonymized,
-                            tr.pacs_download_anon,
-                        );
-                        if let Some(ref dl) = self.pacs_web.downloading {
-                            ui.separator();
-                            ui.spinner();
-                            ui.label(format!("{} {dl}…", tr.pacs_downloading));
-                        }
-                    });
-
-                    ui.separator();
-                    let selected_patient = self.pacs_web.selected_patient.clone();
-                    let patient_results = self.pacs_web.patient_results.clone();
-                    let results = self.pacs_web.results.clone();
-                    let mut open_patient_target: Option<crate::pacs_web::PacsPatientResult> = None;
-                    let mut go_back = false;
-                    let mut download_target: Option<crate::pacs_web::PacsStudyResult> = None;
-
-                    if let Some(ref pt) = selected_patient {
-                        ui.horizontal(|ui| {
-                            if ui.small_button(tr.pacs_back_patients).clicked() {
-                                go_back = true;
-                            }
-                            ui.strong(format!("{} {}", tr.pacs_studies_for, pt.name));
-                            if self.pacs_web.loading_studies {
-                                ui.spinner();
-                                ui.small(tr.pacs_loading_studies);
-                            }
-                        });
-                        ui.add_space(4.0);
-                    }
-
-                    egui::ScrollArea::vertical()
-                        .max_height(300.0)
-                        .show(ui, |ui| {
-                            if selected_patient.is_none() && !patient_results.is_empty() {
-                                for pt in patient_results.iter().take(50) {
-                                    let row_text = format!("👤 {}  ·  {}", pt.name, pt.summary);
-                                    if ui
-                                        .add_enabled(
-                                            !self.pacs_web.loading_studies,
-                                            egui::Button::new(row_text)
-                                                .wrap_mode(egui::TextWrapMode::Truncate),
-                                        )
-                                        .clicked()
-                                    {
-                                        open_patient_target = Some(pt.clone());
-                                    }
-                                }
-                            } else {
-                                if results.is_empty()
-                                    && !self.pacs_web.searching
-                                    && !self.pacs_web.loading_studies
-                                {
-                                    ui.label(
-                                        egui::RichText::new(tr.pacs_results_hint)
-                                            .small()
-                                            .color(Color32::from_gray(150)),
-                                    );
-                                }
-                                for st in results.iter().take(50) {
-                                    let mod_tag = if st.modality.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!("[{}] ", st.modality)
-                                    };
-                                    let row_text = if selected_patient.is_some() {
-                                        let rep = if st.has_report {
-                                            format!("📄 {}", tr.pacs_has_report)
-                                        } else {
-                                            format!("🖼 {}", tr.pacs_images_only)
-                                        };
-                                        format!(
-                                            "{mod_tag}{}  ·  {}  ·  {rep}",
-                                            st.description, st.study_date
-                                        )
-                                    } else {
-                                        let title = if st.patient_name.is_empty() {
-                                            st.study_uid.clone()
-                                        } else {
-                                            st.patient_name.clone()
-                                        };
-                                        format!(
-                                            "{title} {mod_tag} · ID: {} · {} · {}",
-                                            st.patient_id, st.study_date, st.description
-                                        )
-                                    };
-                                    if ui
-                                        .add_enabled(
-                                            self.pacs_web.downloading.is_none(),
-                                            egui::Button::new(row_text)
-                                                .wrap_mode(egui::TextWrapMode::Truncate),
-                                        )
-                                        .clicked()
-                                    {
-                                        download_target = Some(st.clone());
-                                    }
-                                }
-                            }
-                        });
-                    if go_back {
-                        self.pacs_web.back_to_patients();
-                    }
-                    if let Some(pt) = open_patient_target {
-                        self.pacs_web.open_patient(&pt, ctx.clone());
-                    }
-                    if let Some(st) = download_target {
-                        self.pacs_web.start_download(&st, ctx.clone());
-                    }
-                });
-            if !open {
-                self.show_pacs_finder = false;
-            }
-        }
-    }
-
-    fn draw_crash_modal(&mut self, ctx: &egui::Context) {
-        if !self.show_crash_modal {
-            return;
-        }
-        let mut open = true;
-        let title = match self.lang {
-            crate::i18n::Lang::Es => "Registro de Fallo Anterior",
-            crate::i18n::Lang::En => "Previous Crash Log",
-        };
-        egui::Window::new(title)
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(true)
-            .default_width(520.0)
-            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                let desc = match self.lang {
-                    crate::i18n::Lang::Es => "SekhmetX se cerró inesperadamente en la sesión anterior. Puede guardar el registro para diagnosticarlo; luego se eliminará automáticamente.",
-                    crate::i18n::Lang::En => "SekhmetX closed unexpectedly on the previous run. Save the crash log to inspect or share it; it will be deleted automatically afterward.",
-                };
-                ui.label(desc);
-                ui.add_space(6.0);
-                if let Some(log_text) = crate::crash_log::read_log() {
-                    egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
-                        ui.monospace(log_text.lines().rev().take(40).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"));
-                    });
-                }
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    let tr = crate::i18n::tr(self.lang);
-                    if ui.button(tr.crash_report_github).clicked() {
-                        if let Some(text) = crate::crash_log::read_log() {
-                            let url = crate::crash_log::github_issue_url(&text);
-                            ctx.open_url(egui::OpenUrl::new_tab(url));
-                        }
-                        crate::crash_log::delete_log();
-                        self.previous_crash_pending = false;
-                        self.show_crash_modal = false;
-                    }
-                    let save_lbl = match self.lang {
-                        crate::i18n::Lang::Es => "Guardar Registro y Eliminar…",
-                        crate::i18n::Lang::En => "Save Crash Log & Delete…",
-                    };
-                    if ui.button(save_lbl).clicked() {
-                        if let Some(dest) = rfd::FileDialog::new()
-                            .set_file_name("sekhmetx-crash.log")
-                            .save_file()
-                        {
-                            if let Some(text) = crate::crash_log::read_log() {
-                                let _ = std::fs::write(dest, text);
-                            }
-                            crate::crash_log::delete_log();
-                            self.previous_crash_pending = false;
-                            self.show_crash_modal = false;
-                        }
-                    }
-                    let dismiss_lbl = match self.lang {
-                        crate::i18n::Lang::Es => "Descartar y Eliminar",
-                        crate::i18n::Lang::En => "Dismiss & Delete",
-                    };
-                    if ui.button(dismiss_lbl).clicked() {
-                        crate::crash_log::delete_log();
-                        self.previous_crash_pending = false;
-                        self.show_crash_modal = false;
-                    }
-                });
-            });
-        if !open {
-            self.show_crash_modal = false;
-        }
-    }
-
-    fn draw_settings_modal(&mut self, ctx: &egui::Context) {
-        if !self.show_settings_modal {
-            return;
-        }
-        let tr = crate::i18n::tr(self.lang);
-        let mut open = true;
-        egui::Window::new(tr.settings_title)
-            .open(&mut open)
-            .collapsible(false)
-            .resizable(false)
-            .default_width(480.0)
-            .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(tr.settings_language);
-                    if ui
-                        .selectable_label(self.lang == crate::i18n::Lang::En, "English")
-                        .clicked()
-                    {
-                        self.lang = crate::i18n::Lang::En;
-                        if let Some(ref db) = self.db {
-                            let _ = db.set_setting("lang", "en");
-                        }
-                    }
-                    if ui
-                        .selectable_label(self.lang == crate::i18n::Lang::Es, "Español")
-                        .clicked()
-                    {
-                        self.lang = crate::i18n::Lang::Es;
-                        if let Some(ref db) = self.db {
-                            let _ = db.set_setting("lang", "es");
-                        }
-                    }
-                });
-
-                ui.add_space(6.0);
-                ui.separator();
-                ui.label(tr.settings_studies_folder);
-                ui.horizontal(|ui| {
-                    let cur = crate::db::managed_studies_dir();
-                    ui.monospace(cur.display().to_string());
-                    if ui.button(tr.pacs_choose_folder).clicked() {
-                        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                            if let Some(ref db) = self.db {
-                                let _ = db.set_setting(
-                                    "custom_studies_dir",
-                                    &dir.to_string_lossy(),
-                                );
-                            }
-                            crate::db::set_custom_studies_dir(Some(dir));
-                        }
-                    }
-                    if ui.button(tr.settings_reset_default).clicked() {
-                        if let Some(ref db) = self.db {
-                            let _ = db.set_setting("custom_studies_dir", "");
-                        }
-                        crate::db::set_custom_studies_dir(None);
-                    }
-                });
-
-                ui.add_space(6.0);
-                ui.separator();
-                ui.strong(tr.settings_on_open);
-                ui.horizontal(|ui| {
-                    ui.label(tr.settings_add_to_db);
-                    for (policy, label) in [
-                        (crate::db::CopyToLibraryPolicy::Ask, tr.settings_policy_ask),
-                        (crate::db::CopyToLibraryPolicy::Always, tr.settings_policy_always),
-                        (crate::db::CopyToLibraryPolicy::Never, tr.settings_policy_never),
-                    ] {
-                        if ui.selectable_label(self.copy_policy == policy, label).clicked() {
-                            self.set_copy_policy(policy);
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(tr.settings_storage_format);
-                    if ui
-                        .selectable_label(!self.study_storage_zip, tr.settings_format_unzip)
-                        .clicked()
-                    {
-                        self.study_storage_zip = false;
-                        if let Some(ref db) = self.db {
-                            let _ = db.set_setting("study_storage_format", "unzip");
-                        }
-                    }
-                    if ui
-                        .selectable_label(self.study_storage_zip, tr.settings_format_zip)
-                        .clicked()
-                    {
-                        self.study_storage_zip = true;
-                        if let Some(ref db) = self.db {
-                            let _ = db.set_setting("study_storage_format", "zip");
-                        }
-                    }
-                });
-
-                ui.add_space(6.0);
-                ui.separator();
-                if ui
-                    .checkbox(&mut self.check_updates_on_startup, tr.settings_check_updates)
-                    .changed()
-                {
-                    if let Some(ref db) = self.db {
-                        let _ = db.set_setting(
-                            "check_updates_on_startup",
-                            if self.check_updates_on_startup { "1" } else { "0" },
-                        );
-                    }
-                }
-            });
-        if !open {
-            self.show_settings_modal = false;
-        }
-    }
 }
 
 impl eframe::App for ViewerApp {
@@ -5863,6 +4983,7 @@ impl eframe::App for ViewerApp {
         self.draw_pacs_modal(&ctx);
         self.draw_settings_modal(&ctx);
         self.draw_crash_modal(&ctx);
+        self.draw_first_run_notice_modal(&ctx);
     }
 }
 

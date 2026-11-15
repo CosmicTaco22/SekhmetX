@@ -15,7 +15,27 @@ permissions:
   contents: write
 
 jobs:
+  verify-release-version:
+    name: Verify 3-part Release Version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse 4-part internal versions
+        shell: bash
+        run: |
+          REF_NAME="${{ github.event.inputs.tag || github.ref_name }}"
+          if [[ "$REF_NAME" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "ERROR: Refusing to publish 4-part internal version ($REF_NAME). Only 3-part versions (vX.Y.Z) may be released."
+            exit 1
+          fi
+          PKG_VER=$(grep -m1 '^version = ' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          if [[ "$PKG_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "ERROR: Cargo.toml version ($PKG_VER) must be 3-part for releases."
+            exit 1
+          fi
+
   build-release:
+    needs: verify-release-version
     name: Build ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
     strategy:

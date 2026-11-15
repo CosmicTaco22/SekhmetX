@@ -1,7 +1,14 @@
+mod js_scripts;
+mod secrets;
+use js_scripts::*;
+pub use secrets::*;
+
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use eframe::egui;
@@ -149,6 +156,7 @@ pub enum WebViewCommand {
 #[derive(Debug, Clone)]
 enum UserEvent {
     HookSession,
+    HiddenHookCheck(u8),
     AutoLogin(String),
     StartPick(String),
     HideWindow,
@@ -172,7 +180,7 @@ pub struct PacsWebController {
     pub login_url: String,
     pub watch_dir: Option<PathBuf>,
     pub saved_username: String,
-    pub saved_password: String,
+    pub saved_password: zeroize::Zeroizing<String>,
     pub remember_credentials: bool,
     pub download_anonymized: bool,
     pub state: PacsHookState,
@@ -196,7 +204,7 @@ pub struct PacsWebController {
     cmd_tx: Option<Sender<WebViewCommand>>,
     pending_action: Option<PendingPacsAction>,
     known_zips: HashMap<PathBuf, (u64, u64)>,
-    last_watch_check: f64,
+    download_requested: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl PacsWebController {
@@ -211,7 +219,7 @@ impl PacsWebController {
             login_url,
             watch_dir,
             saved_username: String::new(),
-            saved_password: String::new(),
+            saved_password: zeroize::Zeroizing::new(String::new()),
             remember_credentials: false,
             download_anonymized: false,
             state: PacsHookState::Disconnected,
@@ -235,7 +243,7 @@ impl PacsWebController {
             cmd_tx: None,
             pending_action: None,
             known_zips,
-            last_watch_check: 0.0,
+            download_requested: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -292,6 +300,15 @@ impl PacsWebController {
             }
             return;
         }
+        let portal_origin = match parse_https_origin(&url) {
+            Ok(o) => o,
+            Err(err) => {
+                if !hidden {
+                    self.status_msg = Some(err);
+                }
+                return;
+            }
+        };
         let Some(watch_dir) = self.watch_dir.clone() else {
             if !hidden {
                 self.status_msg = Some(tr.pacs_msg_select_watch.into());
@@ -309,17 +326,45 @@ impl PacsWebController {
             let _ = old.send(WebViewCommand::Close);
         }
 
-        let (cmd_tx, cmd_rx) = mpsc::channel::<WebViewCommand>();
-        if self.remember_credentials
-            && !self.saved_username.trim().is_empty()
-            && !self.saved_password.is_empty()
+        // F1: Try saved session cookies from the OS keyring directly via ureq before spawning a WebView.
+        if let Ok(saved_cookies) = load_pacs_cookies(&portal_origin)
+            && !saved_cookies.is_empty()
         {
-            let creds = serde_json::json!({
-                "user": self.saved_username.trim(),
-                "pass": self.saved_password,
-            })
-            .to_string();
-            let _ = cmd_tx.send(WebViewCommand::AutoLogin(creds));
+            let probe_origin = portal_origin.clone();
+            let cookie_str = saved_cookies.to_string();
+            let tx = self.tx.clone();
+            let ctx_probe = ctx.clone();
+            if let Some(backend) = probe_pacs_backend(&probe_origin, &cookie_str) {
+                let _ = tx.send(PacsEvent::Hooked {
+                    backend,
+                    cookie_header: cookie_str,
+                });
+                ctx_probe.request_repaint();
+                return;
+            }
+        }
+
+        let (cmd_tx, cmd_rx) = mpsc::channel::<WebViewCommand>();
+        if !self.saved_username.trim().is_empty() {
+            let pass_opt = if !self.saved_password.is_empty() {
+                Some(self.saved_password.clone())
+            } else if self.remember_credentials {
+                load_pacs_password(&portal_origin).ok()
+            } else {
+                None
+            };
+            if let Some(pass) = pass_opt
+                && !pass.is_empty() {
+                    let creds = zeroize::Zeroizing::new(
+                        serde_json::json!({
+                            "user": self.saved_username.trim(),
+                            "pass": &*pass,
+                            "expected_origin": portal_origin,
+                        })
+                        .to_string(),
+                    );
+                    let _ = cmd_tx.send(WebViewCommand::AutoLogin((*creds).clone()));
+                }
         }
         self.cmd_tx = Some(cmd_tx);
         self.silent_auto_connect = hidden;
@@ -329,9 +374,43 @@ impl PacsWebController {
         }
 
         let event_tx = self.tx.clone();
+        let dl_req = self.download_requested.clone();
         std::thread::spawn(move || {
-            spawn_webview_subprocess(url, watch_dir, hidden, cmd_rx, event_tx, ctx);
+            spawn_webview_subprocess(url, watch_dir, hidden, dl_req, cmd_rx, event_tx, ctx);
         });
+    }
+
+    pub fn trigger_auto_login(&mut self, ctx: egui::Context) {
+        let Ok(portal_origin) = parse_https_origin(&self.login_url) else {
+            self.status_msg = Some(crate::i18n::tr(self.lang).pacs_msg_enter_url.into());
+            return;
+        };
+        if let Some(ref cmd_tx) = self.cmd_tx {
+            if !self.saved_username.trim().is_empty() {
+                let pass_opt = if !self.saved_password.is_empty() {
+                    Some(self.saved_password.clone())
+                } else if self.remember_credentials {
+                    load_pacs_password(&portal_origin).ok()
+                } else {
+                    None
+                };
+                if let Some(pass) = pass_opt
+                    && !pass.is_empty()
+                {
+                    let creds = zeroize::Zeroizing::new(
+                        serde_json::json!({
+                            "user": self.saved_username.trim(),
+                            "pass": &*pass,
+                            "expected_origin": portal_origin,
+                        })
+                        .to_string(),
+                    );
+                    let _ = cmd_tx.send(WebViewCommand::AutoLogin((*creds).clone()));
+                }
+            }
+        } else {
+            self.open_login_webview(ctx);
+        }
     }
 
     pub fn trigger_hook_session(&mut self) {
@@ -540,7 +619,9 @@ impl PacsWebController {
             let study_index = study.id.parse::<usize>().unwrap_or(0);
             self.downloading = Some(label.clone());
             self.pending_open_downloaded = true;
-            self.status_msg = Some(format!("{} {label} (.zip)…", tr.pacs_msg_downloading));
+            self.download_requested
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.status_msg = Some(format!("{} {label}…", tr.pacs_msg_starting_dl));
             if let Some(ref cmd_tx) = self.cmd_tx {
                 let _ = cmd_tx.send(WebViewCommand::VueMotionDownloadStudy {
                     study_index,
@@ -557,7 +638,9 @@ impl PacsWebController {
             let row_index = study.id.parse::<usize>().unwrap_or(0);
             self.downloading = Some(label.clone());
             self.pending_open_downloaded = true;
-            self.status_msg = Some(format!("{} {label} (.zip)…", tr.pacs_msg_downloading));
+            self.download_requested
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            self.status_msg = Some(format!("{} {label}…", tr.pacs_msg_starting_dl));
             if let Some(ref cmd_tx) = self.cmd_tx {
                 let _ = cmd_tx.send(WebViewCommand::TrainedDownload {
                     row_index,
@@ -576,7 +659,7 @@ impl PacsWebController {
         let study_uid = study.study_uid.clone();
         self.downloading = Some(label.clone());
         self.pending_open_downloaded = true;
-        self.status_msg = Some(format!("{} {label} (.zip)…", tr.pacs_msg_downloading));
+        self.status_msg = Some(format!("{} {label}…", tr.pacs_msg_starting_dl));
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             match download_pacs_study_zip(
@@ -600,8 +683,9 @@ impl PacsWebController {
 
     /// Polls background PACS events and checks the watch folder for new/changed `.zip` files.
     /// Returns any newly detected `.zip` paths that should be scanned into SekhmetX.
-    pub fn poll(&mut self, now_secs: f64) -> Vec<PathBuf> {
+    pub fn poll(&mut self, _now_secs: f64) -> Vec<PathBuf> {
         let tr = crate::i18n::tr(self.lang);
+        let mut new_zips = Vec::new();
         while let Ok(ev) = self.rx.try_recv() {
             match ev {
                 PacsEvent::Hooked {
@@ -610,12 +694,16 @@ impl PacsWebController {
                 } => {
                     self.silent_auto_connect = false;
                     self.status_msg = Some(format!("{} {}", tr.pacs_msg_hooked, backend.label()));
+                    if !cookie_header.is_empty()
+                        && let Ok(origin) = parse_https_origin(&self.login_url)
+                    {
+                        let _ = store_pacs_cookies(&origin, &cookie_header);
+                    }
                     let pending = self.pending_action.take();
-                    let keep_webview = pending.is_some()
-                        && matches!(
-                            backend,
-                            PacsBackend::TrainedDom(_) | PacsBackend::VueMotion { .. }
-                        );
+                    let keep_webview = matches!(
+                        backend,
+                        PacsBackend::TrainedDom(_) | PacsBackend::VueMotion { .. }
+                    );
                     self.state = PacsHookState::Hooked {
                         backend: backend.clone(),
                         cookie_header,
@@ -732,6 +820,7 @@ impl PacsWebController {
                         self.downloading = None;
                         self.pending_action = None;
                         self.close_webview();
+                        self.state = PacsHookState::Disconnected;
                         self.status_msg = Some(tr.pacs_msg_open_first.into());
                     } else {
                         self.status_msg = Some(msg.clone());
@@ -752,13 +841,12 @@ impl PacsWebController {
                     }
                 }
                 PacsEvent::DownloadFinished(p) => {
-                    if self.download_anonymized {
-                        if let PacsHookState::Hooked {
+                    if self.download_anonymized
+                        && let PacsHookState::Hooked {
                             backend: PacsBackend::TrainedDom(ref prof),
                             ..
                         } = self.state
-                        {
-                            if prof.anon_steps.is_empty() {
+                            && prof.anon_steps.is_empty() {
                                 let tmp = p.with_extension("anon.zip.part");
                                 if anonymize_zip_archive(&p, &tmp).is_ok() {
                                     let _ = std::fs::rename(&tmp, &p);
@@ -766,14 +854,26 @@ impl PacsWebController {
                                     let _ = std::fs::remove_file(&tmp);
                                 }
                             }
-                        }
-                    }
                     self.downloading = None;
                     self.status_msg = Some(format!(
                         "{}: {}",
                         tr.pacs_msg_saved_zip,
                         p.file_name().and_then(|n| n.to_str()).unwrap_or("study.zip")
                     ));
+                    if let Ok(meta) = std::fs::metadata(&p) {
+                        let len = meta.len();
+                        let mtime = meta
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        self.known_zips.insert(p.clone(), (len, mtime));
+                        if let Some(ref dir) = self.watch_dir {
+                            save_known_zips_cache(dir, &self.known_zips);
+                        }
+                    }
+                    new_zips.push(p);
                 }
                 PacsEvent::DownloadFailed(err) => {
                     self.downloading = None;
@@ -787,47 +887,49 @@ impl PacsWebController {
                 }
             }
         }
+        new_zips
+    }
 
+    /// Manually checks the Watch Folder once for any new or updated `.zip` files.
+    pub fn scan_watch_folder_now(&mut self) -> Vec<PathBuf> {
         let mut new_zips = Vec::new();
-        if now_secs - self.last_watch_check >= 2.0 {
-            self.last_watch_check = now_secs;
-            if let Some(ref dir) = self.watch_dir {
-                if let Ok(entries) = std::fs::read_dir(dir) {
-                    for entry in entries.flatten() {
-                        let path = entry.path();
-                        if !path.is_file() {
-                            continue;
-                        }
-                        let is_zip = path
-                            .extension()
-                            .and_then(|e| e.to_str())
-                            .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
-                        if !is_zip {
-                            continue;
-                        }
-                        if let Ok(meta) = entry.metadata() {
-                            let len = meta.len();
-                            if len == 0 {
-                                continue;
-                            }
-                            let mtime = meta
-                                .modified()
-                                .ok()
-                                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                                .map(|d| d.as_secs())
-                                .unwrap_or(0);
-                            let sig = (len, mtime);
-                            if self.known_zips.get(&path) != Some(&sig) {
-                                self.known_zips.insert(path.clone(), sig);
-                                new_zips.push(path);
-                            }
-                        }
+        let Some(ref dir) = self.watch_dir else {
+            return new_zips;
+        };
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !path.is_file() {
+                    continue;
+                }
+                let is_zip = path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+                if !is_zip {
+                    continue;
+                }
+                if let Ok(meta) = entry.metadata() {
+                    let len = meta.len();
+                    if len == 0 {
+                        continue;
+                    }
+                    let mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let sig = (len, mtime);
+                    if self.known_zips.get(&path) != Some(&sig) {
+                        self.known_zips.insert(path.clone(), sig);
+                        new_zips.push(path);
                     }
                 }
-                if !new_zips.is_empty() {
-                    save_known_zips_cache(dir, &self.known_zips);
-                }
             }
+        }
+        if !new_zips.is_empty() {
+            save_known_zips_cache(dir, &self.known_zips);
         }
         new_zips
     }
@@ -891,26 +993,65 @@ unsafe fn windows_sys_hide(path: *const u16) {
     }
 }
 
-pub(crate) fn origin_of(url: &str) -> String {
-    if let Some(scheme_end) = url.find("://") {
-        let rest = &url[scheme_end + 3..];
-        let host_end = rest.find('/').unwrap_or(rest.len());
-        url[..scheme_end + 3 + host_end].to_string()
-    } else {
-        url.trim_end_matches('/').to_string()
+pub(crate) fn parse_https_origin(raw: &str) -> Result<String, String> {
+    let parsed = url::Url::parse(raw.trim()).map_err(|e| format!("Invalid portal URL: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err("Portal URL must use https://".to_string());
     }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("Portal URL must not contain embedded credentials.".to_string());
+    }
+    if !parsed.has_host() {
+        return Err("Portal URL must include a host.".to_string());
+    }
+    let origin = parsed.origin().ascii_serialization();
+    if origin.is_empty() || origin == "null" {
+        return Err("Portal URL does not have a valid HTTPS origin.".to_string());
+    }
+    Ok(origin)
+}
+
+pub(crate) fn origin_of(url: &str) -> String {
+    url::Url::parse(url.trim())
+        .ok()
+        .filter(|u| matches!(u.scheme(), "https" | "http") && u.has_host())
+        .map(|u| u.origin().ascii_serialization())
+        .unwrap_or_default()
+}
+
+fn emit_subprocess_json(msg_type: &str, payload: &str) {
+    use std::io::Write;
+    let line = serde_json::json!({
+        "type": msg_type,
+        "payload": payload,
+    });
+    println!("{line}");
+    let _ = std::io::stdout().flush();
 }
 
 fn spawn_webview_subprocess(
     login_url: String,
     watch_dir: PathBuf,
     hidden: bool,
+    download_requested: Arc<AtomicBool>,
     cmd_rx: Receiver<WebViewCommand>,
     event_tx: Sender<PacsEvent>,
     egui_ctx: egui::Context,
 ) {
     use std::io::{BufRead, BufReader, Write};
     use std::process::{Command, Stdio};
+
+    let Ok(portal_origin) = parse_https_origin(&login_url) else {
+        let _ = event_tx.send(PacsEvent::Incompatible(
+            "Portal URL must be a valid https:// address.".into(),
+        ));
+        let _ = event_tx.send(PacsEvent::WebViewClosed);
+        egui_ctx.request_repaint();
+        return;
+    };
+
+    let _ = std::fs::create_dir_all(&watch_dir);
+    let canonical_watch_dir = std::fs::canonicalize(&watch_dir).ok();
 
     let Ok(exe) = std::env::current_exe() else {
         let _ = event_tx.send(PacsEvent::Incompatible(
@@ -921,7 +1062,7 @@ fn spawn_webview_subprocess(
         return;
     };
 
-    crate::crash_log::log_line("INFO", &format!("Spawning PACS WebView subprocess for {login_url}"));
+    crate::crash_log::log_line("INFO", &format!("Spawning PACS WebView subprocess for {portal_origin}"));
     let mut cmd = Command::new(exe);
     cmd.arg("--pacs-login").arg(&login_url).arg(&watch_dir);
     if hidden {
@@ -1003,195 +1144,236 @@ fn spawn_webview_subprocess(
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
         for line in reader.lines().map_while(Result::ok) {
-            if let Some(rest) = line.strip_prefix("HOOK_DATA\t") {
-                if let Ok(v) = serde_json::from_str::<Value>(rest) {
-                    let current_url = v.get("url").and_then(|x| x.as_str()).unwrap_or(&login_url).to_string();
-                    let cookie_header = v.get("cookies").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let is_vue_motion = v.get("vue_motion").and_then(|x| x.as_bool()).unwrap_or(false);
-                    let base_origin = origin_of(&current_url);
-                    let tx = event_tx.clone();
-                    let ctx = egui_ctx.clone();
-                    if is_vue_motion {
-                        let _ = tx.send(PacsEvent::Hooked {
-                            backend: PacsBackend::VueMotion {
-                                origin: base_origin,
-                            },
-                            cookie_header,
-                        });
-                        ctx.request_repaint();
-                    } else {
-                        std::thread::spawn(move || {
-                            match probe_pacs_backend(&base_origin, &cookie_header) {
-                                Some(backend) => {
-                                    let _ = tx.send(PacsEvent::Hooked { backend, cookie_header });
-                                }
-                                None => {
-                                    let _ = tx.send(PacsEvent::Incompatible(
-                                        "This webpage does not allow hooking into its virtual PACS system."
-                                            .into(),
-                                    ));
-                                }
-                            }
+            let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let Some(msg_type) = msg.get("type").and_then(|x| x.as_str()) else {
+                continue;
+            };
+            let rest = msg.get("payload").and_then(|x| x.as_str()).unwrap_or("");
+            match msg_type {
+                "HOOK_DATA" => {
+                    crate::crash_log::log_line("INFO", &format!("Received HOOK_DATA from WebView subprocess ({} bytes)", rest.len()));
+                    if let Ok(v) = serde_json::from_str::<Value>(rest) {
+                        let cookie_header = v.get("cookies").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let is_vue_motion = v.get("vue_motion").and_then(|x| x.as_bool()).unwrap_or(false);
+                        crate::crash_log::log_line("INFO", &format!("HOOK_DATA: is_vue_motion={is_vue_motion}, cookies_len={}", cookie_header.len()));
+                        let base_origin = portal_origin.clone();
+                        let tx = event_tx.clone();
+                        let ctx = egui_ctx.clone();
+                        if is_vue_motion {
+                            let _ = tx.send(PacsEvent::Hooked {
+                                backend: PacsBackend::VueMotion {
+                                    origin: base_origin,
+                                },
+                                cookie_header,
+                            });
                             ctx.request_repaint();
-                        });
+                        } else {
+                            std::thread::spawn(move || {
+                                match probe_pacs_backend(&base_origin, &cookie_header) {
+                                    Some(backend) => {
+                                        crate::crash_log::log_line("INFO", &format!("probe_pacs_backend matched: {}", backend.label()));
+                                        let _ = tx.send(PacsEvent::Hooked { backend, cookie_header });
+                                    }
+                                    None => {
+                                        crate::crash_log::log_line("WARN", &format!("probe_pacs_backend returned None for {base_origin}"));
+                                        let _ = tx.send(PacsEvent::Incompatible(
+                                            "This webpage does not allow hooking into its virtual PACS system."
+                                                .into(),
+                                        ));
+                                    }
+                                }
+                                ctx.request_repaint();
+                            });
+                        }
                     }
                 }
-            } else if let Some(rest) = line.strip_prefix("PATIENT_RESULTS\t") {
-                if let Ok(arr) = serde_json::from_str::<Vec<Value>>(rest) {
-                    let list = arr
-                        .into_iter()
-                        .take(50)
-                        .enumerate()
-                        .map(|(i, item)| PacsPatientResult {
-                            index: item
-                                .get("index")
-                                .and_then(|x| x.as_u64())
-                                .map(|n| n as usize)
-                                .unwrap_or(i),
-                            name: item
-                                .get("name")
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                            summary: item
-                                .get("summary")
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("")
-                                .to_string(),
-                        })
-                        .collect();
-                    let _ = event_tx.send(PacsEvent::PatientResults(Ok(list)));
-                    egui_ctx.request_repaint();
-                }
-            } else if let Some(rest) = line.strip_prefix("PATIENT_STUDIES\t") {
-                if let Ok(arr) = serde_json::from_str::<Vec<Value>>(rest) {
-                    let list = arr
-                        .into_iter()
-                        .take(50)
-                        .enumerate()
-                        .map(|(i, item)| {
-                            let idx = item
-                                .get("index")
-                                .and_then(|x| x.as_u64())
-                                .map(|n| n as usize)
-                                .unwrap_or(i);
-                            PacsStudyResult {
-                                id: idx.to_string(),
-                                study_uid: format!("vm-study-{idx}"),
-                                patient_name: String::new(),
-                                patient_id: String::new(),
-                                study_date: item
-                                    .get("date")
+                "PATIENT_RESULTS" => {
+                    if let Ok(arr) = serde_json::from_str::<Vec<Value>>(rest) {
+                        let list = arr
+                            .into_iter()
+                            .take(50)
+                            .enumerate()
+                            .map(|(i, item)| PacsPatientResult {
+                                index: item
+                                    .get("index")
+                                    .and_then(|x| x.as_u64())
+                                    .map(|n| n as usize)
+                                    .unwrap_or(i),
+                                name: item
+                                    .get("name")
                                     .and_then(|x| x.as_str())
                                     .unwrap_or("")
                                     .to_string(),
-                                modality: item
-                                    .get("modality")
+                                summary: item
+                                    .get("summary")
                                     .and_then(|x| x.as_str())
                                     .unwrap_or("")
                                     .to_string(),
-                                description: item
-                                    .get("description")
+                            })
+                            .collect();
+                        let _ = event_tx.send(PacsEvent::PatientResults(Ok(list)));
+                        egui_ctx.request_repaint();
+                    }
+                }
+                "PATIENT_STUDIES" => {
+                    if let Ok(arr) = serde_json::from_str::<Vec<Value>>(rest) {
+                        let list = arr
+                            .into_iter()
+                            .take(50)
+                            .enumerate()
+                            .map(|(i, item)| {
+                                let idx = item
+                                    .get("index")
+                                    .and_then(|x| x.as_u64())
+                                    .map(|n| n as usize)
+                                    .unwrap_or(i);
+                                PacsStudyResult {
+                                    id: idx.to_string(),
+                                    study_uid: format!("vm-study-{idx}"),
+                                    patient_name: String::new(),
+                                    patient_id: String::new(),
+                                    study_date: item
+                                        .get("date")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    modality: item
+                                        .get("modality")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    description: item
+                                        .get("description")
+                                        .and_then(|x| x.as_str())
+                                        .unwrap_or("")
+                                        .to_string(),
+                                    has_report: item
+                                        .get("has_report")
+                                        .and_then(|x| x.as_bool())
+                                        .unwrap_or(false),
+                                }
+                            })
+                            .collect();
+                        let _ = event_tx.send(PacsEvent::SearchResults(Ok(list)));
+                        egui_ctx.request_repaint();
+                    }
+                }
+                "PICKED" => {
+                    if let Ok(v) = serde_json::from_str::<Value>(rest) {
+                        let step = v.get("step").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let selector = v.get("selector").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let row_selector = v.get("row_selector").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let in_row = v.get("in_row").and_then(|x| x.as_bool()).unwrap_or(false);
+                        let rel_selector = v.get("rel_selector").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                        let _ = event_tx.send(PacsEvent::PickedElement {
+                            step,
+                            selector,
+                            row_selector,
+                            in_row,
+                            rel_selector,
+                        });
+                        egui_ctx.request_repaint();
+                    }
+                }
+                "SEARCH_RESULTS" => {
+                    if let Ok(arr) = serde_json::from_str::<Vec<Value>>(rest) {
+                        let list = arr
+                            .into_iter()
+                            .take(50)
+                            .enumerate()
+                            .map(|(i, item)| {
+                                let idx = item
+                                    .get("index")
+                                    .and_then(|x| x.as_u64())
+                                    .map(|n| n as usize)
+                                    .unwrap_or(i);
+                                let text = item
+                                    .get("text")
                                     .and_then(|x| x.as_str())
                                     .unwrap_or("")
-                                    .to_string(),
-                                has_report: item
-                                    .get("has_report")
-                                    .and_then(|x| x.as_bool())
-                                    .unwrap_or(false),
-                            }
-                        })
-                        .collect();
-                    let _ = event_tx.send(PacsEvent::SearchResults(Ok(list)));
+                                    .split_whitespace()
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                PacsStudyResult {
+                                    id: idx.to_string(),
+                                    study_uid: format!("row-{idx}"),
+                                    patient_name: text,
+                                    patient_id: String::new(),
+                                    study_date: String::new(),
+                                    modality: String::new(),
+                                    description: String::new(),
+                                    has_report: false,
+                                }
+                            })
+                            .collect();
+                        let _ = event_tx.send(PacsEvent::SearchResults(Ok(list)));
+                        egui_ctx.request_repaint();
+                    }
+                }
+                "SEARCH_ERR" => {
+                    let _ = event_tx.send(PacsEvent::SearchResults(Err(rest.to_string())));
                     egui_ctx.request_repaint();
                 }
-            } else if let Some(rest) = line.strip_prefix("PICKED\t") {
-                if let Ok(v) = serde_json::from_str::<Value>(rest) {
-                    let step = v.get("step").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let selector = v.get("selector").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let row_selector = v.get("row_selector").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let in_row = v.get("in_row").and_then(|x| x.as_bool()).unwrap_or(false);
-                    let rel_selector = v.get("rel_selector").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let _ = event_tx.send(PacsEvent::PickedElement {
-                        step,
-                        selector,
-                        row_selector,
-                        in_row,
-                        rel_selector,
-                    });
+                "DOWNLOADED" => {
+                    if download_requested.swap(false, Ordering::SeqCst) {
+                        let candidate = PathBuf::from(rest);
+                        let inside_watch = canonical_watch_dir.as_ref().is_some_and(|w| {
+                            std::fs::canonicalize(&candidate)
+                                .map(|c| c.starts_with(w))
+                                .unwrap_or(false)
+                        });
+                        if inside_watch {
+                            let _ = event_tx.send(PacsEvent::DownloadFinished(candidate));
+                            egui_ctx.request_repaint();
+                        } else {
+                            let _ = event_tx.send(PacsEvent::DownloadFailed(
+                                "Downloaded file path rejected: outside watch folder.".into(),
+                            ));
+                            egui_ctx.request_repaint();
+                        }
+                    }
+                }
+                "DL_FAILED" => {
+                    download_requested.store(false, Ordering::SeqCst);
+                    let _ = event_tx.send(PacsEvent::DownloadFailed(rest.to_string()));
                     egui_ctx.request_repaint();
                 }
-            } else if let Some(rest) = line.strip_prefix("SEARCH_RESULTS\t") {
-                if let Ok(arr) = serde_json::from_str::<Vec<Value>>(rest) {
-                    let list = arr
-                        .into_iter()
-                        .take(50)
-                        .enumerate()
-                        .map(|(i, item)| {
-                            let idx = item
-                                .get("index")
-                                .and_then(|x| x.as_u64())
-                                .map(|n| n as usize)
-                                .unwrap_or(i);
-                            let text = item
-                                .get("text")
-                                .and_then(|x| x.as_str())
-                                .unwrap_or("")
-                                .split_whitespace()
-                                .collect::<Vec<_>>()
-                                .join(" ");
-                            PacsStudyResult {
-                                id: idx.to_string(),
-                                study_uid: format!("row-{idx}"),
-                                patient_name: text,
-                                patient_id: String::new(),
-                                study_date: String::new(),
-                                modality: String::new(),
-                                description: String::new(),
-                                has_report: false,
-                            }
-                        })
-                        .collect();
-                    let _ = event_tx.send(PacsEvent::SearchResults(Ok(list)));
+                "INCOMPATIBLE" => {
+                    let _ = event_tx.send(PacsEvent::Incompatible(rest.to_string()));
                     egui_ctx.request_repaint();
                 }
-            } else if let Some(err) = line.strip_prefix("SEARCH_ERR\t") {
-                let _ = event_tx.send(PacsEvent::SearchResults(Err(err.to_string())));
-                egui_ctx.request_repaint();
-            } else if let Some(path) = line.strip_prefix("DOWNLOADED\t") {
-                let _ = event_tx.send(PacsEvent::DownloadFinished(PathBuf::from(path)));
-                egui_ctx.request_repaint();
-            } else if let Some(err) = line.strip_prefix("DL_FAILED\t") {
-                let _ = event_tx.send(PacsEvent::DownloadFailed(err.to_string()));
-                egui_ctx.request_repaint();
-            } else if let Some(msg) = line.strip_prefix("INCOMPATIBLE\t") {
-                let _ = event_tx.send(PacsEvent::Incompatible(msg.to_string()));
-                egui_ctx.request_repaint();
+                _ => {}
             }
         }
     }
 
     let status = child.wait();
     crate::crash_log::log_line("INFO", &format!("PACS WebView subprocess exited: {status:?}"));
-    if let Ok(st) = status {
-        if !st.success() {
+    if let Ok(st) = status
+        && !st.success() {
             let _ = event_tx.send(PacsEvent::Incompatible(format!(
                 "WebView login window closed unexpectedly ({st}). See sekhmetx.log for details."
             )));
         }
-    }
     let _ = event_tx.send(PacsEvent::WebViewClosed);
     egui_ctx.request_repaint();
 }
 
 pub fn run_webview_subprocess(login_url: &str, watch_dir: PathBuf, hidden: bool) {
-    use std::io::{BufRead, Write};
+    use std::io::BufRead;
     use tao::event::{Event, WindowEvent};
     use tao::event_loop::ControlFlow;
     use tao::window::WindowBuilder;
     use wry::WebViewBuilder;
 
-    crate::crash_log::log_line("INFO", &format!("WebView subprocess starting for {login_url}"));
+    let Ok(portal_origin) = parse_https_origin(login_url) else {
+        emit_subprocess_json("INCOMPATIBLE", "Portal URL must be a valid https:// address.");
+        return;
+    };
+
+    crate::crash_log::log_line("INFO", &format!("WebView subprocess starting for {portal_origin}"));
     let event_loop = tao::event_loop::EventLoopBuilder::<UserEvent>::with_user_event().build();
     let proxy = event_loop.create_proxy();
 
@@ -1235,16 +1417,15 @@ pub fn run_webview_subprocess(login_url: &str, watch_dir: PathBuf, hidden: bool)
         .build(&event_loop)
     else {
         crate::crash_log::log_line("ERROR", "WindowBuilder::build failed in WebView subprocess");
-        println!("INCOMPATIBLE\tCould not create WebView login window on this system.");
-        let _ = std::io::stdout().flush();
+        emit_subprocess_json("INCOMPATIBLE", "Could not create WebView login window on this system.");
         return;
     };
 
     if hidden {
         let auto_proxy = event_loop.create_proxy();
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(2600));
-            let _ = auto_proxy.send_event(UserEvent::HookSession);
+            std::thread::sleep(std::time::Duration::from_millis(2500));
+            let _ = auto_proxy.send_event(UserEvent::HiddenHookCheck(0));
         });
     }
 
@@ -1253,20 +1434,80 @@ pub fn run_webview_subprocess(login_url: &str, watch_dir: PathBuf, hidden: bool)
     let mut web_context = wry::WebContext::new(Some(web_data_dir));
 
     let dl_dir = watch_dir.to_path_buf();
-    let Ok(webview) = WebViewBuilder::with_web_context(&mut web_context)
+    let nav_origin = portal_origin.clone();
+    let ipc_origin = portal_origin.clone();
+    let pending_hook_cookies: Arc<std::sync::Mutex<Option<String>>> =
+        Arc::new(std::sync::Mutex::new(None));
+    let hidden_hook_attempt: Arc<std::sync::atomic::AtomicU8> =
+        Arc::new(std::sync::atomic::AtomicU8::new(u8::MAX));
+    let ipc_cookies = Arc::clone(&pending_hook_cookies);
+    let ipc_hidden_attempt = Arc::clone(&hidden_hook_attempt);
+    let ipc_retry_proxy = event_loop.create_proxy();
+
+    let record_requests = std::env::var("SEKHMETX_RECORD_PACS_REQUESTS").as_deref() == Ok("1");
+    let mut builder = WebViewBuilder::with_web_context(&mut web_context)
         .with_url(login_url)
-        .with_ipc_handler(|req| {
+        .with_navigation_handler(move |url| {
+            parse_https_origin(&url).as_deref() == Ok(nav_origin.as_str())
+        })
+        .with_new_window_req_handler(|_| false)
+        .with_ipc_handler(move |req| {
+            let req_uri = req.uri().to_string();
+            if parse_https_origin(&req_uri).as_deref() != Ok(ipc_origin.as_str()) {
+                crate::crash_log::log_line("WARN", &format!("WebView IPC dropped due to origin mismatch: uri={req_uri} expected={ipc_origin}"));
+                return;
+            }
             let body = req.body();
-            if body.starts_with("PICKED\t")
-                || body.starts_with("HOOK_DATA\t")
-                || body.starts_with("PATIENT_RESULTS\t")
-                || body.starts_with("PATIENT_STUDIES\t")
-                || body.starts_with("SEARCH_RESULTS\t")
-                || body.starts_with("SEARCH_ERR\t")
-                || body.starts_with("DL_FAILED\t")
-            {
-                println!("{body}");
-                let _ = std::io::stdout().flush();
+            if body.contains('\n') || body.contains('\r') {
+                return;
+            }
+            let Some((tag, payload)) = body.split_once('\t') else {
+                return;
+            };
+            if tag == "REQ_REC" {
+                crate::crash_log::log_line("INFO", &format!("PACS request recorded: {payload}"));
+                return;
+            }
+            if tag == "VM_CHECK" {
+                crate::crash_log::log_line("INFO", &format!("WebView IPC VM_CHECK={payload}"));
+                let is_vm = payload.trim() == "1";
+                let attempt = ipc_hidden_attempt.swap(u8::MAX, std::sync::atomic::Ordering::SeqCst);
+                if !is_vm && attempt < 8 {
+                    let px = ipc_retry_proxy.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(1000));
+                        let _ = px.send_event(UserEvent::HiddenHookCheck(attempt + 1));
+                    });
+                    return;
+                }
+                let cookies = ipc_cookies
+                    .lock()
+                    .ok()
+                    .and_then(|mut g| g.take())
+                    .unwrap_or_default();
+                let hook_payload = serde_json::json!({
+                    "cookies": cookies,
+                    "vue_motion": is_vm,
+                });
+                emit_subprocess_json("HOOK_DATA", &hook_payload.to_string());
+                return;
+            }
+            if matches!(
+                tag,
+                "PICKED"
+                    | "PATIENT_RESULTS"
+                    | "PATIENT_STUDIES"
+                    | "SEARCH_RESULTS"
+                    | "SEARCH_ERR"
+                    | "DL_FAILED"
+            ) {
+                if matches!(tag, "PATIENT_RESULTS" | "PATIENT_STUDIES" | "SEARCH_ERR" | "DL_FAILED") {
+                    crate::crash_log::log_line(
+                        "INFO",
+                        &format!("WebView IPC {tag}: {} bytes", payload.len()),
+                    );
+                }
+                emit_subprocess_json(tag, payload);
             }
         })
         .with_download_started_handler(move |uri, dest| {
@@ -1303,22 +1544,76 @@ pub fn run_webview_subprocess(login_url: &str, watch_dir: PathBuf, hidden: bool)
         .with_download_completed_handler(move |_uri, path, success| {
             if success {
                 if let Some(p) = path {
-                    println!("DOWNLOADED\t{}", p.display());
+                    emit_subprocess_json("DOWNLOADED", &p.to_string_lossy());
                 }
             } else {
-                println!("DL_FAILED\tBrowser download from PACS portal failed.");
+                emit_subprocess_json("DL_FAILED", "Browser download from PACS portal failed.");
             }
-            let _ = std::io::stdout().flush();
-        })
-        .build(&window)
+        });
+    if record_requests {
+        builder = builder.with_initialization_script(
+            r#"(function() {
+  if (window.__sekhmetReqRecorder) return;
+  window.__sekhmetReqRecorder = true;
+  function extractKeys(body) {
+    if (!body) return [];
+    if (typeof URLSearchParams !== 'undefined' && body instanceof URLSearchParams) {
+      return Array.from(body.keys());
+    }
+    if (typeof FormData !== 'undefined' && body instanceof FormData) {
+      return Array.from(body.keys());
+    }
+    if (typeof body === 'string') {
+      try {
+        const j = JSON.parse(body);
+        if (j && typeof j === 'object') return Object.keys(j);
+      } catch (_) {}
+      return body.split('&').map(p => p.split('=')[0]).filter(Boolean);
+    }
+    return [];
+  }
+  const origFetch = window.fetch;
+  if (origFetch) {
+    window.fetch = function(input, init) {
+      try {
+        const u = new URL(typeof input === 'string' ? input : input.url, location.href);
+        const method = (init && init.method) || 'GET';
+        const keys = extractKeys(init && init.body);
+        window.ipc.postMessage('REQ_REC\t' + JSON.stringify({ method, path: u.pathname, keys }));
+      } catch (_) {}
+      return origFetch.apply(this, arguments);
+    };
+  }
+  const origOpen = XMLHttpRequest.prototype.open;
+  const origSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function(method, url) {
+    this.__smMethod = method;
+    this.__smUrl = url;
+    return origOpen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function(body) {
+    try {
+      const u = new URL(this.__smUrl || '', location.href);
+      const keys = extractKeys(body);
+      window.ipc.postMessage('REQ_REC\t' + JSON.stringify({ method: this.__smMethod || 'GET', path: u.pathname, keys }));
+    } catch (_) {}
+    return origSend.apply(this, arguments);
+  };
+})();"#,
+        );
+    }
+    let Ok(webview) = builder.build(&window)
     else {
         crate::crash_log::log_line("ERROR", "WebViewBuilder::build failed in WebView subprocess");
-        println!("INCOMPATIBLE\tThis webpage or WebView runtime does not allow hooking into its virtual PACS system.");
-        let _ = std::io::stdout().flush();
+        emit_subprocess_json(
+            "INCOMPATIBLE",
+            "This webpage or WebView runtime does not allow hooking into its virtual PACS system.",
+        );
         return;
     };
 
     let fallback_url = login_url.to_string();
+    let retry_proxy = event_loop.create_proxy();
     event_loop.run(move |event, _, control_flow| {
         *control_flow = ControlFlow::Wait;
         match event {
@@ -1333,8 +1628,38 @@ pub fn run_webview_subprocess(login_url: &str, watch_dir: PathBuf, hidden: bool)
                 window.set_visible(false);
             }
             Event::UserEvent(UserEvent::AutoLogin(payload)) => {
-                let js = build_auto_login_js(&payload);
-                let _ = webview.evaluate_script(&js);
+                let parsed = serde_json::from_str::<Value>(&payload).ok();
+                let expected_origin = parsed
+                    .as_ref()
+                    .and_then(|v| v.get("expected_origin").and_then(|x| x.as_str()))
+                    .map(|s| s.to_string());
+                let attempt = parsed
+                    .as_ref()
+                    .and_then(|v| v.get("attempt").and_then(|x| x.as_u64()))
+                    .unwrap_or(0);
+                let cur_origin = webview
+                    .url()
+                    .ok()
+                    .and_then(|u| parse_https_origin(&u).ok());
+                if cur_origin.is_none() {
+                    if attempt < 10 {
+                        let mut next = parsed.unwrap_or_else(|| serde_json::json!({}));
+                        if let Some(obj) = next.as_object_mut() {
+                            obj.insert("attempt".to_string(), serde_json::json!(attempt + 1));
+                        }
+                        let next_payload = next.to_string();
+                        let px = retry_proxy.clone();
+                        std::thread::spawn(move || {
+                            std::thread::sleep(std::time::Duration::from_millis(500));
+                            let _ = px.send_event(UserEvent::AutoLogin(next_payload));
+                        });
+                    }
+                } else if expected_origin.is_some() && cur_origin == expected_origin {
+                    let js = build_auto_login_js(&payload);
+                    let _ = webview.evaluate_script(&js);
+                } else {
+                    emit_subprocess_json("SEARCH_ERR", "Login page address changed");
+                }
             }
             Event::UserEvent(UserEvent::StartPick(payload)) => {
                 let js = build_picker_js(&payload);
@@ -1360,8 +1685,19 @@ pub fn run_webview_subprocess(login_url: &str, watch_dir: PathBuf, hidden: bool)
                 let js = build_vuemotion_download_js(&payload);
                 let _ = webview.evaluate_script(&js);
             }
-            Event::UserEvent(UserEvent::HookSession) => {
+            Event::UserEvent(UserEvent::HookSession)
+            | Event::UserEvent(UserEvent::HiddenHookCheck(_)) => {
+                if let Event::UserEvent(UserEvent::HiddenHookCheck(attempt)) = event {
+                    hidden_hook_attempt.store(attempt, std::sync::atomic::Ordering::SeqCst);
+                } else {
+                    hidden_hook_attempt.store(u8::MAX, std::sync::atomic::Ordering::SeqCst);
+                }
                 let current_url = webview.url().unwrap_or_else(|_| fallback_url.clone());
+                crate::crash_log::log_line("INFO", &format!("HookSession invoked on url={current_url} (expected={portal_origin})"));
+                if parse_https_origin(&current_url).as_deref() != Ok(portal_origin.as_str()) {
+                    emit_subprocess_json("INCOMPATIBLE", "Login page origin does not match portal URL.");
+                    return;
+                }
                 let cookie_header = webview
                     .cookies_for_url(&current_url)
                     .map(|list| {
@@ -1371,21 +1707,36 @@ pub fn run_webview_subprocess(login_url: &str, watch_dir: PathBuf, hidden: bool)
                             .join("; ")
                     })
                     .unwrap_or_default();
-                let payload = serde_json::json!({
-                    "url": current_url,
-                    "cookies": cookie_header,
-                });
-                let js = format!(
-                    r#"(function() {{
-  const base = {payload};
-  const vm = !!(document.querySelector('#sptGeneralDetailsInput') && (document.querySelector('#dataTableID') || document.querySelector('#sptSearchSubmitBtn')));
-  base.vue_motion = vm;
-  window.ipc.postMessage('HOOK_DATA\t' + JSON.stringify(base));
-}})();"#
-                );
-                if webview.evaluate_script(&js).is_err() {
-                    println!("HOOK_DATA\t{payload}");
-                    let _ = std::io::stdout().flush();
+                if let Ok(mut guard) = pending_hook_cookies.lock() {
+                    *guard = Some(cookie_header.clone());
+                }
+                let js = r#"(function() {
+  let vm = false;
+  try {
+    const checkDoc = (d) => !!(d && d.querySelector('#sptGeneralDetailsInput') && (d.querySelector('#dataTableID') || d.querySelector('#sptSearchSubmitBtn')));
+    vm = checkDoc(document);
+    if (!vm) {
+      for (const fr of document.querySelectorAll('iframe')) {
+        try {
+          if (checkDoc(fr.contentDocument)) { vm = true; break; }
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+  window.ipc.postMessage('VM_CHECK\t' + (vm ? '1' : '0'));
+})();"#;
+                if let Err(e) = webview.evaluate_script(js) {
+                    crate::crash_log::log_line("WARN", &format!("HookSession evaluate_script failed: {e}"));
+                    let cookies = pending_hook_cookies
+                        .lock()
+                        .ok()
+                        .and_then(|mut g| g.take())
+                        .unwrap_or(cookie_header);
+                    let hook_payload = serde_json::json!({
+                        "cookies": cookies,
+                        "vue_motion": false,
+                    });
+                    emit_subprocess_json("HOOK_DATA", &hook_payload.to_string());
                 }
             }
             _ => {}
@@ -1393,8 +1744,19 @@ pub fn run_webview_subprocess(login_url: &str, watch_dir: PathBuf, hidden: bool)
     });
 }
 
+const MAX_PACS_DOWNLOAD_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+
+fn pacs_http_agent(read_timeout_secs: u64) -> ureq::Agent {
+    let config = ureq::Agent::config_builder()
+        .timeout_connect(Some(std::time::Duration::from_secs(15)))
+        .timeout_recv_response(Some(std::time::Duration::from_secs(read_timeout_secs)))
+        .build();
+    config.into()
+}
+
 fn http_get_json(url: &str, cookie_header: &str, accept: &str) -> Result<Value> {
-    let mut req = ureq::get(url).header("Accept", accept);
+    let agent = pacs_http_agent(30);
+    let mut req = agent.get(url).header("Accept", accept);
     if !cookie_header.is_empty() {
         req = req.header("Cookie", cookie_header);
     }
@@ -1570,18 +1932,26 @@ pub fn download_pacs_study_zip(
         }
     };
 
-    let mut req = ureq::get(&url).header("Accept", "application/zip, application/octet-stream");
+    let agent = pacs_http_agent(300);
+    let mut req = agent.get(&url).header("Accept", "application/zip, application/octet-stream");
     if !cookie_header.is_empty() {
         req = req.header("Cookie", cookie_header);
     }
     let mut resp = req.call()?;
-    let mut reader = resp.body_mut().as_reader();
+    let mut reader = resp.body_mut().as_reader().take(MAX_PACS_DOWNLOAD_BYTES + 1);
     let mut out = std::fs::File::create(&raw_zip)?;
     let mut buf = [0u8; 64 * 1024];
+    let mut total_bytes: u64 = 0;
     loop {
         let n = reader.read(&mut buf)?;
         if n == 0 {
             break;
+        }
+        total_bytes = total_bytes.saturating_add(n as u64);
+        if total_bytes > MAX_PACS_DOWNLOAD_BYTES {
+            drop(out);
+            let _ = std::fs::remove_file(&raw_zip);
+            anyhow::bail!("Downloaded study ZIP exceeds maximum allowed size (4 GiB).");
         }
         out.write_all(&buf[..n])?;
     }
@@ -1606,15 +1976,7 @@ pub fn download_pacs_study_zip(
 }
 
 fn anonymize_zip_archive(src_zip: &Path, dst_zip: &Path) -> Result<()> {
-    let tmp_dir = std::env::temp_dir().join(format!(
-        "sekhmetx-pacs-anon-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0)
-    ));
-    let _ = std::fs::remove_dir_all(&tmp_dir);
-    std::fs::create_dir_all(&tmp_dir)?;
+    let tmp_dir = tempfile::TempDir::new()?;
 
     let file = std::fs::File::open(src_zip)?;
     let mut archive = zip::ZipArchive::new(file)?;
@@ -1626,22 +1988,32 @@ fn anonymize_zip_archive(src_zip: &Path, dst_zip: &Path) -> Result<()> {
     let opts = crate::export::AnonymizeOptions::default();
     let mut uid_map = HashMap::new();
     let mut uid_counter = 0usize;
+    let mut img_counter = 0usize;
 
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         if entry.is_dir() {
             continue;
         }
+        if entry.unix_mode().is_some_and(|m| (m & 0o170000) == 0o120000) {
+            continue;
+        }
         let Some(rel) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
             continue;
         };
-        let in_tmp = tmp_dir.join("in.dcm");
-        let out_tmp = tmp_dir.join("out.dcm");
+        if rel
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.eq_ignore_ascii_case("DICOMDIR"))
+        {
+            continue;
+        }
+        let in_tmp = tmp_dir.path().join("in.dcm");
+        let out_tmp = tmp_dir.path().join("out.dcm");
         {
             let mut f = std::fs::File::create(&in_tmp)?;
             std::io::copy(&mut entry, &mut f)?;
         }
-        writer.start_file(rel.to_string_lossy().replace('\\', "/"), options)?;
         if crate::export::anonymize_dicom_file(
             &in_tmp,
             &out_tmp,
@@ -1651,540 +2023,158 @@ fn anonymize_zip_archive(src_zip: &Path, dst_zip: &Path) -> Result<()> {
         )
         .is_ok()
         {
+            img_counter += 1;
+            let neutral_name = format!("SER001/IMG{img_counter:04}.dcm");
+            writer.start_file(neutral_name, options)?;
             let mut f = std::fs::File::open(&out_tmp)?;
-            std::io::copy(&mut f, &mut writer)?;
-        } else {
-            let mut f = std::fs::File::open(&in_tmp)?;
             std::io::copy(&mut f, &mut writer)?;
         }
     }
     writer.finish()?;
-    let _ = std::fs::remove_dir_all(&tmp_dir);
     Ok(())
 }
 
-fn build_picker_js(payload_json: &str) -> String {
-    format!(
-        r#"(function() {{
-  const cfg = {payload_json};
-  if (window.__sekhmetPickerCleanup) window.__sekhmetPickerCleanup();
-  let lastEl = null;
-  let lastOutline = '';
-  function cssEscape(s) {{
-    return (window.CSS && CSS.escape) ? CSS.escape(s) : s.replace(/([^\w-])/g, '\\$1');
-  }}
-  function selectorFor(el, generalizeRow) {{
-    if (!el || el.nodeType !== 1) return '';
-    const parts = [];
-    let cur = el;
-    while (cur && cur.nodeType === 1 && cur.tagName.toLowerCase() !== 'html') {{
-      if (cur.id && !generalizeRow) {{
-        parts.unshift('#' + cssEscape(cur.id));
-        break;
-      }}
-      let seg = cur.tagName.toLowerCase();
-      if (cur.classList && cur.classList.length > 0) {{
-        const cls = Array.from(cur.classList).filter(c => !c.startsWith('sekhmet')).slice(0, 2);
-        if (cls.length) seg += '.' + cls.map(cssEscape).join('.');
-      }}
-      if (generalizeRow && cur === el) {{
-        // Generalize repeating row element (no :nth-of-type on the row itself)
-      }} else if (cur.parentElement) {{
-        const sibs = Array.from(cur.parentElement.children).filter(c => c.tagName === cur.tagName);
-        if (sibs.length > 1) {{
-          seg += ':nth-of-type(' + (sibs.indexOf(cur) + 1) + ')';
-        }}
-      }}
-      parts.unshift(seg);
-      cur = cur.parentElement;
-    }}
-    return parts.join(' > ');
-  }}
-  function relativeSelector(ancestor, desc) {{
-    const parts = [];
-    let cur = desc;
-    while (cur && cur !== ancestor && cur.nodeType === 1) {{
-      let seg = cur.tagName.toLowerCase();
-      if (cur.classList && cur.classList.length > 0) {{
-        const cls = Array.from(cur.classList).filter(c => !c.startsWith('sekhmet')).slice(0, 2);
-        if (cls.length) seg += '.' + cls.map(cssEscape).join('.');
-      }}
-      if (cur.parentElement) {{
-        const sibs = Array.from(cur.parentElement.children).filter(c => c.tagName === cur.tagName);
-        if (sibs.length > 1) seg += ':nth-of-type(' + (sibs.indexOf(cur) + 1) + ')';
-      }}
-      parts.unshift(seg);
-      cur = cur.parentElement;
-    }}
-    return parts.join(' > ');
-  }}
-  function onMove(e) {{
-    if (lastEl && lastEl !== e.target) lastEl.style.outline = lastOutline;
-    lastEl = e.target;
-    lastOutline = lastEl.style.outline || '';
-    lastEl.style.outline = '3px solid #22c55e';
-  }}
-  function onClick(e) {{
-    const multiStep = (cfg.step === 'download' || cfg.step === 'anon');
-    if (multiStep && !(e.ctrlKey || e.metaKey)) {{
-      return; // Allow normal clicks to open dropdown menus / popups!
-    }}
-    e.preventDefault();
-    e.stopPropagation();
-    let target = e.target;
-    if (cfg.step === 'row') {{
-      const row = target.closest('tr[id], tbody > tr, li, [role="row"], .row');
-      if (row) target = row;
-    }}
-    const sel = selectorFor(target, false);
-    const rowSel = (cfg.step === 'row') ? selectorFor(target, true) : '';
-    let inRow = false;
-    let relSel = '';
-    if (cfg.row_sel) {{
-      try {{
-        const matchedRow = target.closest(cfg.row_sel);
-        if (matchedRow) {{
-          inRow = true;
-          relSel = relativeSelector(matchedRow, target);
-        }}
-      }} catch (_) {{}}
-    }}
-    if (!multiStep) cleanup();
-    window.ipc.postMessage('PICKED\t' + JSON.stringify({{
-      step: cfg.step,
-      selector: sel,
-      row_selector: rowSel,
-      in_row: inRow,
-      rel_selector: relSel
-    }}));
-  }}
-  function cleanup() {{
-    if (lastEl) lastEl.style.outline = lastOutline;
-    document.removeEventListener('mouseover', onMove, true);
-    document.removeEventListener('click', onClick, true);
-    window.__sekhmetPickerCleanup = null;
-  }}
-  document.addEventListener('mouseover', onMove, true);
-  document.addEventListener('click', onClick, true);
-  window.__sekhmetPickerCleanup = cleanup;
-}})();"#
-    )
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
 
-fn build_trained_search_js(payload_json: &str) -> String {
-    format!(
-        r#"(function() {{
-  const cfg = {payload_json};
-  const p = cfg.profile;
-  const input = document.querySelector(p.search_input_sel);
-  if (!input) {{
-    window.ipc.postMessage('SEARCH_ERR\tSearch input not found on page.');
-    return;
-  }}
-  input.focus();
-  input.value = cfg.query || '';
-  input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-  input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-  input.dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }}));
-  input.dispatchEvent(new KeyboardEvent('keyup', {{ key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }}));
-  if (input.form) {{
-    const btn = input.form.querySelector('button[type="submit"], input[type="submit"], button');
-    if (btn) btn.click();
-    else if (typeof input.form.requestSubmit === 'function') input.form.requestSubmit();
-  }}
-  let tries = 0;
-  const timer = setInterval(function() {{
-    tries++;
-    const rows = Array.from(document.querySelectorAll(p.row_list_sel)).slice(0, 50);
-    if (rows.length > 0 || tries >= 20) {{
-      clearInterval(timer);
-      const out = rows.map((r, i) => ({{
-        index: i,
-        text: (r.innerText || r.textContent || '').replace(/\s+/g, ' ').trim()
-      }})).filter(x => x.text.length > 0);
-      window.ipc.postMessage('SEARCH_RESULTS\t' + JSON.stringify(out));
-    }}
-  }}, 250);
-}})();"#
-    )
-}
-
-fn build_trained_download_js(payload_json: &str) -> String {
-    format!(
-        r#"(function() {{
-  const cfg = {payload_json};
-  const p = cfg.profile;
-  const rows = Array.from(document.querySelectorAll(p.row_list_sel));
-  const row = rows[cfg.row_index];
-  if (!row) {{
-    window.ipc.postMessage('DL_FAILED\tSelected study row is no longer visible on page.');
-    return;
-  }}
-  row.click();
-  const useAnon = !!(cfg.anonymize && p.anon_steps && p.anon_steps.length > 0);
-  const steps = useAnon ? p.anon_steps : (p.download_steps || []);
-  if (steps.length === 0) {{
-    window.ipc.postMessage('DL_FAILED\tNo download steps trained for this portal.');
-    return;
-  }}
-  function runStep(idx) {{
-    if (idx >= steps.length) return;
-    const st = steps[idx];
-    const sel = (st.in_row && st.rel_selector) ? st.rel_selector : st.selector;
-    const btn = (st.in_row && st.rel_selector) ? row.querySelector(sel) : document.querySelector(sel);
-    if (!btn) {{
-      window.ipc.postMessage('DL_FAILED\tDownload step #' + (idx + 1) + ' button not found on page.');
-      return;
-    }}
-    btn.click();
-    if (idx + 1 < steps.length) {{
-      setTimeout(() => runStep(idx + 1), 250);
-    }}
-  }}
-  setTimeout(() => runStep(0), 150);
-}})();"#
-    )
-}
-
-fn build_vuemotion_search_js(payload_json: &str) -> String {
-    format!(
-        r#"(function() {{
-  const cfg = {payload_json};
-  function runSearch() {{
-    const input = document.querySelector('#sptGeneralDetailsInput');
-    const btn = document.querySelector('#sptSearchSubmitBtn');
-    if (!input) return false;
-    const prevKey = Array.from(document.querySelectorAll('#dataTableID tr[id^="ptRecord_"]'))
-      .map(r => r.id + ':' + (r.innerText || '').slice(0, 40))
-      .join('|');
-    input.focus();
-    input.value = cfg.query || '';
-    input.dispatchEvent(new Event('input', {{ bubbles: true }}));
-    input.dispatchEvent(new Event('change', {{ bubbles: true }}));
-    if (btn) btn.click();
-    else if (input.form) input.form.submit();
-    let tries = 0;
-    const t = setInterval(function() {{
-      tries++;
-      const rows = Array.from(document.querySelectorAll('#dataTableID tr[id^="ptRecord_"]')).slice(0, 50);
-      const curKey = rows.map(r => r.id + ':' + (r.innerText || '').slice(0, 40)).join('|');
-      const changed = curKey !== prevKey;
-      if ((rows.length > 0 && (changed || tries >= 6)) || tries >= 24) {{
-        clearInterval(t);
-        const out = rows.map((r, i) => {{
-          const link = r.querySelector('a.dtPatientLink');
-          const name = (link ? (link.innerText || link.title || '') : '').replace(/\s+/g, ' ').trim();
-          const cells = Array.from(r.querySelectorAll('td'))
-            .map(td => (td.innerText || '').replace(/\s+/g, ' ').trim())
-            .filter(s => s.length > 0 && s !== '.' && s !== '-');
-          return {{ index: i, name: name || cells[0] || ('Patient #' + (i + 1)), summary: cells.join(' · ') }};
-        }});
-        window.ipc.postMessage('PATIENT_RESULTS\t' + JSON.stringify(out));
-      }}
-    }}, 250);
-    return true;
-  }}
-  if (!runSearch()) {{
-    // User is currently in the viewer tab; click back/search tab or navigate to login_url.
-    const searchTab = document.querySelector('#mainTab-0, a[href*="default.aspx"]');
-    if (searchTab) searchTab.click();
-    else if (cfg.login_url) window.location.href = cfg.login_url;
-    let w = 0;
-    const wt = setInterval(function() {{
-      w++;
-      if (runSearch() || w >= 20) {{
-        clearInterval(wt);
-        if (w >= 20) window.ipc.postMessage('SEARCH_ERR\tVue Motion search bar not found.');
-      }}
-    }}, 300);
-  }}
-}})();"#
-    )
-}
-
-fn build_vuemotion_open_patient_js(payload_json: &str) -> String {
-    format!(
-        r#"(function() {{
-  const cfg = {payload_json};
-  const rows = Array.from(document.querySelectorAll('#dataTableID tr[id^="ptRecord_"]'));
-  const row = rows[cfg.patient_index];
-  if (!row) {{
-    window.ipc.postMessage('SEARCH_ERR\tPatient row no longer visible.');
-    return;
-  }}
-  const link = row.querySelector('a.dtPatientLink') || row.querySelector('a');
-  if (!link) {{
-    window.ipc.postMessage('SEARCH_ERR\tPatient hyperlink not found.');
-    return;
-  }}
-  link.click();
-  let tries = 0;
-  let lipClicked = false;
-  const t = setInterval(function() {{
-    tries++;
-    const lip = document.querySelector('#mainTab-1-lipLeft, [id$="-lipLeft"]');
-    const list = document.querySelector('#mainTab-1-SV_studyList');
-    if (lip && (!list || list.offsetParent === null) && !lipClicked) {{
-      lipClicked = true;
-      lip.click();
-    }}
-    const cards = Array.from(document.querySelectorAll('#mainTab-1-SV_studyList div[id$="_study"]')).slice(0, 50);
-    if (cards.length > 0 || tries >= 35) {{
-      clearInterval(t);
-      const out = cards.map((card, i) => {{
-        const infoEl = card.querySelector('.scc1') || card;
-        const lines = (infoEl.innerText || '').split('\n').map(s => s.trim()).filter(Boolean);
-        const date = lines[0] || '';
-        const modality = lines[1] || '';
-        const description = lines.slice(2).join(' ') || lines.join(' ');
-        const icon = card.querySelector('span[id$="_studyIcon"]');
-        const has_report = !!(icon && (icon.classList.contains('report') || (icon.title || '').toLowerCase().includes('informe')));
-        return {{ index: i, date, modality, description, has_report }};
-      }});
-      window.ipc.postMessage('PATIENT_STUDIES\t' + JSON.stringify(out));
-    }}
-  }}, 300);
-}})();"#
-    )
-}
-
-fn build_vuemotion_download_js(payload_json: &str) -> String {
-    format!(
-        r#"(function() {{
-  const cfg = {payload_json};
-  const lip = document.querySelector('#mainTab-1-lipLeft, [id$="-lipLeft"]');
-  const list = document.querySelector('#mainTab-1-SV_studyList');
-  if (lip && (!list || list.offsetParent === null)) {{
-    lip.click();
-  }}
-  setTimeout(function() {{
-    const cards = Array.from(document.querySelectorAll('#mainTab-1-SV_studyList div[id$="_study"]'));
-    const card = cards[cfg.study_index];
-    if (!card) {{
-      window.ipc.postMessage('DL_FAILED\tSelected study not found in Vue Motion list.');
-      return;
-    }}
-    card.click();
-    setTimeout(function() {{
-      const saveBtn = document.querySelector('#mainTab-1-SV-saveAnchorSpan, #mainTab-1-SV-saveBtn');
-      if (!saveBtn) {{
-        window.ipc.postMessage('DL_FAILED\tGuardar button not found in Vue Motion toolbar.');
-        return;
-      }}
-      saveBtn.click();
-      setTimeout(function() {{
-        let target = null;
-        if (cfg.anonymize) {{
-          const links = Array.from(document.querySelectorAll('ul.subnav.subnavpos2 a.vuitItemLink, ul.subnav a.vuitItemLink'));
-          target = links.find(a => /an[oó]nimo|anonim|anonymous/i.test(a.innerText || a.textContent || ''));
-        }}
-        if (!target) {{
-          target = document.querySelector('#mainTab-1-SV-saveStudyOption a.vuitItemLink');
-        }}
-        if (!target) {{
-          window.ipc.postMessage('DL_FAILED\tDownload DICOM ZIP option not found in menu.');
-          return;
-        }}
-        target.click();
-      }}, 250);
-    }}, 500);
-  }}, 250);
-}})();"#
-    )
-}
-
-fn build_auto_login_js(payload_json: &str) -> String {
-    format!(
-        r#"(function() {{
-  const cfg = {payload_json};
-  let attempts = 0;
-  const timer = setInterval(function() {{
-    attempts++;
-    if (document.querySelector('#sptGeneralDetailsInput')) {{
-      clearInterval(timer);
-      return;
-    }}
-    const pw = document.querySelector('input[type="password"]');
-    if (pw && pw.offsetParent !== null) {{
-      clearInterval(timer);
-      const inputs = Array.from(document.querySelectorAll('input[type="text"], input[type="email"], input:not([type])'))
-        .filter(el => el.offsetParent !== null && !el.disabled && !el.readOnly);
-      const userEl = inputs[0];
-      if (userEl && cfg.user) {{
-        userEl.focus();
-        userEl.value = cfg.user;
-        userEl.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        userEl.dispatchEvent(new Event('change', {{ bubbles: true }}));
-      }}
-      if (cfg.pass) {{
-        pw.focus();
-        pw.value = cfg.pass;
-        pw.dispatchEvent(new Event('input', {{ bubbles: true }}));
-        pw.dispatchEvent(new Event('change', {{ bubbles: true }}));
-      }}
-      setTimeout(function() {{
-        const btn = document.querySelector('button[type="submit"], input[type="submit"], #btnLogin, .login-btn, button');
-        if (btn) btn.click();
-        else if (pw.form) pw.form.submit();
-      }}, 150);
-    }} else if (attempts >= 20) {{
-      clearInterval(timer);
-    }}
-  }}, 250);
-}})();"#
-    )
-}
-
-fn hex_encode(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
-
-fn hex_decode(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
-        return None;
+    struct MockSecretStore {
+        map: Mutex<HashMap<String, String>>,
+        fail: bool,
     }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for i in (0..s.len()).step_by(2) {
-        let byte = u8::from_str_radix(&s[i..i + 2], 16).ok()?;
-        out.push(byte);
-    }
-    Some(out)
-}
 
-#[cfg(windows)]
-pub fn protect_secret(plain: &str) -> String {
-    if plain.is_empty() {
-        return String::new();
+    impl SecretStore for MockSecretStore {
+        fn set_password(&self, account: &str, password: &str) -> Result<(), String> {
+            if self.fail {
+                return Err("keyring unavailable".into());
+            }
+            self.map
+                .lock()
+                .unwrap()
+                .insert(account.to_string(), password.to_string());
+            Ok(())
+        }
+
+        fn get_password(&self, account: &str) -> Result<zeroize::Zeroizing<String>, String> {
+            if self.fail {
+                return Err("keyring unavailable".into());
+            }
+            Ok(zeroize::Zeroizing::new(
+                self.map
+                    .lock()
+                    .unwrap()
+                    .get(account)
+                    .cloned()
+                    .unwrap_or_default(),
+            ))
+        }
+
+        fn delete_password(&self, account: &str) -> Result<(), String> {
+            if self.fail {
+                return Err("keyring unavailable".into());
+            }
+            self.map.lock().unwrap().remove(account);
+            Ok(())
+        }
     }
-    #[repr(C)]
-    struct DataBlob {
-        cb_data: u32,
-        pb_data: *mut u8,
-    }
-    #[link(name = "crypt32")]
-    unsafe extern "system" {
-        fn CryptProtectData(
-            p_data_in: *const DataBlob,
-            sz_data_descr: *const u16,
-            p_optional_entropy: *const DataBlob,
-            pv_reserved: *mut core::ffi::c_void,
-            p_prompt_struct: *mut core::ffi::c_void,
-            dw_flags: u32,
-            p_data_out: *mut DataBlob,
-        ) -> i32;
-    }
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn LocalFree(h_mem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-    }
-    let mut bytes = plain.as_bytes().to_vec();
-    let in_blob = DataBlob {
-        cb_data: bytes.len() as u32,
-        pb_data: bytes.as_mut_ptr(),
-    };
-    let mut out_blob = DataBlob {
-        cb_data: 0,
-        pb_data: core::ptr::null_mut(),
-    };
-    let ok = unsafe {
-        CryptProtectData(
-            &in_blob,
-            core::ptr::null(),
-            core::ptr::null(),
-            core::ptr::null_mut(),
-            core::ptr::null_mut(),
-            0x1, // CRYPTPROTECT_UI_FORBIDDEN
-            &mut out_blob,
-        )
-    };
-    if ok != 0 && !out_blob.pb_data.is_null() {
-        let slice = unsafe {
-            core::slice::from_raw_parts(out_blob.pb_data, out_blob.cb_data as usize)
+
+    #[test]
+    fn keyring_store_roundtrip_and_error_without_fallback() {
+        let ok_store = MockSecretStore {
+            map: Mutex::new(HashMap::new()),
+            fail: false,
         };
-        let encoded = format!("dpapi:{}", hex_encode(slice));
-        unsafe { LocalFree(out_blob.pb_data.cast()) };
-        return encoded;
-    }
-    format!("hex:{}", hex_encode(plain.as_bytes()))
-}
+        store_pacs_password_with(&ok_store, "https://pacs.example.com", "s3cr3t!").unwrap();
+        let loaded = load_pacs_password_with(&ok_store, "https://pacs.example.com").unwrap();
+        assert_eq!(loaded.as_str(), "s3cr3t!");
+        delete_pacs_password_with(&ok_store, "https://pacs.example.com").unwrap();
+        let after_del = load_pacs_password_with(&ok_store, "https://pacs.example.com").unwrap();
+        assert!(after_del.is_empty());
 
-#[cfg(windows)]
-pub fn unprotect_secret(encoded: &str) -> Option<String> {
-    if encoded.is_empty() {
-        return Some(String::new());
-    }
-    if let Some(hex) = encoded.strip_prefix("hex:") {
-        let bytes = hex_decode(hex)?;
-        return String::from_utf8(bytes).ok();
-    }
-    let hex = encoded.strip_prefix("dpapi:")?;
-    let mut bytes = hex_decode(hex)?;
-    #[repr(C)]
-    struct DataBlob {
-        cb_data: u32,
-        pb_data: *mut u8,
-    }
-    #[link(name = "crypt32")]
-    unsafe extern "system" {
-        fn CryptUnprotectData(
-            p_data_in: *const DataBlob,
-            ppsz_data_descr: *mut *mut u16,
-            p_optional_entropy: *const DataBlob,
-            pv_reserved: *mut core::ffi::c_void,
-            p_prompt_struct: *mut core::ffi::c_void,
-            dw_flags: u32,
-            p_data_out: *mut DataBlob,
-        ) -> i32;
-    }
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn LocalFree(h_mem: *mut core::ffi::c_void) -> *mut core::ffi::c_void;
-    }
-    let in_blob = DataBlob {
-        cb_data: bytes.len() as u32,
-        pb_data: bytes.as_mut_ptr(),
-    };
-    let mut out_blob = DataBlob {
-        cb_data: 0,
-        pb_data: core::ptr::null_mut(),
-    };
-    let ok = unsafe {
-        CryptUnprotectData(
-            &in_blob,
-            core::ptr::null_mut(),
-            core::ptr::null(),
-            core::ptr::null_mut(),
-            core::ptr::null_mut(),
-            0x1,
-            &mut out_blob,
-        )
-    };
-    if ok != 0 && !out_blob.pb_data.is_null() {
-        let slice = unsafe {
-            core::slice::from_raw_parts(out_blob.pb_data, out_blob.cb_data as usize)
+        let failing_store = MockSecretStore {
+            map: Mutex::new(HashMap::new()),
+            fail: true,
         };
-        let plain = String::from_utf8(slice.to_vec()).ok();
-        unsafe { LocalFree(out_blob.pb_data.cast()) };
-        return plain;
+        assert!(store_pacs_password_with(&failing_store, "https://pacs.example.com", "pw").is_err());
+        assert!(load_pacs_password_with(&failing_store, "https://pacs.example.com").is_err());
     }
-    None
-}
 
-#[cfg(not(windows))]
-pub fn protect_secret(plain: &str) -> String {
-    if plain.is_empty() {
-        String::new()
-    } else {
-        format!("hex:{}", hex_encode(plain.as_bytes()))
+    #[test]
+    fn parse_https_origin_enforces_https_and_no_userinfo() {
+        assert_eq!(
+            parse_https_origin("https://pacs.example.com:8443/login?next=/"),
+            Ok("https://pacs.example.com:8443".to_string())
+        );
+        assert!(parse_https_origin("http://pacs.example.com/login").is_err());
+        assert!(parse_https_origin("javascript:alert(1)").is_err());
+        assert!(parse_https_origin("https://user:pass@pacs.example.com/login").is_err());
     }
-}
 
-#[cfg(not(windows))]
-pub fn unprotect_secret(encoded: &str) -> Option<String> {
-    if encoded.is_empty() {
-        return Some(String::new());
+    #[test]
+    fn anonymize_zip_omits_corrupt_files_and_uses_neutral_paths() {
+        use dicom_core::{DataElement, PrimitiveValue, VR};
+        use dicom_dictionary_std::tags;
+        use dicom_object::{FileMetaTableBuilder, InMemDicomObject, StandardDataDictionary};
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let valid_dcm = dir.path().join("valid.dcm");
+        let mut obj = InMemDicomObject::new_empty_with_dict(StandardDataDictionary);
+        obj.put(DataElement::new(
+            tags::SOP_CLASS_UID,
+            VR::UI,
+            PrimitiveValue::from("1.2.840.10008.5.1.4.1.1.2"),
+        ));
+        obj.put(DataElement::new(
+            tags::SOP_INSTANCE_UID,
+            VR::UI,
+            PrimitiveValue::from("1.2.3.4.5.999"),
+        ));
+        obj.put(DataElement::new(
+            tags::PATIENT_NAME,
+            VR::PN,
+            PrimitiveValue::from("Doe^John"),
+        ));
+        obj.with_meta(
+            FileMetaTableBuilder::new()
+                .transfer_syntax("1.2.840.10008.1.2.1")
+                .media_storage_sop_class_uid("1.2.840.10008.5.1.4.1.1.2")
+                .media_storage_sop_instance_uid("1.2.3.4.5.999"),
+        )
+        .unwrap()
+        .write_to_file(&valid_dcm)
+        .unwrap();
+
+        let src_zip = dir.path().join("src.zip");
+        let dst_zip = dir.path().join("dst.zip");
+        {
+            let f = std::fs::File::create(&src_zip).unwrap();
+            let mut zw = zip::ZipWriter::new(f);
+            let opts = zip::write::SimpleFileOptions::default();
+            zw.start_file("DOE_JOHN/SECRET_NAME.dcm", opts).unwrap();
+            zw.write_all(&std::fs::read(&valid_dcm).unwrap()).unwrap();
+            zw.start_file("DOE_JOHN/corrupt.dcm", opts).unwrap();
+            zw.write_all(b"NOT A DICOM FILE WITH PHI Doe^John").unwrap();
+            zw.start_file("DICOMDIR", opts).unwrap();
+            zw.write_all(b"DICOMDIR_BYTES").unwrap();
+            zw.finish().unwrap();
+        }
+
+        anonymize_zip_archive(&src_zip, &dst_zip).unwrap();
+
+        let out_f = std::fs::File::open(&dst_zip).unwrap();
+        let mut zr = zip::ZipArchive::new(out_f).unwrap();
+        assert_eq!(zr.len(), 1);
+        let mut entry = zr.by_index(0).unwrap();
+        assert_eq!(entry.name().unwrap().as_ref(), "SER001/IMG0001.dcm");
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        let out_dcm = dir.path().join("extracted.dcm");
+        std::fs::write(&out_dcm, &bytes).unwrap();
+        let parsed = dicom_object::open_file(&out_dcm).unwrap();
+        assert_eq!(
+            parsed.element(tags::PATIENT_NAME).unwrap().to_str().unwrap(),
+            "ANONYMIZED"
+        );
     }
-    let hex = encoded.strip_prefix("hex:")?;
-    let bytes = hex_decode(hex)?;
-    String::from_utf8(bytes).ok()
 }

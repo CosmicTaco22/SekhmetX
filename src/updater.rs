@@ -152,13 +152,11 @@ pub fn parse_sha256sum(contents: &str, asset_name: &str) -> Option<String> {
         let Some(hash) = parts.next() else { continue };
         let Some(name) = parts.next() else { continue };
         let clean_name = name.trim_start_matches('*');
-        if clean_name == asset_name
-            || clean_name.rsplit(['/', '\\']).next() == Some(asset_name)
-        {
-            if hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        if (clean_name == asset_name
+            || clean_name.rsplit(['/', '\\']).next() == Some(asset_name))
+            && hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit()) {
                 return Some(hash.to_ascii_lowercase());
             }
-        }
     }
     None
 }
@@ -232,14 +230,13 @@ pub fn download_and_install(
     drop(out_archive);
 
     let actual_sha256 = format!("{:x}", hasher.finalize());
-    if let Some(expected) = expected_sha256 {
-        if actual_sha256 != expected {
+    if let Some(expected) = expected_sha256
+        && actual_sha256 != expected {
             let _ = std::fs::remove_dir_all(&tmp_dir);
             bail!(
                 "SHA-256 checksum mismatch for update archive (expected {expected}, got {actual_sha256})"
             );
         }
-    }
 
     if url.ends_with(".zip") {
         let file = std::fs::File::open(&archive_path)?;
@@ -247,7 +244,11 @@ pub fn download_and_install(
         let mut found = false;
         for i in 0..zip.len() {
             let mut entry = zip.by_index(i)?;
-            let name = entry.name().rsplit('/').next().unwrap_or(entry.name());
+            if entry.is_dir() || entry.unix_mode().is_some_and(|m| (m & 0o170000) == 0o120000) {
+                continue;
+            }
+            let entry_name = entry.name()?.into_owned();
+            let name = entry_name.rsplit('/').next().unwrap_or(&entry_name);
             if name.eq_ignore_ascii_case(bin_name) {
                 let mut out = std::fs::File::create(&tmp_bin)?;
                 std::io::copy(&mut entry, &mut out)?;

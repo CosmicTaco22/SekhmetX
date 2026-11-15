@@ -62,11 +62,10 @@ impl Catalog {
     /// both are known.
     pub fn name(&self, window: Window, full_dynamic: Option<Window>, image_default: Option<Window>) -> Name {
         for entry in &self.entries {
-            if let Some(w) = entry.window {
-                if w.level == window.level && w.width == window.width {
+            if let Some(w) = entry.window
+                && w.level == window.level && w.width == window.width {
                     return Name::Preset(entry.name.clone());
                 }
-            }
         }
         if let (Some(full), Some(default)) = (full_dynamic, image_default) {
             if window == full {

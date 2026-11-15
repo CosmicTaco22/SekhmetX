@@ -724,20 +724,20 @@ impl LineGeometry {
         epsilon: f64,
     ) -> (i32, (f64, f64)) {
         let mut x: f64;
-        let y: f64;
-        if (p1.0 - p2.0).abs() < epsilon {
+        
+        let y: f64 = if (p1.0 - p2.0).abs() < epsilon {
             if (p3.0 - p4.0).abs() < epsilon {
                 return (0, (0.0, 0.0));
             }
             let m2 = (p3.1 - p4.1) / (p3.0 - p4.0);
             let b2 = adding_product(p3.1, -m2, p3.0);
             x = p1.0;
-            y = adding_product(b2, m2, x);
+            adding_product(b2, m2, x)
         } else if (p3.0 - p4.0).abs() < epsilon {
             let m1 = (p1.1 - p2.1) / (p1.0 - p2.0);
             let b1 = adding_product(p1.1, -m1, p1.0);
             x = p3.0;
-            y = adding_product(b1, m1, x);
+            adding_product(b1, m1, x)
         } else {
             let m1 = (p1.1 - p2.1) / (p1.0 - p2.0);
             let b1 = adding_product(p1.1, -m1, p1.0);
@@ -753,8 +753,8 @@ impl LineGeometry {
             if (x - p2.0).abs() < epsilon {
                 x = p2.0;
             }
-            y = adding_product(b1, m1, x);
-        }
+            adding_product(b1, m1, x)
+        };
         let cross = (x, y);
         let hits = Self::between(p1, p2, cross, epsilon) && Self::between(p3, p4, cross, epsilon);
         (if hits { 1 } else { 0 }, cross)
@@ -900,6 +900,7 @@ impl ViewTransform {
         (b.1 - a.1).hypot(b.0 - a.0)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn fit_scale_value(
         backing_width: f64,
         backing_height: f64,

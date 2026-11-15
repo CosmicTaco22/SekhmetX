@@ -150,6 +150,7 @@ pub struct Strings {
     // Viewport & Status bar
     pub indexing_short: &'static str,
     pub assign_vp_hint: &'static str,
+    #[allow(dead_code)]
     pub looking_for_files: &'static str,
     pub indexing_files: &'static str,
     pub files_word: &'static str,
@@ -176,6 +177,7 @@ pub struct Strings {
     pub pacs_search_input_hint: &'static str,
     pub pacs_search_action: &'static str,
     pub pacs_download_anon: &'static str,
+    #[allow(dead_code)]
     pub pacs_downloading: &'static str,
     pub pacs_results_hint: &'static str,
     // Multi-step training, crash report, and patient link/unlink
@@ -214,12 +216,15 @@ pub struct Strings {
     pub pacs_msg_step2: &'static str,
     pub pacs_msg_step3: &'static str,
     pub pacs_msg_step4: &'static str,
+    #[allow(dead_code)]
     pub pacs_msg_training_saved: &'static str,
     pub pacs_msg_hooked: &'static str,
     pub pacs_msg_searching_patients: &'static str,
     pub pacs_msg_searching: &'static str,
+    #[allow(dead_code)]
     pub pacs_msg_window_closed: &'static str,
     pub pacs_msg_loading_studies: &'static str,
+    #[allow(dead_code)]
     pub pacs_msg_downloading: &'static str,
     pub pacs_msg_found_patients: &'static str,
     pub pacs_msg_found_studies: &'static str,
@@ -243,6 +248,11 @@ pub struct Strings {
     pub settings_format_unzip: &'static str,
     pub settings_format_zip: &'static str,
     pub settings_check_updates: &'static str,
+    pub pacs_msg_starting_dl: &'static str,
+    pub pacs_refresh_watch_hover: &'static str,
+    pub pacs_refresh_watch_btn: &'static str,
+    pub pacs_msg_watch_empty: &'static str,
+    pub pacs_do_login: &'static str,
 }
 
 pub const EN: Strings = Strings {
@@ -450,6 +460,11 @@ pub const EN: Strings = Strings {
     settings_format_unzip: "Unzipped (DICOM files)",
     settings_format_zip: "Compressed (.zip)",
     settings_check_updates: "Check for updates on startup",
+    pacs_msg_starting_dl: "Starting download (please wait):",
+    pacs_refresh_watch_hover: "Refresh Watch Folder (scan for new or updated studies)",
+    pacs_refresh_watch_btn: "↻ Refresh",
+    pacs_msg_watch_empty: "Watch Folder is empty.",
+    pacs_do_login: "Log in",
 };
 
 pub const ES: Strings = Strings {
@@ -657,6 +672,11 @@ pub const ES: Strings = Strings {
     settings_format_unzip: "Descomprimido (archivos DICOM)",
     settings_format_zip: "Comprimido (.zip)",
     settings_check_updates: "Buscar actualizaciones al iniciar",
+    pacs_msg_starting_dl: "Iniciando descarga (esperá):",
+    pacs_refresh_watch_hover: "Actualizar Carpeta de Descargas (buscar estudios nuevos o actualizados)",
+    pacs_refresh_watch_btn: "↻ Actualizar",
+    pacs_msg_watch_empty: "La Carpeta de Descargas está vacía.",
+    pacs_do_login: "Iniciar sesión",
 };
 
 pub fn tr(lang: Lang) -> &'static Strings {
@@ -743,6 +763,7 @@ mod tests {
                 s.settings_policy_always, s.settings_policy_never,
                 s.settings_storage_format, s.settings_format_unzip,
                 s.settings_format_zip, s.settings_check_updates,
+                s.pacs_msg_starting_dl, s.pacs_refresh_watch_hover,
             ];
             for f in fields {
                 assert!(!f.trim().is_empty(), "empty i18n string found");

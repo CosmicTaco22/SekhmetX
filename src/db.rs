@@ -594,11 +594,10 @@ pub fn set_custom_studies_dir(dir: Option<PathBuf>) {
 }
 
 pub fn managed_studies_dir() -> PathBuf {
-    if let Ok(guard) = CUSTOM_STUDIES_DIR.read() {
-        if let Some(ref custom) = *guard {
+    if let Ok(guard) = CUSTOM_STUDIES_DIR.read()
+        && let Some(ref custom) = *guard {
             return custom.clone();
         }
-    }
     default_db_dir().join("Studies")
 }
 

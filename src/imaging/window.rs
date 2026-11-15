@@ -70,7 +70,7 @@ pub fn linear_rgba(values: &[f32], out: &mut [u8], window: Window, invert: bool)
     out.par_chunks_mut(4 * 4096)
         .zip(values.par_chunks(4096))
         .for_each(|(dst, src)| {
-            for (px, &v) in dst.chunks_exact_mut(4).zip(src) {
+            for (px, &v) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src) {
                 let g = if span <= 0.0 {
                     if v >= window.high() { 255 } else { 0 }
                 } else if v <= low {
@@ -108,7 +108,7 @@ pub fn linear_rgba_with_clut(
     out.par_chunks_mut(4 * 4096)
         .zip(values.par_chunks(4096))
         .for_each(|(dst, src)| {
-            for (px, &v) in dst.chunks_exact_mut(4).zip(src) {
+            for (px, &v) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src) {
                 let g = if span <= 0.0 {
                     if v >= window.high() { 255 } else { 0 }
                 } else if v <= low {
@@ -151,7 +151,7 @@ pub fn colour_rgba(pixels: &[u8], out: &mut [u8], table: &[u8; 256], invert: boo
     out.par_chunks_mut(4 * 4096)
         .zip(pixels.par_chunks(4 * 4096))
         .for_each(|(dst, src)| {
-            for (d, s) in dst.chunks_exact_mut(4).zip(src.chunks_exact(4)) {
+            for (d, s) in dst.as_chunks_mut::<4>().0.iter_mut().zip(src.as_chunks::<4>().0.iter()) {
                 for c in 0..3 {
                     let v = table[s[c] as usize];
                     d[c] = if invert { 255 - v } else { v };

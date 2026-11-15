@@ -7,6 +7,15 @@ on:
   workflow_dispatch:
 
 jobs:
+  audit:
+    name: Security Audit (cargo audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   build-test:
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
@@ -58,6 +67,10 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.target }}
+
+      - name: Run clippy (release)
+        if: ${{ !matrix.cross }}
+        run: cargo clippy --release --target ${{ matrix.target }} -- -D warnings
 
       - name: Run unit tests (release)
         if: ${{ !matrix.cross }}

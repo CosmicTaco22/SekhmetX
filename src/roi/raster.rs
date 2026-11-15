@@ -234,11 +234,10 @@ impl RoiScanline {
                     columns.insert(pos, x);
                     e.advance();
                 }
-                if columns.len() % 2 == 1 {
-                    if let Some(&last) = columns.last() {
+                if columns.len() % 2 == 1
+                    && let Some(&last) = columns.last() {
                         columns.push(last);
                     }
-                }
                 row_fn(y, &columns);
             }
             y += 1;

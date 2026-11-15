@@ -418,8 +418,8 @@ impl egui_wgpu::CallbackTrait for ImageCallback {
             }
         });
 
-        if let Some(ref clut) = self.clut {
-            if slot.uploaded_clut.as_ref() != Some(clut) {
+        if let Some(ref clut) = self.clut
+            && slot.uploaded_clut.as_ref() != Some(clut) {
                 let mut rgba = [0u8; 256 * 4];
                 for i in 0..256 {
                     rgba[i * 4] = clut.red[i];
@@ -448,10 +448,9 @@ impl egui_wgpu::CallbackTrait for ImageCallback {
                 );
                 slot.uploaded_clut = Some(clut.clone());
             }
-        }
 
-        if slot.bound_slice != Some(self.key) || slot.bind_group.is_none() {
-            if let Some(uploaded) = res.slices.iter().find(|s| s.key == self.key) {
+        if (slot.bound_slice != Some(self.key) || slot.bind_group.is_none())
+            && let Some(uploaded) = res.slices.iter().find(|s| s.key == self.key) {
                 let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("rdicom-slice-bg"),
                     layout: &res.layout,
@@ -473,7 +472,6 @@ impl egui_wgpu::CallbackTrait for ImageCallback {
                 slot.bind_group = Some(bg);
                 slot.bound_slice = Some(self.key);
             }
-        }
 
         let low = self.window.low();
         let high = self.window.high();
