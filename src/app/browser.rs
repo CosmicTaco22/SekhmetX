@@ -18,7 +18,7 @@ impl ViewerApp {
                 .hint_text(tr.search_hint)
                 .desired_width(ui.available_width() - 28.0);
             ui.add(edit);
-            if !self.browser_search.is_empty() && ui.small_button("âœ•").clicked() {
+            if !self.browser_search.is_empty() && ui.small_button("✕").clicked() {
                 self.browser_search.clear();
             }
         });
@@ -58,7 +58,7 @@ impl ViewerApp {
             let disk_mb = crate::db::library_disk_usage_bytes() as f64 / (1024.0 * 1024.0);
             ui.label(
                 egui::RichText::new(format!(
-                    "{} Â· {} {} ({disk_mb:.1} MB)",
+                    "{} · {} {} ({disk_mb:.1} MB)",
                     tr.library,
                     index.studies.len(),
                     tr.studies
@@ -77,6 +77,12 @@ impl ViewerApp {
             });
         });
         ui.add_space(2.0);
+        if index.studies.is_empty() {
+            ui.add_space(6.0);
+            ui.label(tr.no_studies);
+            ui.label(tr.drop_hint);
+            return;
+        }
 
         // Pre-group matching studies by Patient (manual link override -> Patient ID -> normalized Patient Name).
         struct BrowserPatientGroup {
@@ -182,7 +188,7 @@ impl ViewerApp {
                 for pg in &patient_groups {
                     let mut pt_label = pg.display_name.clone();
                     if !pg.display_id.is_empty() {
-                        pt_label.push_str(&format!(" Â· ID {}", pg.display_id));
+                        pt_label.push_str(&format!(" · ID {}", pg.display_id));
                     }
                     pt_label.push_str(&format!(" ({})", pg.studies.len()));
 
@@ -203,9 +209,9 @@ impl ViewerApp {
                                     study.description.trim()
                                 };
                                 let title = if study.files_missing {
-                                    format!("âš  [files missing] {desc} â€” {}", study.date)
+                                    format!("⚠ [files missing] {desc} — {}", study.date)
                                 } else {
-                                    format!("{desc} â€” {}", study.date)
+                                    format!("{desc} — {}", study.date)
                                 };
                                 let hdr_resp =
                                     egui::CollapsingHeader::new(egui::RichText::new(title))
@@ -223,18 +229,18 @@ impl ViewerApp {
                                 sub.push(format!("Acc {}", study.accession));
                             }
                             if !sub.is_empty() {
-                                ui.small(sub.join(" Â· "));
+                                ui.small(sub.join(" · "));
                             }
                             if study.series.len() >= 2 {
                                 ui.horizontal(|ui| {
                                     ui.small(tr.compare);
-                                    if ui.small_button("1Ã—2").clicked() {
+                                    if ui.small_button("1×2").clicked() {
                                         tile_study = Some((si, ViewportTiling::new(1, 2)));
                                     }
-                                    if ui.small_button("2Ã—2").clicked() {
+                                    if ui.small_button("2×2").clicked() {
                                         tile_study = Some((si, ViewportTiling::new(2, 2)));
                                     }
-                                    if study.series.len() >= 5 && ui.small_button("2Ã—3").clicked()
+                                    if study.series.len() >= 5 && ui.small_button("2×3").clicked()
                                     {
                                         tile_study = Some((si, ViewportTiling::new(2, 3)));
                                     }
@@ -252,7 +258,7 @@ impl ViewerApp {
                                 } else {
                                     &series.description
                                 };
-                                let mpr_tag = if series.is_mpr_capable() { "Â·MPR" } else { "" };
+                                let mpr_tag = if series.is_mpr_capable() { "·MPR" } else { "" };
                                 let is_active = active_sel == Some((si, ri));
 
                                 // Queue low-priority background job for the middle slice thumbnail if not yet requested.
@@ -316,7 +322,7 @@ impl ViewerApp {
                                     );
 
                                     let text = format!(
-                                        "{:<2} {:>3} [{}{}] {}\n{} images Â· {}Ã—{}",
+                                        "{:<2} {:>3} [{}{}] {}\n{} images · {}×{}",
                                         series.modality,
                                         series.number,
                                         series.dominant_plane.badge(),
@@ -332,13 +338,13 @@ impl ViewerApp {
                                             egui::RichText::new(text).monospace().size(11.5),
                                         )
                                         .on_hover_text(format!(
-                                            "{} {}, {}Ã—{}, plane: {}{} (click for active viewport, right-click to assign)",
+                                            "{} {}, {}×{}, plane: {}{} (click for active viewport, right-click to assign)",
                                             series.slices.len(),
                                             tr.images,
                                             series.columns,
                                             series.rows,
                                             series.dominant_plane.badge(),
-                                            if series.is_mpr_capable() { " Â· 3D MPR Ready" } else { "" }
+                                            if series.is_mpr_capable() { " · 3D MPR Ready" } else { "" }
                                         ));
                                     if resp.clicked() || thumb_resp.clicked() {
                                         *clicked = Some((self.active_viewport, (si, ri), false));
@@ -417,7 +423,7 @@ impl ViewerApp {
                                             .inner_margin(egui::Margin::symmetric(6, 5))
                                             .show(ui, |ui| {
                                                 let grp_text = format!(
-                                                    "ðŸ§Š {}  [{}]",
+                                                    "🧊 {}  [{}]",
                                                     group.label, group.planes_badge
                                                 );
                                                 let hdr = ui

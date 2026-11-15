@@ -651,9 +651,42 @@ pub fn copy_study_into_dir(study: &mut Study, target_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Returns total disk usage in bytes of all managed studies under `<data dir>/SekhmetX/Studies/`.
+/// Returns cached total disk usage in bytes of all managed studies, refreshing in the
+/// background at most once every 15 seconds (or when invalidated) so UI frames never block.
 pub fn library_disk_usage_bytes() -> u64 {
-    dir_size_bytes(&managed_studies_dir())
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{Duration, Instant};
+
+    static CACHED_BYTES: AtomicU64 = AtomicU64::new(0);
+    static REFRESHING: AtomicBool = AtomicBool::new(false);
+    static LAST_STATE: OnceLock<Mutex<Option<(PathBuf, Instant)>>> = OnceLock::new();
+
+    let dir = managed_studies_dir();
+    let state = LAST_STATE.get_or_init(|| Mutex::new(None));
+    let needs_refresh = if let Ok(guard) = state.lock() {
+        match &*guard {
+            Some((prev_dir, prev_at)) => {
+                *prev_dir != dir || prev_at.elapsed() >= Duration::from_secs(15)
+            }
+            None => true,
+        }
+    } else {
+        false
+    };
+
+    if needs_refresh && !REFRESHING.swap(true, Ordering::AcqRel) {
+        std::thread::spawn(move || {
+            let bytes = dir_size_bytes(&dir);
+            CACHED_BYTES.store(bytes, Ordering::Relaxed);
+            if let Ok(mut guard) = LAST_STATE.get_or_init(|| Mutex::new(None)).lock() {
+                *guard = Some((dir, Instant::now()));
+            }
+            REFRESHING.store(false, Ordering::Release);
+        });
+    }
+
+    CACHED_BYTES.load(Ordering::Relaxed)
 }
 
 fn dir_size_bytes(dir: &Path) -> u64 {

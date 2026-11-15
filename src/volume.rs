@@ -11,11 +11,19 @@ use crate::imaging::Window;
 
 /// A contiguous 3D voxel volume in patient LPS physical coordinates (millimeters).
 pub struct Volume3D {
+    /// Monotonic unique ID for GPU 3D texture caching.
+    pub gpu_id: u64,
     pub width: usize,
     pub height: usize,
     pub depth: usize,
-    /// Calibrated greyscale values (`raw * slope + intercept`, e.g. HU for CT) in `z -> y -> x` order.
-    pub voxels: Vec<f32>,
+    /// Quantized 16-bit voxel values in `z -> y -> x` order.
+    /// Decode to calibrated greyscale (`raw * slope + intercept`, e.g. HU for CT) via
+    /// `q as f32 * voxel_scale + voxel_offset` (or `self.voxel_at(idx)`).
+    pub voxels: Vec<i16>,
+    /// Linear scale factor to decode `voxels` back to calibrated `f32` values.
+    pub voxel_scale: f32,
+    /// Linear offset to decode `voxels` back to calibrated `f32` values.
+    pub voxel_offset: f32,
     /// Patient LPS position `(X, Y, Z)` of voxel `(0, 0, 0)` in mm.
     pub origin_lps: [f64; 3],
     /// Unit vector along `+x` (column index `0..width`).
@@ -339,21 +347,9 @@ impl Volume3D {
         };
 
         let slice_len = w * h;
-        let mut voxels = vec![0.0f32; slice_len * d];
         let mut min_val = f32::INFINITY;
         let mut max_val = f32::NEG_INFINITY;
-
-        for (z, f) in frames.iter().enumerate() {
-            let dst = &mut voxels[z * slice_len..(z + 1) * slice_len];
-            match &f.pixels {
-                Pixels::Gray(src) => dst.copy_from_slice(src),
-                Pixels::Rgba(rgba) => {
-                    for (i, px) in rgba.as_chunks::<4>().0.iter().take(slice_len).enumerate() {
-                        dst[i] =
-                            0.299 * (px[0] as f32) + 0.587 * (px[1] as f32) + 0.114 * (px[2] as f32);
-                    }
-                }
-            }
+        for f in frames {
             let fw_min = f.full_window.level - 0.5 * f.full_window.width;
             let fw_max = f.full_window.level + 0.5 * f.full_window.width;
             if fw_min < min_val {
@@ -366,6 +362,54 @@ impl Volume3D {
         if !min_val.is_finite() || !max_val.is_finite() || max_val <= min_val {
             min_val = -1024.0;
             max_val = 3071.0;
+        }
+
+        // Use exact 1:1 integer storage when all calibrated pixels fit in [-32767, 32767]
+        // as integers (standard CT HU); otherwise quantize uniformly into [-32767, 32767].
+        let fits_exact_i16 = min_val >= -32767.0
+            && max_val <= 32767.0
+            && frames.iter().all(|f| match &f.pixels {
+                Pixels::Gray(src) => src
+                    .iter()
+                    .all(|&v| v.is_finite() && (v - v.round()).abs() <= 1e-4),
+                Pixels::Rgba(_) => false,
+            });
+        let (voxel_scale, voxel_offset) = if fits_exact_i16 {
+            (1.0f32, 0.0f32)
+        } else {
+            let offset = 0.5 * (min_val + max_val);
+            let scale = ((max_val - min_val) / 65534.0).max(1e-9);
+            (scale, offset)
+        };
+        let inv_scale = 1.0 / voxel_scale;
+
+        let mut voxels = vec![0i16; slice_len * d];
+        for (z, f) in frames.iter().enumerate() {
+            let dst = &mut voxels[z * slice_len..(z + 1) * slice_len];
+            match &f.pixels {
+                Pixels::Gray(src) => {
+                    if fits_exact_i16 {
+                        for (d_px, &s_px) in dst.iter_mut().zip(src.iter()) {
+                            *d_px = s_px.round().clamp(-32767.0, 32767.0) as i16;
+                        }
+                    } else {
+                        for (d_px, &s_px) in dst.iter_mut().zip(src.iter()) {
+                            *d_px = ((s_px - voxel_offset) * inv_scale)
+                                .round()
+                                .clamp(-32767.0, 32767.0) as i16;
+                        }
+                    }
+                }
+                Pixels::Rgba(rgba) => {
+                    for (i, px) in rgba.as_chunks::<4>().0.iter().take(slice_len).enumerate() {
+                        let luma =
+                            0.299 * (px[0] as f32) + 0.587 * (px[1] as f32) + 0.114 * (px[2] as f32);
+                        dst[i] = ((luma - voxel_offset) * inv_scale)
+                            .round()
+                            .clamp(-32767.0, 32767.0) as i16;
+                    }
+                }
+            }
         }
 
         let extent_x = (w.saturating_sub(1) as f64) * dx;
@@ -401,7 +445,7 @@ impl Volume3D {
                 let y_mm = y as f64 * dy;
                 let row_base = z * slice_len + y * w;
                 for x in (0..w).step_by(step_x) {
-                    let v = voxels[row_base + x];
+                    let v = voxels[row_base + x] as f32 * voxel_scale + voxel_offset;
                     if v > fg_thresh {
                         let weight = (v - fg_thresh) as f64;
                         let x_mm = x as f64 * dx;
@@ -437,11 +481,15 @@ impl Volume3D {
             width: (max_val - min_val).max(1.0),
         };
 
+        static NEXT_VOLUME_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         Ok(Arc::new(Self {
+            gpu_id: NEXT_VOLUME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             width: w,
             height: h,
             depth: d,
             voxels,
+            voxel_scale,
+            voxel_offset,
             origin_lps: origin0,
             row_dir,
             col_dir,
@@ -550,14 +598,14 @@ impl Volume3D {
         let wh = w * self.height;
         let idx = |x: usize, y: usize, z: usize| z * wh + y * w + x;
 
-        let c000 = self.voxels[idx(x0, y0, z0)];
-        let c100 = self.voxels[idx(x1, y0, z0)];
-        let c010 = self.voxels[idx(x0, y1, z0)];
-        let c110 = self.voxels[idx(x1, y1, z0)];
-        let c001 = self.voxels[idx(x0, y0, z1)];
-        let c101 = self.voxels[idx(x1, y0, z1)];
-        let c011 = self.voxels[idx(x0, y1, z1)];
-        let c111 = self.voxels[idx(x1, y1, z1)];
+        let c000 = self.voxel_at(idx(x0, y0, z0));
+        let c100 = self.voxel_at(idx(x1, y0, z0));
+        let c010 = self.voxel_at(idx(x0, y1, z0));
+        let c110 = self.voxel_at(idx(x1, y1, z0));
+        let c001 = self.voxel_at(idx(x0, y0, z1));
+        let c101 = self.voxel_at(idx(x1, y0, z1));
+        let c011 = self.voxel_at(idx(x0, y1, z1));
+        let c111 = self.voxel_at(idx(x1, y1, z1));
 
         let c00 = c000 + tx * (c100 - c000);
         let c10 = c010 + tx * (c110 - c010);
@@ -568,6 +616,12 @@ impl Volume3D {
         let c1 = c01 + ty * (c11 - c01);
 
         Some(c0 + tz * (c1 - c0))
+    }
+
+    /// Decode a quantized voxel at linear index `idx` into calibrated greyscale (`f32`).
+    #[inline]
+    pub fn voxel_at(&self, idx: usize) -> f32 {
+        self.voxels[idx] as f32 * self.voxel_scale + self.voxel_offset
     }
 
     /// Background air value used outside the volume bounds during oblique reslicing.
@@ -586,9 +640,8 @@ impl Volume3D {
         .max(10.0)
     }
 
-    /// Reslices the 3D volume (and any sibling orthogonal volumes from the same acquisition group)
-    /// along an arbitrary 3D plane `plane`, returning a calibrated `Arc<Frame>`.
-    pub fn reslice_plane(&self, siblings: &[Arc<Volume3D>], plane: &MprPlane3D) -> Arc<Frame> {
+    /// Precomputed 3D plane geometry and voxel-space affine mapping for CPU or GPU MPR reslicing.
+    pub fn mpr_plane_geometry(&self, plane: &MprPlane3D) -> MprPlaneGeometry {
         let native_aligned = dot3(plane.u_axis, self.row_dir) > 0.999
             && dot3(plane.v_axis, self.col_dir) > 0.999
             && dot3(plane.normal, self.slice_dir).abs() > 0.999;
@@ -626,9 +679,133 @@ impl Volume3D {
             sub3(slice_center, scale3(plane.u_axis, half_ext_u)),
             scale3(plane.v_axis, half_ext_v),
         );
+        let u_step_lps = scale3(plane.u_axis, out_sp_u);
+        let v_step_lps = scale3(plane.v_axis, out_sp_v);
 
-        let u_step = scale3(plane.u_axis, out_sp_u);
-        let v_step = scale3(plane.v_axis, out_sp_v);
+        let vox_origin_d = self.lps_to_voxel(top_left_lps);
+        let vox_u_d = sub3(self.lps_to_voxel(add3(top_left_lps, u_step_lps)), vox_origin_d);
+        let vox_v_d = sub3(self.lps_to_voxel(add3(top_left_lps, v_step_lps)), vox_origin_d);
+
+        let (slab_steps, vox_slab_start, vox_slab_delta) =
+            if plane.slab_mode != SlabMode::Thin && plane.slab_thickness_mm > out_sp {
+                let step_mm = (min_sp * 0.85).clamp(0.5, 1.5);
+                let half_slab = 0.5 * plane.slab_thickness_mm;
+                let steps = ((plane.slab_thickness_mm / step_mm).ceil() as usize).clamp(3, 65);
+                let start_lps = scale3(plane.normal, -half_slab);
+                let delta_lps =
+                    scale3(plane.normal, plane.slab_thickness_mm / (steps - 1) as f64);
+                let start_d =
+                    sub3(self.lps_to_voxel(add3(top_left_lps, start_lps)), vox_origin_d);
+                let delta_d =
+                    sub3(self.lps_to_voxel(add3(top_left_lps, delta_lps)), vox_origin_d);
+                (
+                    steps as u32,
+                    [start_d[0] as f32, start_d[1] as f32, start_d[2] as f32],
+                    [delta_d[0] as f32, delta_d[1] as f32, delta_d[2] as f32],
+                )
+            } else {
+                (1u32, [0.0f32; 3], [0.0f32; 3])
+            };
+
+        let eff_thickness = if slab_steps > 1 {
+            plane.slab_thickness_mm
+        } else if native_aligned {
+            self.spacing[2]
+        } else {
+            out_sp
+        };
+
+        let orientation = [
+            plane.u_axis[0],
+            plane.u_axis[1],
+            plane.u_axis[2],
+            plane.v_axis[0],
+            plane.v_axis[1],
+            plane.v_axis[2],
+            plane.normal[0],
+            plane.normal[1],
+            plane.normal[2],
+        ];
+        let slice_location = Some(dot3(slice_center, plane.normal));
+
+        MprPlaneGeometry {
+            width: out_w as u32,
+            height: out_h as u32,
+            out_sp_u,
+            out_sp_v,
+            top_left_lps,
+            u_step_lps,
+            v_step_lps,
+            slice_center,
+            native_aligned,
+            vox_origin: [vox_origin_d[0] as f32, vox_origin_d[1] as f32, vox_origin_d[2] as f32],
+            vox_u_step: [vox_u_d[0] as f32, vox_u_d[1] as f32, vox_u_d[2] as f32],
+            vox_v_step: [vox_v_d[0] as f32, vox_v_d[1] as f32, vox_v_d[2] as f32],
+            slab_mode: plane.slab_mode,
+            slab_steps,
+            vox_slab_start,
+            vox_slab_delta,
+            eff_thickness,
+            orientation,
+            slice_location,
+        }
+    }
+
+    /// Constructs a `Frame` with the geometry and windowing metadata of `geom` and the given `pixels`.
+    pub fn frame_with_pixels(&self, geom: &MprPlaneGeometry, pixels: Vec<f32>) -> Frame {
+        Frame {
+            width: geom.width,
+            height: geom.height,
+            pixels: Pixels::Gray(pixels),
+            stored_window: self.stored_window,
+            full_window: self.full_window,
+            bits_window: self.bits_window,
+            inverts: self.inverts,
+            voi_lut_applied: false,
+            slope: self.slope,
+            spacing: if self.uncalibrated {
+                None
+            } else {
+                Some((geom.out_sp_v, geom.out_sp_u))
+            },
+            pixel_ratio: 1.0,
+            origin: Some(geom.top_left_lps),
+            orientation: geom.orientation,
+            is_3d_plane: true,
+            frame_of_reference_uid: self.frame_of_reference_uid.clone(),
+            slice_thickness: Some(geom.eff_thickness),
+            slice_location: geom.slice_location,
+            value_unit: self.value_unit,
+        }
+    }
+
+    /// Samples a single pixel `(px, py)` on a GPU-resliced MPR plane for live cursor readout.
+    pub fn sample_plane_at(&self, geom: &MprPlaneGeometry, px: f64, py: f64) -> Option<f32> {
+        if px < 0.0 || py < 0.0 || px >= geom.width as f64 || py >= geom.height as f64 {
+            return None;
+        }
+        let pt = add3(
+            geom.top_left_lps,
+            add3(scale3(geom.u_step_lps, px), scale3(geom.v_step_lps, py)),
+        );
+        self.sample_lps(pt)
+    }
+
+    /// Reslices the 3D volume (and any sibling orthogonal volumes from the same acquisition group)
+    /// along an arbitrary 3D plane `plane`, returning a calibrated `Arc<Frame>`.
+    pub fn reslice_plane(&self, siblings: &[Arc<Volume3D>], plane: &MprPlane3D) -> Arc<Frame> {
+        let geom = self.mpr_plane_geometry(plane);
+        let out_w = geom.width as usize;
+        let out_h = geom.height as usize;
+        let out_sp_u = geom.out_sp_u;
+        let out_sp_v = geom.out_sp_v;
+        let out_sp = out_sp_u.min(out_sp_v);
+        let min_sp = out_sp.clamp(0.25, 1.5);
+        let slice_center = geom.slice_center;
+        let top_left_lps = geom.top_left_lps;
+        let u_step = geom.u_step_lps;
+        let v_step = geom.v_step_lps;
+        let native_aligned = geom.native_aligned;
         let bg = self.background_value();
 
         // Fast exact path (A1): when the plane is native-aligned, Thin-slab, and sits on a
@@ -671,7 +848,18 @@ impl Volume3D {
 
         let pixels = if let Some(z_idx) = exact_native_slice {
             let slice_len = self.width * self.height;
-            self.voxels[z_idx * slice_len..(z_idx + 1) * slice_len].to_vec()
+            let start = z_idx * slice_len;
+            if self.voxel_scale == 1.0 && self.voxel_offset == 0.0 {
+                self.voxels[start..start + slice_len]
+                    .iter()
+                    .map(|&q| q as f32)
+                    .collect()
+            } else {
+                self.voxels[start..start + slice_len]
+                    .iter()
+                    .map(|&q| q as f32 * self.voxel_scale + self.voxel_offset)
+                    .collect()
+            }
         } else {
             // Compute resolution weights for this volume and any explicitly passed sibling volumes.
             let mut sources: Vec<(&Volume3D, f32)> = Vec::with_capacity(1 + siblings.len());
@@ -777,52 +965,32 @@ impl Volume3D {
             buf
         };
 
-        let eff_thickness = if !slab_offsets.is_empty() {
-            plane.slab_thickness_mm
-        } else if native_aligned {
-            self.spacing[2]
-        } else {
-            out_sp
-        };
-
-        let orientation = [
-            plane.u_axis[0],
-            plane.u_axis[1],
-            plane.u_axis[2],
-            plane.v_axis[0],
-            plane.v_axis[1],
-            plane.v_axis[2],
-            plane.normal[0],
-            plane.normal[1],
-            plane.normal[2],
-        ];
-        let slice_location = Some(dot3(slice_center, plane.normal));
-
-        Arc::new(Frame {
-            width: out_w as u32,
-            height: out_h as u32,
-            pixels: Pixels::Gray(pixels),
-            stored_window: self.stored_window,
-            full_window: self.full_window,
-            bits_window: self.bits_window,
-            inverts: self.inverts,
-            voi_lut_applied: false,
-            slope: self.slope,
-            spacing: if self.uncalibrated {
-                None
-            } else {
-                Some((out_sp_v, out_sp_u))
-            },
-            pixel_ratio: 1.0,
-            origin: Some(top_left_lps),
-            orientation,
-            is_3d_plane: true,
-            frame_of_reference_uid: self.frame_of_reference_uid.clone(),
-            slice_thickness: Some(eff_thickness),
-            slice_location,
-            value_unit: self.value_unit,
-        })
+        Arc::new(self.frame_with_pixels(&geom, pixels))
     }
+}
+
+/// Precomputed 3D plane geometry and voxel-space affine mapping for CPU or GPU MPR reslicing.
+#[derive(Clone, Debug)]
+pub struct MprPlaneGeometry {
+    pub width: u32,
+    pub height: u32,
+    pub out_sp_u: f64,
+    pub out_sp_v: f64,
+    pub top_left_lps: [f64; 3],
+    pub u_step_lps: [f64; 3],
+    pub v_step_lps: [f64; 3],
+    pub slice_center: [f64; 3],
+    pub native_aligned: bool,
+    pub vox_origin: [f32; 3],
+    pub vox_u_step: [f32; 3],
+    pub vox_v_step: [f32; 3],
+    pub slab_mode: SlabMode,
+    pub slab_steps: u32,
+    pub vox_slab_start: [f32; 3],
+    pub vox_slab_delta: [f32; 3],
+    pub eff_thickness: f64,
+    pub orientation: [f64; 9],
+    pub slice_location: Option<f64>,
 }
 
 /// Thick-slab projection mode for 3D MPR (`IsiXImaging` / `ViewerReconstruction`).
@@ -1034,7 +1202,7 @@ impl RigidTransform3D {
         for z in (0..source.depth).step_by(step_z) {
             for y in (0..source.height).step_by(step_y) {
                 for x in (0..source.width).step_by(step_x) {
-                    let val = source.voxels[z * wh + y * source.width + x];
+                    let val = source.voxel_at(z * wh + y * source.width + x);
                     if val > source.foreground_threshold {
                         let pt_lps = source.voxel_to_lps([x as f64, y as f64, z as f64]);
                         samples.push((sub3(pt_lps, pivot_a), val));

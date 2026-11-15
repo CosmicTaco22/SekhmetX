@@ -832,15 +832,10 @@ impl ViewerApp {
                     let cur = crate::db::managed_studies_dir();
                     ui.monospace(cur.display().to_string());
                     if ui.button(tr.pacs_choose_folder).clicked()
-                        && let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                            if let Some(ref db) = self.db {
-                                let _ = db.set_setting(
-                                    "custom_studies_dir",
-                                    &dir.to_string_lossy(),
-                                );
-                            }
-                            crate::db::set_custom_studies_dir(Some(dir));
-                        }
+                        && let Some(dir) = rfd::FileDialog::new().pick_folder()
+                    {
+                        self.select_studies_folder(dir);
+                    }
                     if ui.button(tr.settings_reset_default).clicked() {
                         if let Some(ref db) = self.db {
                             let _ = db.set_setting("custom_studies_dir", "");
@@ -986,6 +981,21 @@ impl ViewerApp {
         }
     }
 
+    fn select_studies_folder(&mut self, dir: std::path::PathBuf) {
+        if let Some(ref db) = self.db {
+            let _ = db.set_setting("custom_studies_dir", &dir.to_string_lossy());
+        }
+        crate::db::set_custom_studies_dir(Some(dir.clone()));
+        if dir.is_dir()
+            && std::fs::read_dir(&dir)
+                .ok()
+                .and_then(|mut it| it.next())
+                .is_some()
+        {
+            self.start_scan(vec![dir]);
+        }
+    }
+
     pub(super) fn draw_first_run_notice_modal(&mut self, ctx: &egui::Context) {
         if !self.show_first_run_notice {
             return;
@@ -1023,6 +1033,22 @@ impl ViewerApp {
                 };
                 ui.label(loc_lbl);
                 ui.monospace(data_dir.display().to_string());
+                ui.add_space(6.0);
+                let studies_lbl = match self.lang {
+                    crate::i18n::Lang::Es => "• Carpeta de la biblioteca de estudios (donde se guardan sus estudios):",
+                    crate::i18n::Lang::En => "• Studies library folder (where your studies are kept):",
+                };
+                ui.label(studies_lbl);
+                let tr = crate::i18n::tr(self.lang);
+                ui.horizontal(|ui| {
+                    let cur_studies = crate::db::managed_studies_dir();
+                    ui.monospace(cur_studies.display().to_string());
+                    if ui.button(tr.pacs_choose_folder).clicked()
+                        && let Some(dir) = rfd::FileDialog::new().pick_folder()
+                    {
+                        self.select_studies_folder(dir);
+                    }
+                });
                 ui.add_space(8.0);
                 let ack_lbl = match self.lang {
                     crate::i18n::Lang::Es => "Entendido",

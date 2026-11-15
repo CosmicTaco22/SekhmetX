@@ -29,7 +29,7 @@ impl ViewerApp {
         let m = rs.min(cs).max(1e-6);
         let mut w = f.width as f32 * (cs / m) as f32;
         let mut h = f.height as f32 * (rs / m) as f32;
-        // Swap aspect ratio when rotated near 90Â° or 270Â°.
+        // Swap aspect ratio when rotated near 90° or 270°.
         let rot = vp.rotation.rem_euclid(180.0);
         if (45.0..135.0).contains(&rot) {
             std::mem::swap(&mut w, &mut h);
@@ -160,19 +160,26 @@ impl ViewerApp {
                     }
             }
 
-        let mpr_pair = self.ensure_mpr_frame(vp_idx);
+        let mut gpu_mpr = self.mpr_gpu_target(vp_idx);
+        let mpr_pair = if gpu_mpr.is_none() {
+            self.ensure_mpr_frame(vp_idx)
+        } else {
+            None
+        };
         let cur_slice = self.viewports[vp_idx].slice;
         let cur_key = mpr_pair
             .as_ref()
             .map(|(_, k)| *k)
             .or_else(|| self.viewport_slice_key(vp_idx, cur_slice));
-        let frame_opt = mpr_pair
-            .map(|(f, _)| f)
+        let frame_opt = gpu_mpr
+            .as_ref()
+            .map(|(_, _, f)| f.clone())
+            .or_else(|| mpr_pair.map(|(f, _)| f))
             .or_else(|| self.viewport_frame(vp_idx).cloned());
         let Some(mut frame) = frame_opt else {
             let text = match cur_key.and_then(|k| self.failed.get(&k)) {
                 Some(err) => format!("Could not display this image:\n{err}"),
-                None => "Loadingâ€¦".to_string(),
+                None => "Loading…".to_string(),
             };
             // Keep showing the previous image while the next slice decodes.
             if let Some((prev, key)) = self.viewports[vp_idx].last_gpu.clone() {
@@ -211,7 +218,12 @@ impl ViewerApp {
             if !consumed {
                 self.handle_drag(vp_idx, &response, view, &frame);
             }
-            if let Some((updated_f, updated_k)) = self.ensure_mpr_frame(vp_idx) {
+            if gpu_mpr.is_some() {
+                gpu_mpr = self.mpr_gpu_target(vp_idx);
+                if let Some((_, _, ref updated_f)) = gpu_mpr {
+                    frame = updated_f.clone();
+                }
+            } else if let Some((updated_f, updated_k)) = self.ensure_mpr_frame(vp_idx) {
                 frame = updated_f;
                 cur_key = Some(updated_k);
             }
@@ -247,19 +259,26 @@ impl ViewerApp {
 
         let window = self.effective_window(vp_idx, &frame);
         let img = self.image_rect(vp_idx, view, &frame);
-        let on_gpu = self.gpu.is_some_and(|g| {
-            matches!(frame.pixels, crate::frame::Pixels::Gray(_))
-                && frame.width <= g.max_texture
-                && frame.height <= g.max_texture
-        });
-        if let (true, Some(key)) = (on_gpu, cur_key) {
+        if let Some((ref gpu_vol, ref gpu_geom, _)) = gpu_mpr {
             painter.add(
-                self.gpu_callback(ui, vp_idx, frame.clone(), key, img, window)
+                self.gpu_mpr_callback(ui, vp_idx, gpu_vol.clone(), gpu_geom.clone(), img, window, frame.inverts)
                     .into_shape(view),
             );
-            self.viewports[vp_idx].last_gpu = Some((frame.clone(), key));
-        } else if let Some(key) = cur_key {
-            self.draw_on_cpu(ui, vp_idx, &painter, &frame, key, img, window);
+        } else {
+            let on_gpu = self.gpu.is_some_and(|g| {
+                matches!(frame.pixels, crate::frame::Pixels::Gray(_))
+                    && frame.width <= g.max_texture
+                    && frame.height <= g.max_texture
+            });
+            if let (true, Some(key)) = (on_gpu, cur_key) {
+                painter.add(
+                    self.gpu_callback(ui, vp_idx, frame.clone(), key, img, window)
+                        .into_shape(view),
+                );
+                self.viewports[vp_idx].last_gpu = Some((frame.clone(), key));
+            } else if let Some(key) = cur_key {
+                self.draw_on_cpu(ui, vp_idx, &painter, &frame, key, img, window);
+            }
         }
 
         // Live cursor readout with calibrated HU / pixel value and 3D patient coordinates.
@@ -270,7 +289,19 @@ impl ViewerApp {
             }
             if px.x >= 0.0 && px.y >= 0.0 {
                 let (x, y) = (px.x as u32, px.y as u32);
-                if let Some(val_str) = source_frame.value_at(x, y) {
+                let val_str_opt = if let Some((ref gpu_vol, ref gpu_geom, _)) = gpu_mpr {
+                    gpu_vol.sample_plane_at(gpu_geom, px.x as f64, px.y as f64).map(|v| {
+                        let unit = gpu_vol.value_unit;
+                        if unit.is_empty() {
+                            format!("{v:.1}")
+                        } else {
+                            format!("{v:.1} {unit}")
+                        }
+                    })
+                } else {
+                    source_frame.value_at(x, y)
+                };
+                if let Some(val_str) = val_str_opt {
                     let coords_3d = source_frame
                         .patient_coords_at(px.x as f64, px.y as f64)
                         .map(|[cx, cy, cz]| format!("   XYZ: ({cx:.1}, {cy:.1}, {cz:.1}) mm"))
@@ -332,7 +363,7 @@ impl ViewerApp {
                 && leader_sel != cur_sel {
                     let align_text = if self.registrations_in_flight.contains(&(leader_sel, cur_sel))
                     {
-                        Some(("Aligningâ€¦".to_string(), Color32::from_rgb(130, 210, 255)))
+                        Some(("Aligning…".to_string(), Color32::from_rgb(130, 210, 255)))
                     } else if let Some(reg) = self.registrations.get(&(leader_sel, cur_sel)) {
                         let same_for = matches!(
                             (
@@ -348,7 +379,7 @@ impl ViewerApp {
                             ))
                         } else if reg.is_reliable() {
                             Some((
-                                format!("Auto-aligned (approximate) Â· score {:.2}", reg.correlation),
+                                format!("Auto-aligned (approximate) · score {:.2}", reg.correlation),
                                 Color32::from_rgb(130, 220, 155),
                             ))
                         } else {
@@ -550,7 +581,7 @@ impl ViewerApp {
         painter.text(
             prev_rect.center(),
             Align2::CENTER_CENTER,
-            "â—€",
+            "◀",
             FontId::proportional(11.0),
             if prev_hover {
                 Color32::from_rgb(110, 190, 255)
@@ -561,7 +592,7 @@ impl ViewerApp {
         painter.text(
             next_rect.center(),
             Align2::CENTER_CENTER,
-            "â–¶",
+            "▶",
             FontId::proportional(11.0),
             if next_hover {
                 Color32::from_rgb(110, 190, 255)
@@ -601,6 +632,37 @@ impl ViewerApp {
             };
             let width = if is_active { 1.5 } else { 1.0 };
             painter.rect_stroke(view, 0.0, Stroke::new(width, color), egui::StrokeKind::Inside);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn gpu_mpr_callback(
+        &self,
+        ui: &egui::Ui,
+        vp_idx: usize,
+        volume: Arc<crate::volume::Volume3D>,
+        geom: crate::volume::MprPlaneGeometry,
+        img: Rect,
+        window: Window,
+        frame_inverts: bool,
+    ) -> VolumeMprCallback {
+        let ppp = ui.ctx().pixels_per_point();
+        let vp = &self.viewports[vp_idx];
+        let invert = vp.effective_invert() != frame_inverts;
+        let clut = self.active_clut_table(vp_idx);
+        let uv_map = QuadUvMapping::from_orientation(vp.rotation, vp.x_flipped, vp.y_flipped);
+        VolumeMprCallback {
+            viewport_id: vp_idx,
+            volume,
+            geom,
+            image_rect_px: Rect::from_min_max(
+                pos2(img.min.x * ppp, img.min.y * ppp),
+                pos2(img.max.x * ppp, img.max.y * ppp),
+            ),
+            window,
+            invert,
+            clut,
+            uv_map,
         }
     }
 

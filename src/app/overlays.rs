@@ -699,7 +699,7 @@ impl ViewerApp {
             }
             if let Some(series) = self.viewport_series(vp_idx) {
                 tr.push(format!(
-                    "{} Â· Se {} Â· {}",
+                    "{} · Se {} · {}",
                     series.modality, series.number, series.description
                 ));
             }
@@ -713,7 +713,7 @@ impl ViewerApp {
                 .mpr_plane
                 .as_ref()
                 .filter(|p| p.slab_mode != SlabMode::Thin)
-                .map(|p| format!(" Â· {} {:.1} mm", p.slab_mode.label(), p.slab_thickness_mm))
+                .map(|p| format!(" · {} {:.1} mm", p.slab_mode.label(), p.slab_thickness_mm))
                 .unwrap_or_default();
             let reg_corr = vp.selected.and_then(|sel| {
                 self.registrations
@@ -722,7 +722,7 @@ impl ViewerApp {
                     .map(|(_, r)| r.correlation)
             });
             if let Some(corr) = reg_corr.filter(|_| self.tiling.cell_count() > 1) {
-                bl.push(format!("3D MPR{slab_info} Â· Sync Locked (NCC {corr:.2})"));
+                bl.push(format!("3D MPR{slab_info} · Sync Locked (NCC {corr:.2})"));
             } else {
                 bl.push(format!("3D MPR{slab_info}"));
             }
@@ -739,7 +739,7 @@ impl ViewerApp {
             if let Some(t) = f.slice_thickness {
                 bl.push(format!("Thk: {t:.1} mm"));
             }
-            bl.push(format!("{} Ã— {}", f.width, f.height));
+            bl.push(format!("{} × {}", f.width, f.height));
         }
         text(
             view.left_bottom() + vec2(pad, -pad),
@@ -769,7 +769,7 @@ impl ViewerApp {
         }
         br.push(format!("Zoom: {:.0}%", vp.zoom * 100.0));
         if vp.rotation.abs() > 0.05 {
-            br.push(format!("Rot: {:.0}Â°", vp.rotation));
+            br.push(format!("Rot: {:.0}°", vp.rotation));
         }
         if vp.effective_invert() {
             br.push("Inverted".into());
