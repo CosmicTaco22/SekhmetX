@@ -628,7 +628,7 @@ impl ViewerApp {
                 let view_resp = icons::captioned_button(ui, Icon::Eye, tr.view, false, None, true)
                     .on_hover_text(tr.view_hover);
                 egui::Popup::menu(&view_resp).show(|ui| {
-                    ui.toggle_value(&mut self.active_cell_mut().invert, tr.invert);
+                    ui.checkbox(&mut self.active_cell_mut().invert, tr.invert);
                     ui.separator();
                     if ui.button(tr.rotate_ccw).clicked() {
                         let vp = self.active_cell_mut();
@@ -641,18 +641,18 @@ impl ViewerApp {
                         ui.close();
                     }
                     let mut x_flip = self.active_cell().x_flipped;
-                    if ui.toggle_value(&mut x_flip, format!("⇄ {}", tr.flip_h)).changed() {
+                    if ui.checkbox(&mut x_flip, tr.flip_h).changed() {
                         self.active_cell_mut().x_flipped = x_flip;
                     }
                     let mut y_flip = self.active_cell().y_flipped;
-                    if ui.toggle_value(&mut y_flip, format!("⇅ {}", tr.flip_v)).changed() {
+                    if ui.checkbox(&mut y_flip, tr.flip_v).changed() {
                         self.active_cell_mut().y_flipped = y_flip;
                     }
                     ui.separator();
-                    ui.toggle_value(&mut self.show_reference_lines, tr.ref_lines);
-                    ui.toggle_value(&mut self.show_annotations, tr.overlays);
+                    ui.checkbox(&mut self.show_reference_lines, tr.ref_lines);
+                    ui.checkbox(&mut self.show_annotations, tr.overlays);
                     if ui
-                        .toggle_value(&mut self.gpu_bilinear, tr.smooth_interp)
+                        .checkbox(&mut self.gpu_bilinear, tr.smooth_interp)
                         .changed()
                         && let Some(ref db) = self.db {
                             let _ = db.set_setting(
@@ -1007,19 +1007,20 @@ impl ViewerApp {
                 }
             }
 
+            let es = self.lang == crate::i18n::Lang::Es;
             if self.active_cell().vr_enabled {
                 ui.separator();
                 let vp_idx = self.active_viewport;
                 ui.selectable_value(&mut self.viewports[vp_idx].vr_mip, false, "VR")
-                    .on_hover_text("Alpha-composited 3D Volume Rendering");
+                    .on_hover_text(if es { "Renderizado de volumen (sombreado, semitransparente)" } else { "Volume rendering (shaded, semi-transparent)" });
                 ui.selectable_value(&mut self.viewports[vp_idx].vr_mip, true, "MIP")
-                    .on_hover_text("3D Maximum Intensity Projection");
+                    .on_hover_text(if es { "Proyección de máxima intensidad 3D" } else { "3D maximum intensity projection" });
                 if !self.viewports[vp_idx].vr_mip {
                     ui.separator();
                     let cur_preset = self.viewports[vp_idx].vr_preset;
                     let mut chosen_preset = None;
                     egui::ComboBox::from_id_salt("vr_preset_selector")
-                        .selected_text(format!("🎨 {}", cur_preset.label()))
+                        .selected_text(cur_preset.label())
                         .width(136.0)
                         .show_ui(ui, |ui| {
                             for preset in crate::imaging::vr_presets::VrPreset::ALL {
@@ -1036,19 +1037,19 @@ impl ViewerApp {
                         self.viewports[vp_idx].window = Some(p.default_window());
                         self.viewports[vp_idx].vr_custom_stops = p.default_stops();
                     }
-                    ui.toggle_value(&mut self.show_vr_tf_editor, "📈 TF")
-                        .on_hover_text("Interactive Histogram & 1D Transfer Function Curve Editor");
-                    ui.toggle_value(&mut self.viewports[vp_idx].vr_shading, "☀ Shading")
-                        .on_hover_text("Toggle 3D gradient Phong lighting & shading");
+                    icons::toggle_button(ui, &mut self.show_vr_tf_editor, if es { "Curva" } else { "Curve" })
+                        .on_hover_text(if es { "Histograma y editor de la curva de transferencia" } else { "Histogram and transfer-function curve editor" });
+                    icons::toggle_button(ui, &mut self.viewports[vp_idx].vr_shading, if es { "Sombreado" } else { "Shading" })
+                        .on_hover_text(if es { "Iluminar la superficie según su gradiente" } else { "Light the surface from its gradient" });
                     if self.viewports[vp_idx].vr_shading {
-                        ui.menu_button("☀▾", |ui| {
+                        ui.menu_button(if es { "Luz ▾" } else { "Light ▾" }, |ui| {
                             ui.set_min_width(180.0);
                             ui.add(
                                 egui::Slider::new(
                                     &mut self.viewports[vp_idx].vr_ambient,
                                     0.0..=1.0,
                                 )
-                                .text("Ambient")
+                                .text(if es { "Ambiente" } else { "Ambient" })
                                 .fixed_decimals(2),
                             );
                             ui.add(
@@ -1056,7 +1057,7 @@ impl ViewerApp {
                                     &mut self.viewports[vp_idx].vr_diffuse,
                                     0.0..=1.5,
                                 )
-                                .text("Diffuse")
+                                .text(if es { "Difusa" } else { "Diffuse" })
                                 .fixed_decimals(2),
                             );
                             ui.add(
@@ -1064,34 +1065,34 @@ impl ViewerApp {
                                     &mut self.viewports[vp_idx].vr_specular,
                                     0.0..=1.0,
                                 )
-                                .text("Specular")
+                                .text(if es { "Especular" } else { "Specular" })
                                 .fixed_decimals(2),
                             );
-                            if ui.small_button("Reset lighting").clicked() {
+                            if ui.button(if es { "Restablecer luz" } else { "Reset lighting" }).clicked() {
                                 self.viewports[vp_idx].vr_ambient = 0.28;
                                 self.viewports[vp_idx].vr_diffuse = 0.72;
                                 self.viewports[vp_idx].vr_specular = 0.35;
                             }
                         })
                         .response
-                        .on_hover_text("Adjust 3D Phong lighting (Ambient / Diffuse / Specular)");
+                        .on_hover_text(if es { "Ajustar luz ambiente, difusa y especular" } else { "Adjust ambient, diffuse and specular light" });
                     }
                 }
                 ui.separator();
-                if ui.small_button("Front").clicked() {
+                if ui.small_button(if es { "Frente" } else { "Front" }).clicked() {
                     self.viewports[vp_idx].vr_yaw = 0.0;
                     self.viewports[vp_idx].vr_pitch = 0.0;
                 }
-                if ui.small_button("Left").clicked() {
+                if ui.small_button(if es { "Izquierda" } else { "Left" }).clicked() {
                     self.viewports[vp_idx].vr_yaw = std::f32::consts::FRAC_PI_2;
                     self.viewports[vp_idx].vr_pitch = 0.0;
                 }
-                if ui.small_button("Top").clicked() {
+                if ui.small_button(if es { "Arriba" } else { "Top" }).clicked() {
                     self.viewports[vp_idx].vr_yaw = 0.0;
                     self.viewports[vp_idx].vr_pitch = 1.45;
                 }
                 ui.separator();
-                ui.menu_button("✂ Clip", |ui| {
+                ui.menu_button(if es { "Recorte ▾" } else { "Clip ▾" }, |ui| {
                     ui.set_min_width(210.0);
                     let vp = &mut self.viewports[vp_idx];
                     for (axis, name) in [(0usize, "X"), (1, "Y"), (2, "Z")] {
@@ -1112,21 +1113,21 @@ impl ViewerApp {
                             vp.vr_clip_min[axis] = (vp.vr_clip_max[axis] - 0.02).max(0.0);
                         }
                     }
-                    if ui.small_button("Reset Clip").clicked() {
+                    if ui.button(if es { "Restablecer recorte" } else { "Reset clip" }).clicked() {
                         vp.vr_clip_min = [0.0, 0.0, 0.0];
                         vp.vr_clip_max = [1.0, 1.0, 1.0];
                     }
                 })
                 .response
-                .on_hover_text("3D Volume Clipping / Crop Planes (X / Y / Z)");
-                ui.menu_button("🎨 BG", |ui| {
+                .on_hover_text(if es { "Recortar el volumen en X, Y y Z" } else { "Crop the volume along X, Y and Z" });
+                ui.menu_button(if es { "Fondo ▾" } else { "Background ▾" }, |ui| {
                     ui.set_min_width(160.0);
                     let vp = &mut self.viewports[vp_idx];
                     for (name, rgb) in [
-                        ("Black", [0.02f32, 0.02, 0.03]),
-                        ("Dark Slate", [0.09, 0.11, 0.14]),
-                        ("Deep Navy", [0.04, 0.08, 0.18]),
-                        ("White", [0.95, 0.96, 0.98]),
+                        (if es { "Negro" } else { "Black" }, [0.02f32, 0.02, 0.03]),
+                        (if es { "Pizarra oscuro" } else { "Dark slate" }, [0.09, 0.11, 0.14]),
+                        (if es { "Azul marino" } else { "Deep navy" }, [0.04, 0.08, 0.18]),
+                        (if es { "Blanco" } else { "White" }, [0.95, 0.96, 0.98]),
                     ] {
                         if ui.button(name).clicked() {
                             vp.vr_bg_color = rgb;
@@ -1135,24 +1136,29 @@ impl ViewerApp {
                     }
                     ui.separator();
                     ui.horizontal(|ui| {
-                        ui.label("Custom:");
+                        ui.label(if es { "Personalizado:" } else { "Custom:" });
                         ui.color_edit_button_rgb(&mut vp.vr_bg_color);
                     });
                 })
                 .response
-                .on_hover_text("3D Volume Rendering Background Color");
+                .on_hover_text(if es { "Color de fondo de la vista 3D" } else { "Background colour of the 3D view" });
             }
 
             let cell_count = self.tiling.cell_count();
             if cell_count > 1 && !self.ortho_mpr_active {
                 ui.separator();
-                let (lbl_zoom, lbl_wl, lbl_cut) = match self.lang {
-                    crate::i18n::Lang::En => ("🔗 Zoom", "🔗 WL", "🔗 Cut"),
-                    crate::i18n::Lang::Es => ("🔗 Zoom", "🔗 NV", "🔗 Corte"),
+                let (lbl_zoom, lbl_wl, lbl_cut) = if es {
+                    ("Zoom", "NV/AV", "Corte")
+                } else {
+                    ("Zoom", "WL/WW", "Cut")
                 };
-                if ui
-                    .toggle_value(&mut self.link_zoom, lbl_zoom)
-                    .on_hover_text("Link Zoom & Pan across linked viewports")
+                ui.label(
+                    egui::RichText::new(if es { "Vincular" } else { "Link" })
+                        .size(10.5)
+                        .color(theme::dim_text(ui)),
+                );
+                if icons::toggle_button(ui, &mut self.link_zoom, lbl_zoom)
+                    .on_hover_text(if es { "Vincular zoom y desplazamiento entre visores vinculados" } else { "Link zoom and pan across linked viewports" })
                     .changed()
                 {
                     self.ensure_default_link_pair();
@@ -1191,16 +1197,14 @@ impl ViewerApp {
                         self.link_zoom_same_size = false;
                     }
                 }
-                if ui
-                    .toggle_value(&mut self.link_wl, lbl_wl)
-                    .on_hover_text("Link Window Level / Width across linked viewports")
+                if icons::toggle_button(ui, &mut self.link_wl, lbl_wl)
+                    .on_hover_text(if es { "Vincular nivel / ancho de ventana entre visores vinculados" } else { "Link window level / width across linked viewports" })
                     .changed()
                 {
                     self.ensure_default_link_pair();
                 }
-                if ui
-                    .toggle_value(&mut self.link_cut, lbl_cut)
-                    .on_hover_text("Link Slice / Cut position across linked viewports (without forcing Ax/Cor/Sag)")
+                if icons::toggle_button(ui, &mut self.link_cut, lbl_cut)
+                    .on_hover_text(if es { "Vincular la posición de corte entre visores (cada uno conserva su plano)" } else { "Link slice position across linked viewports (each keeps its own plane)" })
                     .changed()
                 {
                     self.ensure_default_link_pair();
@@ -1209,13 +1213,13 @@ impl ViewerApp {
                     ui.separator();
                     let active_g = self.viewports[self.active_viewport].link_group;
                     ui.label(
-                        egui::RichText::new("Link:")
+                        egui::RichText::new(if es { "Grupo" } else { "Group" })
                             .size(10.5)
-                            .color(Color32::from_gray(160)),
+                            .color(theme::dim_text(ui)),
                     );
                     if ui
                         .selectable_label(active_g == 0, "○")
-                        .on_hover_text("Unlink active viewport")
+                        .on_hover_text(if es { "Desvincular el visor activo" } else { "Unlink active viewport" })
                         .clicked()
                     {
                         self.viewports[self.active_viewport].link_group = 0;
@@ -1225,7 +1229,11 @@ impl ViewerApp {
                         let txt = egui::RichText::new(format!("{g}")).strong().color(col);
                         if ui
                             .selectable_label(active_g == g, txt)
-                            .on_hover_text(format!("Assign active viewport to Link Group {g}"))
+                            .on_hover_text(if es {
+                                format!("Asignar el visor activo al grupo {g}")
+                            } else {
+                                format!("Assign active viewport to link group {g}")
+                            })
                             .clicked()
                         {
                             self.viewports[self.active_viewport].link_group = g;
@@ -1238,18 +1246,18 @@ impl ViewerApp {
                     .collect();
                 let (cmp_lbl, cmp_hover, lbl_link_wl, lbl_vps, lbl_apply) = match self.lang {
                     crate::i18n::Lang::En => (
-                        "⚖ Compare ▾",
+                        "Compare ▾",
                         "Compare selected viewports (Zoom = mm, Cut & XYZ plane alignment)",
                         "Link WL/WW",
                         "Viewports to compare:",
-                        "⚖ Compare Selected",
+                        "Compare selected",
                     ),
                     crate::i18n::Lang::Es => (
-                        "⚖ Comparar ▾",
+                        "Comparar ▾",
                         "Comparar visores seleccionados (Zoom = mm, Corte y planos XYZ)",
                         "Vincular NV/AV",
                         "Visores a comparar:",
-                        "⚖ Comparar seleccionados",
+                        "Comparar seleccionados",
                     ),
                 };
                 ui.add_enabled_ui(loaded_vps.len() >= 2, |ui| {

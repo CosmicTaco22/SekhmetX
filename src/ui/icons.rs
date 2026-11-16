@@ -52,6 +52,7 @@ pub enum Icon {
     Close,
     Trash,
     ChevronDown,
+    Gear,
 }
 
 /// Maps unit coordinates (0..1, y down) into `rect`.
@@ -339,6 +340,21 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::ChevronDown => {
             line(vec![c.p(0.2, 0.36), c.p(0.5, 0.66), c.p(0.8, 0.36)]);
         }
+        Icon::Gear => {
+            closed(c.ellipse(0.5, 0.5, 0.3, 0.3, 0.0, TAU));
+            painter.circle_filled(c.p(0.5, 0.5), c.len(0.1), color);
+            let teeth = Stroke::new(s.width * 1.5, color);
+            for i in 0..8 {
+                let a = TAU * i as f32 / 8.0;
+                painter.line_segment(
+                    [
+                        c.p(0.5 + 0.3 * a.cos(), 0.5 + 0.3 * a.sin()),
+                        c.p(0.5 + 0.46 * a.cos(), 0.5 + 0.46 * a.sin()),
+                    ],
+                    teeth,
+                );
+            }
+        }
     }
 }
 
@@ -479,4 +495,14 @@ pub fn segmented<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
             .inner
         })
         .inner
+}
+
+/// Text toggle that looks like a button when off and takes the accent when on.
+pub fn toggle_button(ui: &mut Ui, value: &mut bool, label: &str) -> Response {
+    let mut resp = ui.add(egui::Button::new(label).selected(*value));
+    if resp.clicked() {
+        *value = !*value;
+        resp.mark_changed();
+    }
+    resp
 }

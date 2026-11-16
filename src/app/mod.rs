@@ -1548,7 +1548,7 @@ impl ViewerApp {
                 if name.is_empty() {
                     tr.pacs_connected.to_string()
                 } else {
-                    format!("● {name}")
+                    name.to_string()
                 }
             } else {
                 tr.pacs_login_btn.to_string()
@@ -1644,20 +1644,10 @@ impl ViewerApp {
                 ui.colored_label(Color32::from_rgb(255, 180, 80), msg);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let (cog_rect, cog_resp) =
-                    ui.allocate_exact_size(vec2(24.0, 18.0), egui::Sense::click());
-                let bg = if cog_resp.hovered() || self.show_settings_modal {
-                    Color32::from_gray(68)
-                } else {
-                    Color32::from_gray(44)
-                };
-                ui.painter().rect_filled(cog_rect, 4.0, bg);
-                ui.painter().text(
-                    cog_rect.center() + vec2(0.0, 0.5),
-                    egui::Align2::CENTER_CENTER,
-                    "⚙",
-                    egui::FontId::proportional(13.0),
-                    Color32::from_gray(225),
+                let cog_resp = crate::ui::icons::small_tool_button(
+                    ui,
+                    crate::ui::icons::Icon::Gear,
+                    self.show_settings_modal,
                 );
                 if cog_resp.on_hover_text(tr.settings_hover).clicked() {
                     self.show_settings_modal = !self.show_settings_modal;
@@ -1665,7 +1655,7 @@ impl ViewerApp {
                 ui.label(
                     egui::RichText::new(format!("v{}", crate::BUILD_VERSION))
                         .small()
-                        .color(Color32::from_gray(150)),
+                        .color(crate::ui::theme::dim_text(ui)),
                 );
                 match &self.update_status {
                     crate::updater::UpdateStatus::Available(info) => {
@@ -1700,8 +1690,8 @@ impl ViewerApp {
                 }
                 if self.previous_crash_pending {
                     let lbl = match self.lang {
-                        crate::i18n::Lang::Es => "⚠ Registro de Fallo",
-                        crate::i18n::Lang::En => "⚠ Crash Log",
+                        crate::i18n::Lang::Es => "Registro de fallo",
+                        crate::i18n::Lang::En => "Crash log",
                     };
                     if ui
                         .add(

@@ -1111,7 +1111,7 @@ impl ViewerApp {
         let mut remove_uid: Option<String> = None;
         let mut thumb_jobs: Vec<Job> = Vec::new();
         let avail_h = ui.available_height();
-        let bottom_strip_h = 166.0f32.min((avail_h * 0.34).max(120.0));
+        let bottom_strip_h = 204.0f32.min((avail_h * 0.38).max(150.0));
         let top_area_h = (avail_h - bottom_strip_h - 8.0).max(140.0);
 
         ui.allocate_ui_with_layout(
@@ -1390,6 +1390,7 @@ impl ViewerApp {
             .or_else(|| matching_studies.first().copied());
         if let Some(si) = sel_si {
             let st = &index.studies[si];
+            let strip_top = ui.cursor().min.y;
             ui.horizontal(|ui| {
                 ui.label(
                     egui::RichText::new(st.patient_name.replace('^', " "))
@@ -1410,8 +1411,89 @@ impl ViewerApp {
                         .color(theme::dim_text(ui)),
                 );
             });
+            // Study details on the right, series thumbnails on the left.
+            let rest = ui.available_rect_before_wrap();
+            let details_w = 340.0f32.min(rest.width() * 0.4);
+            let details_rect = Rect::from_min_max(
+                pos2(rest.max.x - details_w, strip_top),
+                pos2(rest.max.x, rest.max.y - 2.0),
+            );
+            {
+                let mut d_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(details_rect)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                egui::Frame::new()
+                    .fill(d_ui.visuals().faint_bg_color)
+                    .corner_radius(6)
+                    .inner_margin(egui::Margin::same(10))
+                    .show(&mut d_ui, |ui| {
+                        ui.set_width(details_w - 20.0);
+                        let im_total: usize = st.series.iter().map(|s| s.slices.len()).sum();
+                        let rows: [(&str, String); 7] = if es {
+                            [
+                                ("Paciente", st.patient_name.replace('^', " ")),
+                                ("ID", st.patient_id.clone()),
+                                ("Nacimiento", st.birth_date.clone()),
+                                ("Estudio", st.description.clone()),
+                                ("Fecha", st.date.clone()),
+                                ("N.º de acceso", st.accession.clone()),
+                                ("Contenido", format!("{} series · {im_total} {}", st.series.len(), tr.images)),
+                            ]
+                        } else {
+                            [
+                                ("Patient", st.patient_name.replace('^', " ")),
+                                ("ID", st.patient_id.clone()),
+                                ("Birth date", st.birth_date.clone()),
+                                ("Study", st.description.clone()),
+                                ("Date", st.date.clone()),
+                                ("Accession", st.accession.clone()),
+                                ("Contents", format!("{} series · {im_total} {}", st.series.len(), tr.images)),
+                            ]
+                        };
+                        egui::Grid::new("db_study_details")
+                            .num_columns(2)
+                            .min_row_height(17.0)
+                            .spacing([12.0, 2.0])
+                            .show(ui, |ui| {
+                                for (k, v) in rows {
+                                    ui.label(
+                                        egui::RichText::new(k).size(11.0).color(theme::dim_text(ui)),
+                                    );
+                                    let v = if v.trim().is_empty() { "—".to_string() } else { v };
+                                    ui.add(egui::Label::new(egui::RichText::new(v).size(12.0)).truncate());
+                                    ui.end_row();
+                                }
+                            });
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            let (l_open, l_tile) = if es {
+                                ("Abrir estudio", "Abrir en mosaico")
+                            } else {
+                                ("Open study", "Open tiled")
+                            };
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        egui::RichText::new(l_open).color(Color32::WHITE),
+                                    )
+                                    .fill(theme::ACCENT),
+                                )
+                                .clicked()
+                                && !st.series.is_empty()
+                            {
+                                open_series = Some((si, 0));
+                            }
+                            if st.series.len() > 1 && ui.button(l_tile).clicked() {
+                                tile_study = Some(si);
+                            }
+                        });
+                    });
+            }
             egui::ScrollArea::horizontal()
                 .id_salt("db_series_grid")
+                .max_width((rest.width() - details_w - 8.0).max(120.0))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {

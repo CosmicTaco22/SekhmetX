@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.3] - 2026-11-16
+
+### Improved (Interface look — pass 2, second toolbar row / status bar / library details)
+- **3D VR and link controls (`src/ui/toolbar.rs`):** emoji labels replaced by plain text buttons that show their on/off state; a `Link` caption precedes the Zoom / WL/WW / Cut toggles. All of these controls, their tooltips and menus are now translated to Spanish (they were English-only).
+- **View menu:** on/off items are checkboxes.
+- **Status bar (`src/app/mod.rs`):** drawn gear icon for Settings; PACS, refresh and crash-log buttons without emoji.
+- **Library details pane (`src/app/browser.rs`):** the selected study's patient, ID, birth date, description, date, accession and contents are shown beside the series thumbnails, with `Open study` and `Open tiled` buttons.
+- **Light theme:** buttons and drop-downs have a visible body.
+
 ## [0.5.2] - 2026-11-16
 
 ### Improved (Interface look — pass 1, toolbar / sidebar / library)

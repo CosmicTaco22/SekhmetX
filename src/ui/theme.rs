@@ -98,6 +98,13 @@ pub fn install(ctx: &egui::Context) {
     }
     light.widgets.hovered.expansion = 0.0;
     light.widgets.active.expansion = 0.0;
+    // Buttons need a visible body on the pale panels.
+    light.widgets.inactive.bg_fill = Color32::from_rgb(212, 215, 221);
+    light.widgets.inactive.weak_bg_fill = Color32::from_rgb(212, 215, 221);
+    light.widgets.hovered.bg_fill = Color32::from_rgb(196, 200, 208);
+    light.widgets.hovered.weak_bg_fill = Color32::from_rgb(196, 200, 208);
+    light.widgets.active.bg_fill = Color32::from_rgb(180, 185, 195);
+    light.widgets.active.weak_bg_fill = Color32::from_rgb(180, 185, 195);
     ctx.set_visuals_of(Theme::Light, light);
 
     ctx.all_styles_mut(|style| {
