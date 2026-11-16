@@ -345,6 +345,12 @@ pub(crate) struct ViewerApp {
     pub(crate) tool: Tool,
 
     pub(crate) measures: HashMap<(PathBuf, u32), Vec<Measure>>,
+    pub(crate) roi_callout_offsets: HashMap<(PathBuf, u32, usize), Vec2>,
+    pub(crate) callout_drag: Option<((PathBuf, u32, usize), Pos2)>,
+    pub(crate) callout_hit_rects: Vec<((PathBuf, u32, usize), Rect)>,
+    pub(crate) prev_callout_hit_rects: Vec<((PathBuf, u32, usize), Rect)>,
+    pub(crate) key_images: std::collections::HashSet<(PathBuf, u32)>,
+    pub(crate) key_images_only: bool,
     pub(crate) drawing: Vec<Pos2>,
     pub(crate) angle_pending: Option<(Pos2, Pos2)>,
     pub(crate) hover_px: Option<Pos2>,
@@ -567,6 +573,12 @@ impl ViewerApp {
             },
             tool: Tool::Scroll,
             measures: HashMap::new(),
+            roi_callout_offsets: HashMap::new(),
+            callout_drag: None,
+            callout_hit_rects: Vec::new(),
+            prev_callout_hit_rects: Vec::new(),
+            key_images: std::collections::HashSet::new(),
+            key_images_only: false,
             drawing: Vec::new(),
             angle_pending: None,
             hover_px: None,
@@ -620,8 +632,8 @@ impl ViewerApp {
             patient_links: saved_patient_links,
             linking_source: None,
         };
-        if let Some(db) = &app.db
-            && let Ok(saved_rois) = db.load_all_rois() {
+        if let Some(db) = &app.db {
+            if let Ok(saved_rois) = db.load_all_rois() {
                 for (k, list) in saved_rois {
                     let converted: Vec<Measure> = list.into_iter().map(Measure::from_persisted).collect();
                     if !converted.is_empty() {
@@ -629,6 +641,10 @@ impl ViewerApp {
                     }
                 }
             }
+            if let Ok(saved_keys) = db.load_all_key_images() {
+                app.key_images = saved_keys;
+            }
+        }
         if app.check_updates_on_startup {
             app.start_update_check(false, &cc.egui_ctx);
         }
@@ -1332,6 +1348,7 @@ impl ViewerApp {
             Key::H,
             Key::V,
             Key::P,
+            Key::K,
             Key::Space,
             Key::Delete,
             Key::Backspace,
@@ -1415,6 +1432,9 @@ impl ViewerApp {
                 }
                 Key::A => {
                     self.switch_viewport_to_plane(vp, crate::dicom_index::DominantPlane::Axial);
+                }
+                Key::K => {
+                    self.toggle_viewport_key_image(vp);
                 }
                 Key::C => {
                     self.switch_viewport_to_plane(vp, crate::dicom_index::DominantPlane::Coronal);
@@ -1621,6 +1641,134 @@ impl ViewerApp {
 }
 
 impl ViewerApp {
+    /// Returns `(path, frame)` for the current slice in `vp_idx`.
+    pub(crate) fn viewport_key_image_id(&self, vp_idx: usize) -> Option<(PathBuf, u32)> {
+        let cur_slice = self.viewports.get(vp_idx)?.slice;
+        let key = self.viewport_slice_key(vp_idx, cur_slice)?;
+        let sref = self
+            .index
+            .as_ref()?
+            .studies
+            .get(key.study)?
+            .series
+            .get(key.series)?
+            .slices
+            .get(key.slice)?;
+        Some((sref.path.clone(), sref.frame))
+    }
+
+    pub(crate) fn is_viewport_key_image(&self, vp_idx: usize) -> bool {
+        self.viewport_key_image_id(vp_idx)
+            .is_some_and(|id| self.key_images.contains(&id))
+    }
+
+    pub(crate) fn toggle_viewport_key_image(&mut self, vp_idx: usize) {
+        let Some((path, frame)) = self.viewport_key_image_id(vp_idx) else {
+            return;
+        };
+        let now_key = if self.key_images.contains(&(path.clone(), frame)) {
+            self.key_images.remove(&(path.clone(), frame));
+            false
+        } else {
+            self.key_images.insert((path.clone(), frame));
+            true
+        };
+        if let Some(ref db) = self.db {
+            let _ = db.set_key_image(&path, frame, now_key);
+        }
+        if self.key_images_only && !now_key && self.series_key_image_indices(vp_idx).is_empty() {
+            self.key_images_only = false;
+        }
+        self.message = Some(match (self.lang, now_key) {
+            (crate::i18n::Lang::Es, true) => "★ Imagen marcada como clave".into(),
+            (crate::i18n::Lang::Es, false) => "Imagen clave quitada".into(),
+            (crate::i18n::Lang::En, true) => "★ Marked as Key Image".into(),
+            (crate::i18n::Lang::En, false) => "Key Image unmarked".into(),
+        });
+    }
+
+    pub(crate) fn series_key_image_indices(&self, vp_idx: usize) -> Vec<usize> {
+        let Some(se) = self.viewport_series(vp_idx) else {
+            return Vec::new();
+        };
+        se.slices
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| self.key_images.contains(&(s.path.clone(), s.frame)))
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub(crate) fn study_key_image_count(&self, si: usize) -> usize {
+        let Some(st) = self.study_at(si) else {
+            return 0;
+        };
+        st.series
+            .iter()
+            .flat_map(|se| se.slices.iter())
+            .filter(|s| self.key_images.contains(&(s.path.clone(), s.frame)))
+            .count()
+    }
+
+    pub(crate) fn step_key_image(&mut self, vp_idx: usize, dir: isize) {
+        let indices = self.series_key_image_indices(vp_idx);
+        if indices.is_empty() {
+            return;
+        }
+        let cur = self.viewports[vp_idx].slice;
+        let next = if dir >= 0 {
+            indices
+                .iter()
+                .copied()
+                .find(|&i| i > cur)
+                .unwrap_or(indices[0])
+        } else {
+            indices
+                .iter()
+                .rev()
+                .copied()
+                .find(|&i| i < cur)
+                .unwrap_or(*indices.last().unwrap_or(&0))
+        };
+        self.set_viewport_slice(vp_idx, next as isize, true);
+    }
+
+    pub(crate) fn export_key_images_png(&mut self) {
+        let vp_idx = self.active_viewport;
+        let Some((si, _)) = self.viewports[vp_idx].selected else {
+            return;
+        };
+        let Some(st) = self.study_at(si) else {
+            return;
+        };
+        let key_slices: Vec<SliceRef> = st
+            .series
+            .iter()
+            .flat_map(|se| se.slices.iter())
+            .filter(|s| self.key_images.contains(&(s.path.clone(), s.frame)))
+            .cloned()
+            .collect();
+        if key_slices.is_empty() {
+            return;
+        }
+        let vp = &self.viewports[vp_idx];
+        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
+            let count = key_slices.len();
+            let _ = crate::export::export_series_png(
+                &key_slices,
+                vp.window,
+                vp.effective_invert(),
+                &vp.clut_name,
+                vp.convolution_idx,
+                &dir,
+            );
+            self.message = Some(match self.lang {
+                crate::i18n::Lang::Es => format!("Exportadas {count} imágenes clave (PNG)"),
+                crate::i18n::Lang::En => format!("Exported {count} Key Images (PNG)"),
+            });
+        }
+    }
+
     /// Arm an anonymized HD screenshot of the currently active viewport for clipboard copy.
     pub(crate) fn request_copy_active_viewport(&mut self, ctx: &egui::Context) {
         let Some(&rect) = self.viewport_rects.get(self.active_viewport) else {

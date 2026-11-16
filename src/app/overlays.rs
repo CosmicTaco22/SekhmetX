@@ -378,7 +378,7 @@ impl ViewerApp {
     }
 
     pub(super) fn draw_measures(
-        &self,
+        &mut self,
         painter: &egui::Painter,
         vp_idx: usize,
         view: Rect,
@@ -392,42 +392,71 @@ impl ViewerApp {
         let s = |p: Pos2| self.pixel_to_screen(vp_idx, img, f, p);
 
         let safe_bounds = view.shrink(6.0);
-        let draw_callout = |anchor_scr: Pos2, lines: &[String], border_col: Color32| {
-            if lines.is_empty() {
-                return;
-            }
-            let text = lines.join("\n");
-            let font = FontId::monospace(11.0);
-            let galley = painter.layout_no_wrap(text.clone(), font.clone(), Color32::WHITE);
-            let box_size = galley.size() + vec2(12.0, 8.0);
-            let raw_min = anchor_scr + vec2(10.0, -box_size.y - 4.0);
-            let max_x = (safe_bounds.right() - box_size.x).max(safe_bounds.left());
-            let max_y = (safe_bounds.bottom() - box_size.y).max(safe_bounds.top());
-            let box_min = pos2(
-                raw_min.x.clamp(safe_bounds.left(), max_x),
-                raw_min.y.clamp(safe_bounds.top(), max_y),
-            );
-            let box_rect = Rect::from_min_size(box_min, box_size);
-            let bg = if border_col == color {
-                Color32::from_rgba_unmultiplied(54, 20, 22, 215)
-            } else {
-                Color32::from_rgba_unmultiplied(16, 22, 28, 215)
+        let offsets = &self.roi_callout_offsets;
+        let mut new_hit_rects: Vec<((PathBuf, u32, usize), Rect)> = Vec::new();
+        let mut draw_callout =
+            |anchor_scr: Pos2,
+             lines: &[String],
+             border_col: Color32,
+             ckey: Option<(PathBuf, u32, usize)>| {
+                if lines.is_empty() {
+                    return;
+                }
+                let text = lines.join("\n");
+                let font = FontId::monospace(11.0);
+                let galley = painter.layout_no_wrap(text.clone(), font.clone(), Color32::WHITE);
+                let box_size = galley.size() + vec2(10.0, 6.0);
+                let offset = ckey
+                    .as_ref()
+                    .and_then(|k| offsets.get(k))
+                    .copied()
+                    .unwrap_or(Vec2::ZERO);
+                let raw_min = anchor_scr + vec2(10.0, -box_size.y - 4.0) + offset;
+                let max_x = (safe_bounds.right() - box_size.x).max(safe_bounds.left());
+                let max_y = (safe_bounds.bottom() - box_size.y).max(safe_bounds.top());
+                let box_min = pos2(
+                    raw_min.x.clamp(safe_bounds.left(), max_x),
+                    raw_min.y.clamp(safe_bounds.top(), max_y),
+                );
+                let box_rect = Rect::from_min_size(box_min, box_size);
+                if offset.length() > 8.0 {
+                    let leader_col = Color32::from_rgba_unmultiplied(
+                        border_col.r(),
+                        border_col.g(),
+                        border_col.b(),
+                        105,
+                    );
+                    painter.line_segment([anchor_scr, box_rect.center()], Stroke::new(1.0, leader_col));
+                }
+                let bg = if border_col == color {
+                    Color32::from_rgba_unmultiplied(36, 18, 18, 145)
+                } else {
+                    Color32::from_rgba_unmultiplied(14, 17, 22, 145)
+                };
+                let soft_border = Color32::from_rgba_unmultiplied(
+                    border_col.r(),
+                    border_col.g(),
+                    border_col.b(),
+                    105,
+                );
+                painter.rect_filled(box_rect, 3.0, bg);
+                painter.rect_stroke(
+                    box_rect,
+                    3.0,
+                    Stroke::new(0.75, soft_border),
+                    egui::StrokeKind::Inside,
+                );
+                painter.text(
+                    box_rect.min + vec2(5.0, 3.0),
+                    Align2::LEFT_TOP,
+                    text,
+                    font,
+                    Color32::from_rgb(238, 242, 246),
+                );
+                if let Some(k) = ckey {
+                    new_hit_rects.push((k, box_rect));
+                }
             };
-            painter.rect_filled(box_rect, 3.0, bg);
-            painter.rect_stroke(
-                box_rect,
-                3.0,
-                Stroke::new(1.0, border_col.linear_multiply(0.85)),
-                egui::StrokeKind::Inside,
-            );
-            painter.text(
-                box_rect.min + vec2(6.0, 4.0),
-                Align2::LEFT_TOP,
-                text,
-                font,
-                Color32::from_rgb(245, 248, 252),
-            );
-        };
 
         let unverified_geom = self.viewports.get(vp_idx).is_some_and(|v| v.mpr_enabled)
             && self
@@ -441,7 +470,7 @@ impl ViewerApp {
         let unit = self
             .viewport_series(vp_idx)
             .map(|se| {
-                if se.modality == "CT" {
+                if se.modality.trim().eq_ignore_ascii_case("CT") {
                     "HU"
                 } else {
                     f.value_unit
@@ -449,10 +478,12 @@ impl ViewerApp {
             })
             .unwrap_or(f.value_unit);
 
-        let mut items: Vec<Measure> = self
-            .viewport_measure_key(vp_idx)
-            .and_then(|k| self.measures.get(&k).cloned())
+        let measure_key = self.viewport_measure_key(vp_idx);
+        let mut items: Vec<Measure> = measure_key
+            .as_ref()
+            .and_then(|k| self.measures.get(k).cloned())
             .unwrap_or_default();
+        let saved_count = items.len();
 
         if vp_idx == self.active_viewport {
             match self.tool {
@@ -497,7 +528,12 @@ impl ViewerApp {
             }
         }
 
-        for m in &items {
+        for (m_idx, m) in items.iter().enumerate() {
+            let ckey = if m_idx < saved_count {
+                measure_key.as_ref().map(|(p, fr)| (p.clone(), *fr, m_idx))
+            } else {
+                None
+            };
             match m {
                 &Measure::Length(a, b) => {
                     painter.line_segment([s(a), s(b)], stroke);
@@ -513,7 +549,7 @@ impl ViewerApp {
                         );
                         eval.format_callout(RoiKind::Length, unit, "")
                     };
-                    draw_callout(s(b), &lines, color);
+                    draw_callout(s(b), &lines, color, ckey);
                 }
                 &Measure::Angle(a, v, b) => {
                     painter.line_segment([s(a), s(v)], stroke);
@@ -532,7 +568,7 @@ impl ViewerApp {
                         );
                         eval.format_callout(RoiKind::Angle, unit, "")
                     };
-                    draw_callout(s(v), &lines, color);
+                    draw_callout(s(v), &lines, color, ckey);
                 }
                 &Measure::Oval(a, b) => {
                     let roi_rect = RoiBoundingBox::rect(
@@ -565,7 +601,7 @@ impl ViewerApp {
                         (roi_rect.origin.x + roi_rect.size.width) as f32,
                         roi_rect.origin.y as f32,
                     );
-                    draw_callout(s(anchor), &lines, roi_color);
+                    draw_callout(s(anchor), &lines, roi_color, ckey);
                 }
                 &Measure::Rect(a, b) => {
                     let roi_rect = RoiBoundingBox::rect(
@@ -593,7 +629,7 @@ impl ViewerApp {
                         eval.format_callout(RoiKind::Rectangle, unit, "")
                     };
                     let anchor = pos2(roi_rect.max_x() as f32, roi_rect.min_y() as f32);
-                    draw_callout(s(anchor), &lines, roi_color);
+                    draw_callout(s(anchor), &lines, roi_color, ckey);
                 }
                 Measure::Polygon(pts) => {
                     if pts.len() >= 3 {
@@ -612,7 +648,7 @@ impl ViewerApp {
                             let eval = roi::evaluate_region(f, RoiKind::ClosedPolygon, &outline, None);
                             eval.format_callout(RoiKind::ClosedPolygon, unit, "")
                         };
-                        draw_callout(s(pts[0]), &lines, roi_color);
+                        draw_callout(s(pts[0]), &lines, roi_color, ckey);
                     }
                 }
                 Measure::Pencil(pts) => {
@@ -640,7 +676,7 @@ impl ViewerApp {
                                     roi::evaluate_region(f, RoiKind::Pencil, active_outline, None);
                                 eval.format_callout(RoiKind::Pencil, unit, "")
                             };
-                            draw_callout(s(pts[0]), &lines, roi_color);
+                            draw_callout(s(pts[0]), &lines, roi_color, ckey);
                         }
                     }
                 }
@@ -656,7 +692,7 @@ impl ViewerApp {
                         let eval = roi::evaluate_point(f, RoiPoint::new(pt.x as f64, pt.y as f64));
                         eval.format_callout(RoiKind::Point, unit, "")
                     };
-                    draw_callout(sp, &lines, color);
+                    draw_callout(sp, &lines, color, ckey);
                 }
             }
         }
@@ -691,7 +727,7 @@ impl ViewerApp {
                             RoiPoint::new(b.x as f64, b.y as f64),
                         );
                         let lines = eval.format_callout(RoiKind::Angle, unit, "");
-                        draw_callout(s(v), &lines, color);
+                        draw_callout(s(v), &lines, color, None);
                     }
                 }
             } else if self.drawing.len() == 2 {
@@ -708,6 +744,8 @@ impl ViewerApp {
                 }
             }
         }
+        drop(draw_callout);
+        self.callout_hit_rects.extend(new_hit_rects);
     }
 
     pub(super) fn draw_overlay(
@@ -766,6 +804,9 @@ impl ViewerApp {
                     tl.push(format!("X: {px} px  Y: {py} px  Val: {val}"));
                 }
             }
+        }
+        if self.is_viewport_key_image(vp_idx) {
+            tl.push("★ KEY IMAGE".to_string());
         }
         text(view.left_top() + vec2(pad, pad), Align2::LEFT_TOP, tl.join("\n"));
 

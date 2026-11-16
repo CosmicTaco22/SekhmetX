@@ -7,6 +7,8 @@ impl ViewerApp {
         let cols = self.tiling.columns.max(1);
 
         self.cursor_info = None;
+        std::mem::swap(&mut self.callout_hit_rects, &mut self.prev_callout_hit_rects);
+        self.callout_hit_rects.clear();
         if let Some(max_idx) = self.maximized_viewport
             && max_idx < rows * cols
         {
@@ -233,7 +235,41 @@ impl ViewerApp {
 
         let mut cur_key = cur_key;
         if !on_scrubber {
-            let consumed = self.handle_ortho_crosshair_drag(vp_idx, &response, view, &frame);
+            if self.callout_drag.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else if ui
+                .input(|i| i.pointer.hover_pos())
+                .is_some_and(|hp| self.prev_callout_hit_rects.iter().any(|(_, r)| r.expand(3.0).contains(hp)))
+            {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+            }
+            let mut callout_consumed = false;
+            if response.drag_started_by(egui::PointerButton::Primary)
+                && let Some(pos) = press_origin
+                && let Some((ckey, _)) = self
+                    .prev_callout_hit_rects
+                    .iter()
+                    .rev()
+                    .find(|(_, r)| r.expand(3.0).contains(pos))
+                    .cloned()
+            {
+                self.callout_drag = Some((ckey, pos));
+                callout_consumed = true;
+            }
+            if let Some((ckey, last_p)) = self.callout_drag.clone() {
+                if response.dragged_by(egui::PointerButton::Primary) {
+                    if let Some(cur_p) = interact_pos {
+                        let delta = cur_p - last_p;
+                        *self.roi_callout_offsets.entry(ckey.clone()).or_insert(Vec2::ZERO) += delta;
+                        self.callout_drag = Some((ckey, cur_p));
+                    }
+                    callout_consumed = true;
+                } else if ui.input(|i| i.pointer.any_released()) {
+                    self.callout_drag = None;
+                }
+            }
+            let consumed = callout_consumed
+                || self.handle_ortho_crosshair_drag(vp_idx, &response, view, &frame);
             if !consumed {
                 self.handle_drag(vp_idx, &response, view, &frame);
             }
@@ -421,7 +457,20 @@ impl ViewerApp {
                     }
                 }
         }
-        self.draw_measures(&painter, vp_idx, view, img, &source_frame);
+        let has_rois = self
+            .viewport_measure_key(vp_idx)
+            .is_some_and(|k| self.measures.contains_key(&k));
+        let stats_frame = if matches!(&source_frame.pixels, crate::frame::Pixels::Gray(g) if g.is_empty())
+            && self.viewports[vp_idx].mpr_enabled
+            && (has_rois || !self.drawing.is_empty() || self.tool == Tool::Point)
+        {
+            self.ensure_mpr_frame(vp_idx)
+                .map(|(mf, _)| mf)
+                .unwrap_or_else(|| source_frame.clone())
+        } else {
+            source_frame.clone()
+        };
+        self.draw_measures(&painter, vp_idx, view, img, &stats_frame);
         if self.show_annotations {
             self.draw_scale_bar(&painter, vp_idx, view, img, &frame);
             self.draw_orientation_letters(&painter, vp_idx, view, &frame);
@@ -1126,6 +1175,20 @@ impl ViewerApp {
                 ui.close();
             }
 
+            if !self.viewports[vp_idx].vr_enabled && self.viewports[vp_idx].selected.is_some() {
+                let is_key = self.is_viewport_key_image(vp_idx);
+                let key_lbl = match (self.lang, is_key) {
+                    (crate::i18n::Lang::Es, false) => "★ Marcar como imagen clave (K)",
+                    (crate::i18n::Lang::Es, true) => "☆ Quitar de imágenes clave (K)",
+                    (crate::i18n::Lang::En, false) => "★ Mark as Key Image (K)",
+                    (crate::i18n::Lang::En, true) => "☆ Unmark Key Image (K)",
+                };
+                if ui.button(key_lbl).clicked() {
+                    self.toggle_viewport_key_image(vp_idx);
+                    ui.close();
+                }
+            }
+
             // Switch series in this viewport directly from the canvas
             if let Some((si, cur_ri)) = self.viewports[vp_idx].selected
                 && let Some(study) = self.study_at(si)
@@ -1175,6 +1238,24 @@ impl ViewerApp {
                 if ui.button(tr.export_anon_dicom).clicked() {
                     self.export_active_anonymized_dicom();
                     ui.close();
+                }
+                if let Some((si, _)) = self.viewports[vp_idx].selected {
+                    let key_cnt = self.study_key_image_count(si);
+                    if key_cnt > 0 {
+                        ui.separator();
+                        let exp_key_lbl = match self.lang {
+                            crate::i18n::Lang::Es => {
+                                format!("★ Exportar imágenes clave ({key_cnt})…")
+                            }
+                            crate::i18n::Lang::En => {
+                                format!("★ Export Key Images ({key_cnt})…")
+                            }
+                        };
+                        if ui.button(exp_key_lbl).clicked() {
+                            self.export_key_images_png();
+                            ui.close();
+                        }
+                    }
                 }
             });
             ui.separator();

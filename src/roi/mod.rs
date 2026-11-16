@@ -156,37 +156,41 @@ impl RoiEvaluation {
                 } else {
                     value_unit
                 };
+                if let Some(st) = &self.stats
+                    && st.count > 0
+                {
+                    let u_suffix = if unit.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" {unit}")
+                    };
+                    lines.push(format!(
+                        "Mean: {:.1}{u_suffix}  SD: {:.2}",
+                        st.mean, st.deviation
+                    ));
+                    lines.push(format!(
+                        "Max: {:.0}{u_suffix}  Min: {:.0}{u_suffix}",
+                        st.maximum, st.minimum
+                    ));
+                }
+                let px_count = self.stats.as_ref().map(|s| s.count).unwrap_or(0);
                 if self.calibrated {
                     if let (Some(cm2), Some(mm2)) = (self.area_cm2_or_px2, self.area_mm2) {
-                        let perim_mm = self.length_mm.unwrap_or(0.0);
+                        let perim_cm = self.length_mm.unwrap_or(0.0) / 10.0;
                         if cm2 >= 1.0 {
-                            lines.push(format!("Area: {cm2:.2} cm²  Perim: {perim_mm:.1} mm"));
+                            lines.push(format!(
+                                "Area: {cm2:.3} cm² ({px_count} px)  P: {perim_cm:.2} cm"
+                            ));
                         } else {
                             lines.push(format!(
-                                "Area: {mm2:.1} mm² ({cm2:.3} cm²)  Perim: {perim_mm:.1} mm"
+                                "Area: {mm2:.1} mm² ({cm2:.4} cm²) ({px_count} px)"
                             ));
                         }
                     }
                 } else if let Some(px2) = self.area_cm2_or_px2 {
                     let perim_px = self.length_cm_or_px.unwrap_or(0.0);
-                    lines.push(format!("Area: {px2:.0} px²  Perim: {perim_px:.1} px"));
+                    lines.push(format!("Area: {px2:.0} px² ({px_count} px)  P: {perim_px:.1} px"));
                 }
-                if let Some(st) = &self.stats
-                    && st.count > 0 {
-                        let u_suffix = if unit.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" {unit}")
-                        };
-                        lines.push(format!(
-                            "Mean: {:.1}{u_suffix}  SD: {:.1}",
-                            st.mean, st.deviation
-                        ));
-                        lines.push(format!(
-                            "Min: {:.0}{u_suffix}  Max: {:.0}  ({} px)",
-                            st.minimum, st.maximum, st.count
-                        ));
-                    }
             }
         }
         lines

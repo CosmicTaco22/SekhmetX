@@ -927,6 +927,38 @@ impl ViewerApp {
                     self.set_viewport_slice(vp_idx, isize::MAX, true);
                 }
             }
+            if !vr_active && self.viewports[vp_idx].selected.is_some() {
+                let is_key = self.is_viewport_key_image(vp_idx);
+                let star_txt = if is_key {
+                    egui::RichText::new("★").color(Color32::from_rgb(255, 205, 65)).strong()
+                } else {
+                    egui::RichText::new("☆").color(Color32::from_gray(165))
+                };
+                let star_tip = match self.lang {
+                    crate::i18n::Lang::Es => "Marcar/desmarcar imagen clave (K)",
+                    crate::i18n::Lang::En => "Toggle Key Image (K)",
+                };
+                if ui.small_button(star_txt).on_hover_text(star_tip).clicked() {
+                    self.toggle_viewport_key_image(vp_idx);
+                }
+                let key_count = self.series_key_image_indices(vp_idx).len();
+                if key_count > 0 {
+                    let jump_tip = match self.lang {
+                        crate::i18n::Lang::Es => "Ir a la siguiente imagen clave de esta serie",
+                        crate::i18n::Lang::En => "Jump to next Key Image in this series",
+                    };
+                    if ui
+                        .small_button(
+                            egui::RichText::new(format!("★ {key_count}"))
+                                .color(Color32::from_rgb(255, 205, 65)),
+                        )
+                        .on_hover_text(jump_tip)
+                        .clicked()
+                    {
+                        self.step_key_image(vp_idx, 1);
+                    }
+                }
+            }
 
             if self.active_cell().mpr_enabled {
                 ui.separator();

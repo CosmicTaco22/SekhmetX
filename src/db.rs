@@ -125,6 +125,11 @@ impl Database {
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS key_images (
+                file_path TEXT NOT NULL,
+                frame INTEGER NOT NULL,
+                PRIMARY KEY (file_path, frame)
+            );
             ",
         )?;
         Self::migrate_if_needed(&conn)?;
@@ -569,6 +574,37 @@ impl Database {
         Ok(out)
     }
 
+    pub fn set_key_image(&self, file_path: &Path, frame: u32, is_key: bool) -> Result<()> {
+        let p = file_path.to_string_lossy();
+        if is_key {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO key_images (file_path, frame) VALUES (?1, ?2)",
+                params![p, frame as i64],
+            )?;
+        } else {
+            self.conn.execute(
+                "DELETE FROM key_images WHERE file_path = ?1 AND frame = ?2",
+                params![p, frame as i64],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn load_all_key_images(&self) -> Result<std::collections::HashSet<(PathBuf, u32)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT file_path, frame FROM key_images")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u32))
+        })?;
+        let mut out = std::collections::HashSet::new();
+        for r in rows {
+            let (p, f) = r?;
+            out.insert((PathBuf::from(p), f));
+        }
+        Ok(out)
+    }
+
     pub fn get_setting(&self, key: &str) -> Option<String> {
         self.conn
             .query_row("SELECT value FROM settings WHERE key = ?1", params![key], |r| r.get(0))
@@ -845,6 +881,12 @@ mod tests {
         db.save_rois_for_slice(&dummy_dcm, 0, &rois).unwrap();
         let loaded_rois = db.load_all_rois().unwrap();
         assert_eq!(loaded_rois.get(&(dummy_dcm.clone(), 0)), Some(&rois));
+
+        // Save, reload, and remove Key Images.
+        db.set_key_image(&dummy_dcm, 0, true).unwrap();
+        assert!(db.load_all_key_images().unwrap().contains(&(dummy_dcm.clone(), 0)));
+        db.set_key_image(&dummy_dcm, 0, false).unwrap();
+        assert!(!db.load_all_key_images().unwrap().contains(&(dummy_dcm.clone(), 0)));
 
         // Removing the file from disk marks the study as `files_missing` instead of hiding it.
         std::fs::remove_file(&dummy_dcm).unwrap();
