@@ -454,13 +454,7 @@ struct PendingForceMpr {
 
 impl ViewerApp {
     pub fn new(cc: &eframe::CreationContext<'_>, initial: Vec<PathBuf>) -> Self {
-        let mut visuals = egui::Visuals::dark();
-        visuals.panel_fill = Color32::from_rgb(24, 26, 30);
-        visuals.window_fill = Color32::from_rgb(28, 31, 36);
-        visuals.widgets.inactive.bg_fill = Color32::from_rgb(42, 46, 54);
-        visuals.widgets.hovered.bg_fill = Color32::from_rgb(56, 62, 74);
-        visuals.selection.bg_fill = Color32::from_rgb(52, 130, 225);
-        cc.egui_ctx.set_visuals(visuals);
+        crate::ui::theme::install(&cc.egui_ctx);
         let ctx = cc.egui_ctx.clone();
         dicom_index::cleanup_stale_zip_caches();
         let viewports = (0..MAX_VIEWPORTS).map(ViewportCell::new).collect();
@@ -1878,8 +1872,21 @@ impl eframe::App for ViewerApp {
         self.handle_dropped_files(&ctx);
         self.handle_keys(&ctx);
 
-        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
-        egui::Panel::bottom("status").show(ui, |ui| self.status_bar(ui));
+        let chrome = crate::ui::theme::chrome_fill(&ctx);
+        egui::Panel::top("toolbar")
+            .frame(
+                egui::Frame::new()
+                    .fill(chrome)
+                    .inner_margin(egui::Margin::symmetric(8, 5)),
+            )
+            .show(ui, |ui| self.toolbar(ui));
+        egui::Panel::bottom("status")
+            .frame(
+                egui::Frame::new()
+                    .fill(chrome)
+                    .inner_margin(egui::Margin::symmetric(8, 3)),
+            )
+            .show(ui, |ui| self.status_bar(ui));
         if self.show_database_view {
             egui::CentralPanel::default().show(ui, |ui| self.database_view(ui));
         } else {

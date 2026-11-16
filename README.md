@@ -10,9 +10,9 @@ A fast, native radiological DICOM viewer for Windows, macOS, and Linux, written 
 
 - **Direct Folder, File & Streaming `.zip` Archive Opening:**
   - Open folders recursively, individual DICOM files, or **`.zip` / ZIP64 patient archives** (streamed safely into a per-process `%TEMP%\sekhmetx-zip-<pid>` folder with path-traversal protection, size/entry caps, and automatic cleanup).
-- **Horos-Style Responsive Toolbar (`»` Overflow) & Bilingual UI (`EN` / `ES`):**
-  - Toolbar ordered to match IsiX / Horos (`ViewerToolbarCatalog`), automatically collapsing trailing groups into a **`»`** overflow menu on narrower windows so controls never wrap or clip.
-  - One-click **English / Spanish (`🌐 EN` / `🌐 ES`)** language toggle persisted in the local SQLite database.
+- **Horos-Style Icon Toolbar & Bilingual UI (`EN` / `ES`):**
+  - Toolbar ordered to match IsiX / Horos (`ViewerToolbarCatalog`), with drawn icons, captions under each group, and groups that wrap onto a second row on narrower windows so nothing is hidden.
+  - Dark (default), Light or System theme, and **English / Spanish** interface, both chosen in Settings and remembered.
 - **Horos Study Browser with Search, Local SQLite Library & Live Mini-Thumbnails:**
   - Crash-safe local SQLite database (WAL mode, schema v2 migrations) storing study/series metadata, persistent ROIs, and preferences. *(Note: patient metadata in the local SQLite database is stored unencrypted on disk.)*
   - Managed library storage (`SekhmetX/Studies/<StudyUID>/`) with configurable **`Ask` / `Always` / `Never`** copy policy when opening `.zip` archives, live library disk-usage reporting (MB), **`⚠ [files missing]`** badges if source files move, per-study **`Remove from library`**, and one-click **`Clear`** library reset.
@@ -103,7 +103,8 @@ sekhmetx --roi FOLDER_OR_FILE [SERIES IMAGE] (ellipse|rect|length) X1 Y1 X2 Y2
 | `src/navigation.rs` | Multi-series `ViewportTiling`, `SliceSynchronizer`, and `ReferenceLines` |
 | `src/gpu_view.rs` | `wgpu` hardware-accelerated window/level, CLUT, and quad UV orientation renderer |
 | `src/loader.rs` | Multi-threaded priority background slice decoder |
-| `src/app.rs` | Horos-style dark UI: Study Browser, Toolbar, Multi-Viewport Grid, 3D MPR, ROIs, and HUD overlays |
+| `src/app/` | The window: library and sidebar, viewport grid, overlays, MPR/sync, dialogs |
+| `src/ui/` | Theme, drawn icons, and the toolbar |
 | `CHANGELOG.md` | Release history and changelog |
 | `PORTING_MAP.md` | Full IsiX / Horos module porting map and progress tracker |
 

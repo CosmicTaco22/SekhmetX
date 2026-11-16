@@ -21,12 +21,19 @@ pub struct Strings {
     pub open: &'static str,
     pub open_hover: &'static str,
     pub browser_hover: &'static str,
+    #[allow(dead_code)] // short label kept for menus; the toolbar shows an icon
     pub wl: &'static str,
+    #[allow(dead_code)] // short label kept for menus; the toolbar shows an icon
     pub scroll: &'static str,
+    #[allow(dead_code)] // short label kept for menus; the toolbar shows an icon
     pub pan: &'static str,
+    #[allow(dead_code)] // short label kept for menus; the toolbar shows an icon
     pub zoom: &'static str,
+    #[allow(dead_code)] // short label kept for menus; the toolbar shows an icon
     pub rot: &'static str,
+    #[allow(dead_code)] // short label kept for menus; the toolbar shows an icon
     pub orbit_3d: &'static str,
+    #[allow(dead_code)] // short label kept for menus; the toolbar shows an icon
     pub roi: &'static str,
     pub clear_rois: &'static str,
     pub ortho_mpr: &'static str,

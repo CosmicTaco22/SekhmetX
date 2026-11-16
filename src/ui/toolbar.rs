@@ -1,5 +1,7 @@
 use eframe::egui::{self, pos2, vec2, Color32, Rect, Sense, Stroke};
 
+use super::icons::{self, Icon};
+use super::theme;
 use crate::app::{Tool, ViewerApp};
 use crate::imaging::clut::ColourTableBook;
 use crate::imaging::convolution::FACTORY_CONVOLUTIONS;
@@ -51,6 +53,18 @@ impl ToolbarGroup {
             Self::ThreeDAndView => 316.0,
             Self::Cine => 88.0,
         }
+    }
+
+    /// Groups whose buttons each carry their own caption (no shared caption underneath).
+    fn self_captioned(self) -> bool {
+        matches!(
+            self,
+            Self::DatabaseOpen
+                | Self::Tiling
+                | Self::Presentation
+                | Self::ThreeDAndView
+                | Self::Cine
+        )
     }
 
     fn caption(self, tr: &crate::i18n::Strings) -> &'static str {
@@ -144,31 +158,36 @@ impl ViewerApp {
                         ui.painter().vline(
                             sep_rect.center().x,
                             sep_rect.y_range().shrink(4.0),
-                            Stroke::new(1.0, Color32::from_gray(60)),
+                            Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
                         );
                     }
                     let caption = group.caption(tr);
                     let resp = ui.vertical(|ui| {
                         ui.spacing_mut().item_spacing.y = 2.0;
-                        let row_resp = ui.horizontal(|ui| {
-                            ui.set_min_height(36.0);
-                            ui.spacing_mut().item_spacing.x = 3.0;
-                            self.render_toolbar_group(ui, group);
-                        });
-                        let group_w = row_resp.response.rect.width().max(48.0);
-                        ui.allocate_ui_with_layout(
-                            vec2(group_w, 12.0),
-                            egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
-                            |ui| {
-                                ui.label(
-                                    egui::RichText::new(caption)
-                                        .size(9.5)
-                                        .color(Color32::from_gray(145)),
-                                );
-                            },
-                        );
+                        if group.self_captioned() {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 2.0;
+                                self.render_toolbar_group(ui, group);
+                            });
+                        } else {
+                            let row_resp = ui.horizontal(|ui| {
+                                ui.set_min_height(34.0);
+                                ui.spacing_mut().item_spacing.x = 4.0;
+                                self.render_toolbar_group(ui, group);
+                            });
+                            let group_w = row_resp.response.rect.width().max(48.0);
+                            let (cap_rect, _) =
+                                ui.allocate_exact_size(vec2(group_w, 12.0), Sense::hover());
+                            ui.painter().text(
+                                pos2(cap_rect.center().x, cap_rect.max.y - 1.0),
+                                egui::Align2::CENTER_BOTTOM,
+                                caption,
+                                egui::FontId::proportional(10.0),
+                                theme::dim_text(ui),
+                            );
+                        }
                     });
-                    widths[group.index()] = resp.response.rect.width().clamp(24.0, 420.0);
+                    widths[group.index()] = resp.response.rect.width().clamp(24.0, 460.0);
                 }
 
                 if inline_scrubber_here {
@@ -176,7 +195,7 @@ impl ViewerApp {
                     ui.painter().vline(
                         sep_rect.center().x,
                         sep_rect.y_range().shrink(4.0),
-                        Stroke::new(1.0, Color32::from_gray(60)),
+                        Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color),
                     );
                     ui.vertical(|ui| {
                         ui.add_space(6.0);
@@ -199,31 +218,49 @@ impl ViewerApp {
         let tr = crate::i18n::tr(self.lang);
         match group {
             ToolbarGroup::DatabaseOpen => {
+                let es = self.lang == crate::i18n::Lang::Es;
                 if !self.show_database_view {
-                    let (back_lbl, back_hover) = match self.lang {
-                        crate::i18n::Lang::En => (
-                            "← Library",
-                            "Return to Library and unload current study",
-                        ),
-                        crate::i18n::Lang::Es => (
-                            "← Biblioteca",
-                            "Volver a la Biblioteca y descargar el estudio actual",
-                        ),
+                    let (back_lbl, back_hover) = if es {
+                        ("Biblioteca", "Volver a la Biblioteca y descargar el estudio actual")
+                    } else {
+                        ("Library", "Return to Library and unload current study")
                     };
-                    let back_btn = egui::Button::new(
-                        egui::RichText::new(back_lbl).strong().color(Color32::WHITE),
+                    if icons::captioned_button(
+                        ui,
+                        Icon::Library,
+                        back_lbl,
+                        false,
+                        Some(theme::ACCENT),
+                        false,
                     )
-                    .fill(Color32::from_rgb(32, 110, 200));
-                    if ui.add(back_btn).on_hover_text(back_hover).clicked() {
+                    .on_hover_text(back_hover)
+                    .clicked()
+                    {
                         self.return_to_library();
                     }
-                    ui.toggle_value(&mut self.show_browser, "◧")
-                        .on_hover_text(tr.browser_hover);
+                    let side_lbl = if es { "Panel" } else { "Sidebar" };
+                    if icons::captioned_button(
+                        ui,
+                        Icon::Sidebar,
+                        side_lbl,
+                        self.show_browser,
+                        None,
+                        false,
+                    )
+                    .on_hover_text(tr.browser_hover)
+                    .clicked()
+                    {
+                        self.show_browser = !self.show_browser;
+                    }
                 }
-                ui.menu_button(format!("📂 {}", tr.open), |ui| {
-                    let (lbl_folder, lbl_files) = match self.lang {
-                        crate::i18n::Lang::En => ("Open Folder…", "Open Files / ZIP…"),
-                        crate::i18n::Lang::Es => ("Abrir Carpeta…", "Abrir Archivos / ZIP…"),
+                let open_resp =
+                    icons::captioned_button(ui, Icon::Folder, tr.open, false, None, true)
+                        .on_hover_text(tr.open_hover);
+                egui::Popup::menu(&open_resp).show(|ui| {
+                    let (lbl_folder, lbl_files) = if es {
+                        ("Abrir Carpeta…", "Abrir Archivos / ZIP…")
+                    } else {
+                        ("Open Folder…", "Open Files / ZIP…")
                     };
                     if ui.button(lbl_folder).clicked() {
                         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
@@ -237,27 +274,30 @@ impl ViewerApp {
                         }
                         ui.close();
                     }
-                })
-                .response
-                .on_hover_text(tr.open_hover);
+                });
             }
             ToolbarGroup::Tiling => {
                 self.render_tiling_menu(ui);
             }
             ToolbarGroup::MouseTools => {
                 let prev_tool = self.tool;
-                ui.selectable_value(&mut self.tool, Tool::WindowLevel, tr.wl)
-                    .on_hover_text(tr.wl_hover);
-                ui.selectable_value(&mut self.tool, Tool::Scroll, tr.scroll)
-                    .on_hover_text(tr.scroll_hover);
-                ui.selectable_value(&mut self.tool, Tool::Pan, tr.pan)
-                    .on_hover_text(tr.pan_hover);
-                ui.selectable_value(&mut self.tool, Tool::Zoom, tr.zoom)
-                    .on_hover_text(tr.zoom_hover);
-                ui.selectable_value(&mut self.tool, Tool::Rotate, tr.rot)
-                    .on_hover_text(tr.rot_hover);
-                ui.selectable_value(&mut self.tool, Tool::Orbit3D, tr.orbit_3d)
-                    .on_hover_text(tr.orbit_3d_hover);
+                icons::segmented(ui, |ui| {
+                    for (tool, icon, hover) in [
+                        (Tool::WindowLevel, Icon::WindowLevel, tr.wl_hover),
+                        (Tool::Scroll, Icon::Scroll, tr.scroll_hover),
+                        (Tool::Pan, Icon::Pan, tr.pan_hover),
+                        (Tool::Zoom, Icon::Zoom, tr.zoom_hover),
+                        (Tool::Rotate, Icon::Rotate, tr.rot_hover),
+                        (Tool::Orbit3D, Icon::Orbit, tr.orbit_3d_hover),
+                    ] {
+                        if icons::tool_button(ui, icon, self.tool == tool)
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            self.tool = tool;
+                        }
+                    }
+                });
                 if self.tool != prev_tool {
                     self.drawing.clear();
                     self.angle_pending = None;
@@ -265,20 +305,30 @@ impl ViewerApp {
             }
             ToolbarGroup::RoiTools => {
                 let prev_tool = self.tool;
-                ui.selectable_value(&mut self.tool, Tool::Length, "📏")
-                    .on_hover_text(tr.length_hover);
-                ui.selectable_value(&mut self.tool, Tool::Oval, "◯")
-                    .on_hover_text(tr.oval_hover);
-                ui.selectable_value(&mut self.tool, Tool::Rect, "▭")
-                    .on_hover_text(tr.rect_hover);
-                let roi_label = match self.tool {
-                    Tool::Angle => format!("{}: ∠", tr.roi),
-                    Tool::Polygon => format!("{}: ⬠", tr.roi),
-                    Tool::Pencil => format!("{}: ✏", tr.roi),
-                    Tool::Point => format!("{}: ⌖", tr.roi),
-                    _ => format!("{} ▾", tr.roi),
+                let menu_icon = match self.tool {
+                    Tool::Angle => Icon::Angle,
+                    Tool::Polygon => Icon::Polygon,
+                    Tool::Pencil => Icon::Pencil,
+                    Tool::Point => Icon::Point,
+                    _ => Icon::ChevronDown,
                 };
-                ui.menu_button(roi_label, |ui| {
+                let menu_active = menu_icon != Icon::ChevronDown;
+                let roi_resp = icons::segmented(ui, |ui| {
+                    for (tool, icon, hover) in [
+                        (Tool::Length, Icon::Length, tr.length_hover),
+                        (Tool::Oval, Icon::Oval, tr.oval_hover),
+                        (Tool::Rect, Icon::Rectangle, tr.rect_hover),
+                    ] {
+                        if icons::tool_button(ui, icon, self.tool == tool)
+                            .on_hover_text(hover)
+                            .clicked()
+                        {
+                            self.tool = tool;
+                        }
+                    }
+                    icons::tool_button(ui, menu_icon, menu_active).on_hover_text(tr.roi_menu_hover)
+                });
+                egui::Popup::menu(&roi_resp).show(|ui| {
                     let items: [(Tool, &str, &str); 7] = [
                         (Tool::Length, tr.roi_length, "L"),
                         (Tool::Angle, tr.roi_angle, "—"),
@@ -352,7 +402,7 @@ impl ViewerApp {
                         .is_some_and(|m| !m.is_empty())
                     {
                         ui.separator();
-                        if ui.button(format!("🗑 {}", tr.clear_rois)).clicked() {
+                        if ui.button(tr.clear_rois).clicked() {
                             if let Some(k) = self.viewport_measure_key(self.active_viewport) {
                                 self.measures.remove(&k);
                                 self.persist_measures_for(&k);
@@ -360,9 +410,7 @@ impl ViewerApp {
                             ui.close();
                         }
                     }
-                })
-                .response
-                .on_hover_text(tr.roi_menu_hover);
+                });
                 if self.tool != prev_tool {
                     self.drawing.clear();
                     self.angle_pending = None;
@@ -376,10 +424,11 @@ impl ViewerApp {
                     // Row 1: WL/WW Presets + Filter
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.label(
-                            egui::RichText::new("WL/WW:")
-                                .size(10.0)
-                                .color(Color32::from_gray(155)),
+                        ui.add_sized(
+                            [40.0, 18.0],
+                            egui::Label::new(
+                                egui::RichText::new("WL/WW").size(10.0).color(theme::dim_text(ui)),
+                            ),
                         );
                         let active_win = self.active_cell().window;
                         let mut chosen_win: Option<Option<Window>> = None;
@@ -466,10 +515,11 @@ impl ViewerApp {
                     // Row 2: CLUT + quick Invert / Overlays / Ref lines pills
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
-                        ui.label(
-                            egui::RichText::new("CLUT:")
-                                .size(10.0)
-                                .color(Color32::from_gray(155)),
+                        ui.add_sized(
+                            [40.0, 18.0],
+                            egui::Label::new(
+                                egui::RichText::new("CLUT").size(10.0).color(theme::dim_text(ui)),
+                            ),
                         );
                         let current_clut_name = self.active_cell().clut_name.clone();
                         let mut chosen_clut: Option<String> = None;
@@ -490,24 +540,44 @@ impl ViewerApp {
                             self.active_cell_mut().clut_name = name;
                         }
 
-                        ui.toggle_value(&mut self.active_cell_mut().invert, tr.invert);
-                        if !self.active_cell().vr_enabled {
-                            ui.toggle_value(&mut self.show_reference_lines, "╋")
-                                .on_hover_text(tr.ref_lines);
+                        ui.spacing_mut().item_spacing.x = 2.0;
+                        let inverted = self.active_cell().invert;
+                        if icons::small_tool_button(ui, Icon::Invert, inverted)
+                            .on_hover_text(tr.invert)
+                            .clicked()
+                        {
+                            self.active_cell_mut().invert = !inverted;
                         }
-                        ui.toggle_value(&mut self.show_annotations, "HUD")
-                            .on_hover_text(tr.overlays);
+                        if !self.active_cell().vr_enabled
+                            && icons::small_tool_button(ui, Icon::RefLines, self.show_reference_lines)
+                                .on_hover_text(tr.ref_lines)
+                                .clicked()
+                        {
+                            self.show_reference_lines = !self.show_reference_lines;
+                        }
+                        if icons::small_tool_button(ui, Icon::Overlay, self.show_annotations)
+                            .on_hover_text(tr.overlays)
+                            .clicked()
+                        {
+                            self.show_annotations = !self.show_annotations;
+                        }
                     });
                 });
             }
             ToolbarGroup::ThreeDAndView => {
                 let has_series = self.active_cell().selected.is_some();
                 ui.add_enabled_ui(has_series || self.ortho_mpr_active, |ui| {
-                    let mut ortho_on = self.ortho_mpr_active;
-                    if ui
-                        .toggle_value(&mut ortho_on, format!("⊞ {}", tr.ortho_mpr))
-                        .on_hover_text(tr.ortho_mpr_hover)
-                        .changed()
+                    let ortho_on = !self.ortho_mpr_active;
+                    if icons::captioned_button(
+                        ui,
+                        Icon::Ortho,
+                        tr.ortho_mpr,
+                        self.ortho_mpr_active,
+                        None,
+                        false,
+                    )
+                    .on_hover_text(tr.ortho_mpr_hover)
+                    .clicked()
                     {
                         if ortho_on {
                             self.request_mpr_mode(self.active_viewport, true);
@@ -517,11 +587,10 @@ impl ViewerApp {
                     }
                 });
                 ui.add_enabled_ui(has_series, |ui| {
-                    let mut mpr_on = self.active_cell().mpr_enabled;
-                    if ui
-                        .toggle_value(&mut mpr_on, format!("🧊 {}", tr.mpr_3d))
+                    let mpr_on = !self.active_cell().mpr_enabled;
+                    if icons::captioned_button(ui, Icon::Cube, "3D MPR", !mpr_on, None, false)
                         .on_hover_text(tr.mpr_3d_hover)
-                        .changed()
+                        .clicked()
                     {
                         let vp_idx = self.active_viewport;
                         if mpr_on {
@@ -539,11 +608,14 @@ impl ViewerApp {
 
                 let has_vol = self.viewport_volume(self.active_viewport).is_some();
                 ui.add_enabled_ui(has_vol && !self.ortho_mpr_active, |ui| {
-                    let mut vr_on = self.active_cell().vr_enabled;
-                    if ui
-                        .toggle_value(&mut vr_on, "🧊 VR")
-                        .on_hover_text("3D Volume Rendering (Ray-Casting & 3D MIP)")
-                        .changed()
+                    let vr_on = !self.active_cell().vr_enabled;
+                    let (vr_lbl, vr_hover) = match self.lang {
+                        crate::i18n::Lang::En => ("3D VR", "3D volume rendering (ray-casting and 3D MIP)"),
+                        crate::i18n::Lang::Es => ("VR 3D", "Renderizado de volumen 3D (ray-casting y MIP 3D)"),
+                    };
+                    if icons::captioned_button(ui, Icon::Volume, vr_lbl, !vr_on, None, false)
+                        .on_hover_text(vr_hover)
+                        .clicked()
                     {
                         let vp_idx = self.active_viewport;
                         self.viewports[vp_idx].vr_enabled = vr_on;
@@ -553,7 +625,9 @@ impl ViewerApp {
                     }
                 });
 
-                ui.menu_button(format!("{} ▾", tr.view), |ui| {
+                let view_resp = icons::captioned_button(ui, Icon::Eye, tr.view, false, None, true)
+                    .on_hover_text(tr.view_hover);
+                egui::Popup::menu(&view_resp).show(|ui| {
                     ui.toggle_value(&mut self.active_cell_mut().invert, tr.invert);
                     ui.separator();
                     if ui.button(tr.rotate_ccw).clicked() {
@@ -623,31 +697,50 @@ impl ViewerApp {
                         self.set_active_window(None);
                         ui.close();
                     }
-                })
-                .response
-                .on_hover_text(tr.view_hover);
-                let meta_lbl = match self.lang {
-                    crate::i18n::Lang::En => "ℹ Meta-Data",
-                    crate::i18n::Lang::Es => "ℹ Metadatos",
+                });
+                let (meta_lbl, meta_hover) = match self.lang {
+                    crate::i18n::Lang::En => ("Meta-Data", "Show the DICOM meta-data inspector beside the image"),
+                    crate::i18n::Lang::Es => ("Metadatos", "Mostrar el inspector de metadatos DICOM junto a la imagen"),
                 };
                 ui.add_enabled_ui(!self.show_database_view && has_series, |ui| {
-                    ui.toggle_value(&mut self.show_metadata_inspector, meta_lbl)
-                        .on_hover_text("Toggle side-by-side DICOM Meta-Data Inspector");
+                    if icons::captioned_button(
+                        ui,
+                        Icon::Info,
+                        meta_lbl,
+                        self.show_metadata_inspector,
+                        None,
+                        false,
+                    )
+                    .on_hover_text(meta_hover)
+                    .clicked()
+                    {
+                        self.show_metadata_inspector = !self.show_metadata_inspector;
+                    }
                 });
             }
             ToolbarGroup::Cine => {
-                let cine_label = if self.playing { "⏸" } else { "▶" };
-                ui.toggle_value(&mut self.playing, cine_label)
-                    .on_hover_text(tr.cine_hover);
-                ui.menu_button(format!("{} fps", self.fps as i32), |ui| {
+                let (icon, lbl) = if self.playing {
+                    (Icon::Pause, tr.grp_cine)
+                } else {
+                    (Icon::Play, tr.grp_cine)
+                };
+                if icons::captioned_button(ui, icon, lbl, self.playing, None, false)
+                    .on_hover_text(tr.cine_hover)
+                    .clicked()
+                {
+                    self.playing = !self.playing;
+                }
+                ui.vertical(|ui| {
+                    ui.add_space(5.0);
                     ui.add(
-                        egui::Slider::new(&mut self.fps, 1.0..=60.0)
-                            .text("fps")
-                            .integer(),
-                    );
-                })
-                .response
-                .on_hover_text(tr.cine_speed_hover);
+                        egui::DragValue::new(&mut self.fps)
+                            .range(1.0..=60.0)
+                            .speed(0.25)
+                            .fixed_decimals(0)
+                            .suffix(" fps"),
+                    )
+                    .on_hover_text(tr.cine_speed_hover);
+                });
             }
         }
     }
@@ -656,7 +749,16 @@ impl ViewerApp {
         let mut new_tiling = None;
         let cur_rows = self.tiling.rows;
         let cur_cols = self.tiling.columns;
-        ui.menu_button(format!("⊞ {}", self.tiling.label()), |ui| {
+        let tiling_resp = icons::captioned_button(
+            ui,
+            Icon::Grid,
+            &self.tiling.label(),
+            false,
+            None,
+            true,
+        )
+        .on_hover_text(crate::i18n::tr(self.lang).tiling_hover);
+        egui::Popup::menu(&tiling_resp).show(|ui| {
             ui.set_min_width(132.0);
             let grid_max = 4usize;
             let cell_size = 24.0;
@@ -745,9 +847,7 @@ impl ViewerApp {
                     new_tiling = Some(ViewportTiling::new(hr + 1, hc + 1));
                     ui.close();
                 }
-        })
-        .response
-        .on_hover_text(crate::i18n::tr(self.lang).tiling_hover);
+        });
         if let Some(t) = new_tiling {
             self.ortho_mpr_active = false;
             self.ortho_crosshair_lps = None;
@@ -762,15 +862,13 @@ impl ViewerApp {
 
             let series_count = self.all_series_pairs().len();
             if series_count > 1 {
-                if ui
-                    .small_button("◀ Se")
+                if icons::small_tool_button(ui, Icon::SeriesPrevious, false)
                     .on_hover_text(tr.prev_series)
                     .clicked()
                 {
                     self.step_active_series(-1);
                 }
-                if ui
-                    .small_button("Se ▶")
+                if icons::small_tool_button(ui, Icon::SeriesNext, false)
                     .on_hover_text(tr.next_series)
                     .clicked()
                 {
@@ -782,15 +880,13 @@ impl ViewerApp {
             let vr_active = self.viewports[vp_idx].vr_enabled;
             let slice_count = self.viewport_slice_count(vp_idx);
             if !vr_active && slice_count > 1 {
-                if ui
-                    .small_button("⏮")
+                if icons::small_tool_button(ui, Icon::First, false)
                     .on_hover_text(tr.first_slice)
                     .clicked()
                 {
                     self.set_viewport_slice(vp_idx, 0, true);
                 }
-                if ui
-                    .small_button("◀")
+                if icons::small_tool_button(ui, Icon::Previous, false)
                     .on_hover_text(tr.prev_slice)
                     .clicked()
                 {
@@ -809,11 +905,13 @@ impl ViewerApp {
                     self.set_viewport_slice(vp_idx, cur_1based as isize - 1, true);
                 }
                 ui.monospace(format!("{cur_1based}/{slice_count}"));
-                if ui.small_button("▶").on_hover_text(tr.next_slice).clicked() {
+                if icons::small_tool_button(ui, Icon::Next, false)
+                    .on_hover_text(tr.next_slice)
+                    .clicked()
+                {
                     self.step_viewport_slice(vp_idx, 1);
                 }
-                if ui
-                    .small_button("⏭")
+                if icons::small_tool_button(ui, Icon::Last, false)
                     .on_hover_text(tr.last_slice)
                     .clicked()
                 {

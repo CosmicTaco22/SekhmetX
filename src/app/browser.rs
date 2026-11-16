@@ -1,4 +1,6 @@
 use super::*;
+use crate::ui::icons::{self, Icon};
+use crate::ui::theme;
 
 fn paint_series_drag_preview(ui: &egui::Ui, index: &crate::dicom_index::Index) {
     let Some(payload) = egui::DragAndDrop::payload::<(usize, usize)>(ui.ctx()) else {
@@ -98,29 +100,24 @@ impl ViewerApp {
             .or(self.selected_db_study);
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let (compact_lbl, compact_hover) = match self.lang {
-                crate::i18n::Lang::En => ("◧ Compact", "Compact sidebar to thumbnail strip"),
-                crate::i18n::Lang::Es => (
-                    "◧ Compactar",
-                    "Compactar barra lateral a tira de miniaturas",
-                ),
+            let compact_hover = match self.lang {
+                crate::i18n::Lang::En => "Compact sidebar to thumbnail strip",
+                crate::i18n::Lang::Es => "Compactar barra lateral a tira de miniaturas",
             };
-            if ui
-                .small_button(compact_lbl)
+            if icons::small_tool_button(ui, Icon::SidebarCompact, false)
                 .on_hover_text(compact_hover)
                 .clicked()
             {
                 self.sidebar_compact = true;
             }
-        });
-        ui.add_space(2.0);
-        ui.horizontal(|ui| {
-            ui.label("🔍");
+            let clear_w = if self.browser_search.is_empty() { 0.0 } else { 28.0 };
             let edit = egui::TextEdit::singleline(&mut self.browser_search)
                 .hint_text(tr.search_hint)
-                .desired_width(ui.available_width() - 28.0);
+                .desired_width((ui.available_width() - clear_w - 4.0).max(60.0));
             ui.add(edit);
-            if !self.browser_search.is_empty() && ui.small_button("✕").clicked() {
+            if !self.browser_search.is_empty()
+                && icons::small_tool_button(ui, Icon::Close, false).clicked()
+            {
                 self.browser_search.clear();
             }
         });
@@ -376,17 +373,38 @@ impl ViewerApp {
                                             });
                                         }
 
-                                ui.horizontal(|ui| {
-                                    // Draw 38x38 Horos-style series thumbnail box
-                                    let thumb_size = vec2(52.0, 52.0);
-                                    let (thumb_rect, thumb_resp) =
-                                        ui.allocate_exact_size(thumb_size, Sense::click_and_drag());
+                                // Series card: thumbnail, description, then modality / image count / plane.
+                                let row_w = ui.available_width().max(140.0);
+                                let (row_rect, resp) = ui.allocate_exact_size(
+                                    vec2(row_w, 60.0),
+                                    Sense::click_and_drag(),
+                                );
+                                if ui.is_rect_visible(row_rect) {
                                     let painter = ui.painter();
-                                    painter.rect_filled(
-                                        thumb_rect,
-                                        4.0,
-                                        Color32::from_rgb(12, 14, 18),
+                                    let dark = ui.visuals().dark_mode;
+                                    let bg = if is_active {
+                                        theme::ACCENT.gamma_multiply(if dark { 0.35 } else { 0.25 })
+                                    } else if resp.hovered() {
+                                        ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.5)
+                                    } else {
+                                        Color32::TRANSPARENT
+                                    };
+                                    painter.rect_filled(row_rect, 6.0, bg);
+                                    if is_active {
+                                        painter.rect_filled(
+                                            Rect::from_min_size(
+                                                row_rect.min + vec2(0.0, 6.0),
+                                                vec2(3.0, row_rect.height() - 12.0),
+                                            ),
+                                            2.0,
+                                            theme::ACCENT_BRIGHT,
+                                        );
+                                    }
+                                    let thumb_rect = Rect::from_min_size(
+                                        row_rect.min + vec2(8.0, 4.0),
+                                        vec2(52.0, 52.0),
                                     );
+                                    painter.rect_filled(thumb_rect, 4.0, Color32::BLACK);
                                     if let Some(tex) = self.thumbnails.get(&tkey) {
                                         paint_aspect_fit_thumb(painter, thumb_rect, tex);
                                     } else {
@@ -394,65 +412,116 @@ impl ViewerApp {
                                             thumb_rect.center(),
                                             Align2::CENTER_CENTER,
                                             &series.modality,
-                                            FontId::monospace(10.5),
-                                            Color32::from_gray(145),
+                                            FontId::proportional(11.0),
+                                            Color32::from_gray(120),
                                         );
                                     }
-                                    let border_col = if is_active {
-                                        Color32::from_rgb(80, 175, 255)
-                                    } else {
-                                        Color32::from_gray(60)
-                                    };
                                     painter.rect_stroke(
                                         thumb_rect,
                                         4.0,
-                                        Stroke::new(if is_active { 1.5 } else { 1.0 }, border_col),
+                                        Stroke::new(
+                                            1.0,
+                                            if is_active {
+                                                theme::ACCENT_BRIGHT
+                                            } else {
+                                                Color32::from_gray(70)
+                                            },
+                                        ),
                                         egui::StrokeKind::Inside,
                                     );
 
-                                    let text = format!(
-                                        "{:<2} {:>3} [{}{}] {}\n{} images · {}×{}",
+                                    let text_x = thumb_rect.max.x + 9.0;
+                                    let text_w = (row_rect.max.x - text_x - 6.0).max(20.0);
+                                    let title_color = if is_active {
+                                        ui.visuals().strong_text_color()
+                                    } else {
+                                        ui.visuals().text_color()
+                                    };
+                                    let mut job = egui::text::LayoutJob::simple_singleline(
+                                        desc.to_owned(),
+                                        FontId::proportional(12.5),
+                                        title_color,
+                                    );
+                                    job.wrap = egui::text::TextWrapping {
+                                        max_width: text_w,
+                                        max_rows: 2,
+                                        break_anywhere: false,
+                                        overflow_character: Some('…'),
+                                    };
+                                    let galley = painter.layout_job(job);
+                                    let title_h = galley.size().y;
+                                    painter.galley(
+                                        pos2(text_x, row_rect.min.y + 6.0),
+                                        galley,
+                                        title_color,
+                                    );
+
+                                    // Second line: plane badge + "CT · #2 · 80 images".
+                                    let line_y = (row_rect.min.y + 8.0 + title_h).min(row_rect.max.y - 19.0);
+                                    let badge = series.dominant_plane.badge();
+                                    let badge_color = theme::plane_color(badge);
+                                    let badge_galley = painter.layout_no_wrap(
+                                        badge.to_owned(),
+                                        FontId::proportional(9.5),
+                                        badge_color,
+                                    );
+                                    let badge_rect = Rect::from_min_size(
+                                        pos2(text_x, line_y),
+                                        badge_galley.size() + vec2(8.0, 3.0),
+                                    );
+                                    painter.rect_stroke(
+                                        badge_rect,
+                                        3.0,
+                                        Stroke::new(1.0, badge_color.gamma_multiply(0.7)),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                    painter.galley(
+                                        badge_rect.min + vec2(4.0, 1.5),
+                                        badge_galley,
+                                        badge_color,
+                                    );
+                                    let info = format!(
+                                        "{} · #{} · {} {}{}",
                                         series.modality,
                                         series.number,
-                                        series.dominant_plane.badge(),
-                                        mpr_tag,
-                                        desc,
                                         series.slices.len(),
-                                        series.columns,
-                                        series.rows
+                                        tr.images,
+                                        if mpr_tag.is_empty() { "" } else { " · 3D" }
                                     );
-                                    let resp = ui
-                                        .selectable_label(
-                                            is_active,
-                                            egui::RichText::new(text).monospace().size(11.5),
-                                        )
-                                        .interact(Sense::click_and_drag())
-                                        .on_hover_text(format!(
-                                            "{} {}, {}×{}, plane: {}{} (click or drag to viewport, right-click to assign)",
-                                            series.slices.len(),
-                                            tr.images,
-                                            series.columns,
-                                            series.rows,
-                                            series.dominant_plane.badge(),
-                                            if series.is_mpr_capable() { " · 3D MPR Ready" } else { "" }
-                                        ));
-                                    if thumb_resp.drag_started() || resp.drag_started() {
-                                        egui::DragAndDrop::set_payload(ui.ctx(), (si, ri));
-                                    }
-                                    if resp.clicked() || thumb_resp.clicked() {
-                                        *clicked = Some((self.active_viewport, (si, ri), false));
-                                    }
-                                    resp.context_menu(|ui| {
-                                        for vp_idx in 0..cell_count {
-                                            if ui
-                                                .button(format!("Open in Viewport {}", vp_idx + 1))
-                                                .clicked()
-                                            {
-                                                *clicked = Some((vp_idx, (si, ri), false));
-                                                ui.close();
-                                            }
+                                    painter.text(
+                                        pos2(badge_rect.max.x + 6.0, badge_rect.center().y),
+                                        Align2::LEFT_CENTER,
+                                        info,
+                                        FontId::proportional(10.5),
+                                        theme::dim_text(ui),
+                                    );
+                                }
+                                let resp = resp.on_hover_text(format!(
+                                    "{desc}\n{} {}, {}×{}, {}{}",
+                                    series.slices.len(),
+                                    tr.images,
+                                    series.columns,
+                                    series.rows,
+                                    series.dominant_plane.badge(),
+                                    if series.is_mpr_capable() { " · 3D MPR" } else { "" }
+                                ));
+                                if resp.drag_started() {
+                                    egui::DragAndDrop::set_payload(ui.ctx(), (si, ri));
+                                }
+                                if resp.clicked() {
+                                    *clicked = Some((self.active_viewport, (si, ri), false));
+                                }
+                                resp.context_menu(|ui| {
+                                    for vp_idx in 0..cell_count {
+                                        let lbl = match self.lang {
+                                            crate::i18n::Lang::En => format!("Open in Viewport {}", vp_idx + 1),
+                                            crate::i18n::Lang::Es => format!("Abrir en visor {}", vp_idx + 1),
+                                        };
+                                        if ui.button(lbl).clicked() {
+                                            *clicked = Some((vp_idx, (si, ri), false));
+                                            ui.close();
                                         }
-                                    });
+                                    }
                                 });
                             };
 
@@ -504,29 +573,29 @@ impl ViewerApp {
 
                                     ui.push_id(("mpr_grp_block", si, group.id), |ui| {
                                         egui::Frame::group(ui.style())
-                                            .fill(Color32::from_rgb(28, 34, 44))
+                                            .fill(ui.visuals().faint_bg_color)
                                             .stroke(Stroke::new(
                                                 1.0,
                                                 if grp_active {
-                                                    Color32::from_rgb(70, 145, 230)
+                                                    theme::ACCENT.gamma_multiply(0.8)
                                                 } else {
-                                                    Color32::from_rgb(52, 60, 74)
+                                                    ui.visuals().widgets.noninteractive.bg_stroke.color
                                                 },
                                             ))
-                                            .inner_margin(egui::Margin::symmetric(6, 5))
+                                            .corner_radius(7)
+                                            .inner_margin(egui::Margin::symmetric(4, 4))
                                             .show(ui, |ui| {
                                                 let grp_text = format!(
-                                                    "🧊 {}  [{}]",
+                                                    "{}  ·  {}",
                                                     group.label, group.planes_badge
                                                 );
                                                 let hdr = ui
                                                     .selectable_label(
                                                         grp_active,
                                                         egui::RichText::new(grp_text)
-                                                            .monospace()
                                                             .strong()
                                                             .size(11.0)
-                                                            .color(Color32::from_rgb(130, 210, 255)),
+                                                            .color(theme::ACCENT_BRIGHT),
                                                     )
                                                     .on_hover_text(
                                                         "Grouped Axial / Coronal / Sagittal reconstructions. Click to open in 3D MPR.",
@@ -720,12 +789,11 @@ impl ViewerApp {
     fn browser_compact(&mut self, ui: &mut egui::Ui) {
         ui.add_space(4.0);
         ui.vertical_centered(|ui| {
-            let (exp_lbl, exp_hover) = match self.lang {
-                crate::i18n::Lang::En => ("◧ Expand", "Expand sidebar"),
-                crate::i18n::Lang::Es => ("◧ Expandir", "Expandir barra lateral"),
+            let exp_hover = match self.lang {
+                crate::i18n::Lang::En => "Expand sidebar",
+                crate::i18n::Lang::Es => "Expandir barra lateral",
             };
-            if ui
-                .small_button(exp_lbl)
+            if icons::small_tool_button(ui, Icon::Sidebar, false)
                 .on_hover_text(exp_hover)
                 .clicked()
             {
@@ -946,23 +1014,32 @@ impl ViewerApp {
         let study_count = self.index.as_ref().map_or(0, |i| i.studies.len());
 
         // Top Database toolbar strip
+        let es = self.lang == crate::i18n::Lang::Es;
         ui.horizontal(|ui| {
-            ui.label("🔍");
+            let (icon_rect, _) = ui.allocate_exact_size(vec2(16.0, 22.0), Sense::hover());
+            icons::paint(
+                ui.painter(),
+                Rect::from_center_size(icon_rect.center(), vec2(13.0, 13.0)),
+                Icon::Search,
+                theme::dim_text(ui),
+            );
             let edit = egui::TextEdit::singleline(&mut self.browser_search)
                 .hint_text(tr.search_hint)
-                .desired_width(240.0);
+                .desired_width(280.0);
             ui.add(edit);
-            if !self.browser_search.is_empty() && ui.small_button("✕").clicked() {
+            if !self.browser_search.is_empty()
+                && icons::small_tool_button(ui, Icon::Close, false).clicked()
+            {
                 self.browser_search.clear();
             }
-            ui.separator();
+            ui.add_space(8.0);
             ui.label(
                 egui::RichText::new(format!(
                     "{} · {} {} ({disk_mb:.1} MB)",
                     tr.library, study_count, tr.studies
                 ))
-                .small()
-                .color(Color32::from_gray(180)),
+                .size(11.5)
+                .color(theme::dim_text(ui)),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(tr.clear).clicked() {
@@ -975,10 +1052,7 @@ impl ViewerApp {
                         vp.reset_series_state(None);
                     }
                 }
-                let refresh_lbl = match self.lang {
-                    crate::i18n::Lang::En => "⟳ Refresh",
-                    crate::i18n::Lang::Es => "⟳ Actualizar",
-                };
+                let refresh_lbl = if es { "Actualizar" } else { "Refresh" };
                 if ui.button(refresh_lbl).clicked() {
                     let dir = crate::db::managed_studies_dir();
                     if dir.is_dir() {
@@ -987,7 +1061,7 @@ impl ViewerApp {
                 }
             });
         });
-        ui.separator();
+        ui.add_space(4.0);
 
         let Some(index) = &self.index else {
             ui.centered_and_justified(|ui| {
@@ -1044,17 +1118,19 @@ impl ViewerApp {
             vec2(ui.available_width(), top_area_h),
             egui::Layout::left_to_right(egui::Align::Min),
             |ui| {
-                // Left Albums Sidebar
+                // Left albums list
                 ui.allocate_ui_with_layout(
-                    vec2(165.0, top_area_h),
+                    vec2(170.0, top_area_h),
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
-                        let albums_lbl = match self.lang {
-                            crate::i18n::Lang::En => "Albums",
-                            crate::i18n::Lang::Es => "Álbumes",
-                        };
-                        ui.strong(albums_lbl);
                         ui.add_space(4.0);
+                        ui.label(
+                            egui::RichText::new(if es { "ÁLBUMES" } else { "ALBUMS" })
+                                .size(10.0)
+                                .strong()
+                                .color(theme::dim_text(ui)),
+                        );
+                        ui.add_space(2.0);
                         for (code, label) in [
                             ("ALL", tr.all),
                             ("CT", "CT"),
@@ -1073,63 +1149,106 @@ impl ViewerApp {
                                     .count()
                             };
                             let selected = self.browser_modality == code;
-                            if ui
-                                .selectable_label(selected, format!("{label}  ({cnt})"))
-                                .clicked()
-                            {
+                            let (rect, resp) =
+                                ui.allocate_exact_size(vec2(162.0, 24.0), Sense::click());
+                            let fill = if selected {
+                                theme::ACCENT
+                            } else if resp.hovered() {
+                                ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.5)
+                            } else {
+                                Color32::TRANSPARENT
+                            };
+                            ui.painter().rect_filled(rect, 5.0, fill);
+                            let fg = if selected {
+                                Color32::WHITE
+                            } else {
+                                ui.visuals().text_color()
+                            };
+                            ui.painter().text(
+                                pos2(rect.min.x + 10.0, rect.center().y),
+                                Align2::LEFT_CENTER,
+                                label,
+                                FontId::proportional(13.0),
+                                fg,
+                            );
+                            ui.painter().text(
+                                pos2(rect.max.x - 10.0, rect.center().y),
+                                Align2::RIGHT_CENTER,
+                                cnt.to_string(),
+                                FontId::proportional(11.5),
+                                if selected { fg } else { theme::dim_text(ui) },
+                            );
+                            if resp.clicked() {
                                 self.browser_modality = code.to_string();
                             }
                         }
                     },
                 );
-                ui.separator();
+                ui.add_space(4.0);
 
-                // Center Study Table
+                // Study table
                 ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 0.0;
                     let table_w = ui.available_width().max(640.0);
-                    let fixed_w = 40.0 + 52.0 + 74.0 + 96.0 + 116.0 + 96.0 + 48.0;
+                    // name | # | # im | description | modality | date | patient id | actions
+                    let (w_ser, w_im, w_mod, w_date, w_id, w_act) =
+                        (44.0, 60.0, 80.0, 104.0, 130.0, 92.0);
+                    let pad = 12.0;
+                    let fixed_w = w_ser + w_im + w_mod + w_date + w_id + w_act + pad * 2.0;
                     let flex_w = (table_w - fixed_w).max(260.0);
-                    let name_w = (flex_w * 0.44).max(160.0);
-                    let desc_w = (flex_w - name_w).max(140.0);
-                    let hdr = |text: &str| egui::RichText::new(text).strong().size(12.0);
-                    let cell_txt = |text: &str| egui::RichText::new(text).size(12.0);
-                    let cell_mono = |text: String| egui::RichText::new(text).monospace().size(11.5);
+                    let w_name = (flex_w * 0.42).max(150.0);
+                    let w_desc = (flex_w - w_name).max(110.0);
+                    let cols = [w_name, w_ser, w_im, w_desc, w_mod, w_date, w_id];
+                    let headers: [&str; 7] = if es {
+                        ["Paciente", "Ser.", "Imág.", "Descripción del estudio", "Mod.", "Fecha", "ID paciente"]
+                    } else {
+                        ["Patient name", "Ser.", "Images", "Study description", "Modality", "Date", "Patient ID"]
+                    };
+                    let right_aligned = [false, true, true, false, false, false, false];
+                    let dark = ui.visuals().dark_mode;
 
-                    // Column headers
-                    egui::Frame::new()
-                        .fill(Color32::from_rgb(32, 36, 44))
-                        .inner_margin(egui::Margin::symmetric(8, 5))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.add_sized([name_w, 18.0], egui::Label::new(hdr("Patient Name")));
-                                ui.add_sized([40.0, 18.0], egui::Label::new(hdr("#")));
-                                ui.add_sized([52.0, 18.0], egui::Label::new(hdr("# im")));
-                                ui.add_sized([desc_w, 18.0], egui::Label::new(hdr("Study Description")));
-                                ui.add_sized([74.0, 18.0], egui::Label::new(hdr("Modality")));
-                                ui.add_sized([96.0, 18.0], egui::Label::new(hdr("Date")));
-                                ui.add_sized([116.0, 18.0], egui::Label::new(hdr("Patient ID")));
-                                ui.add_sized([96.0, 18.0], egui::Label::new(hdr("Actions")));
-                            });
-                        });
+                    // Header strip
+                    let (hdr_rect, _) =
+                        ui.allocate_exact_size(vec2(table_w, 24.0), Sense::hover());
+                    ui.painter().rect_filled(
+                        hdr_rect,
+                        egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 },
+                        if dark { theme::RAISED } else { Color32::from_rgb(220, 222, 227) },
+                    );
+                    let mut x = hdr_rect.min.x + pad;
+                    for (i, w) in cols.iter().enumerate() {
+                        let (px, align) = if right_aligned[i] {
+                            (x + w - 14.0, Align2::RIGHT_CENTER)
+                        } else {
+                            (x, Align2::LEFT_CENTER)
+                        };
+                        ui.painter().text(
+                            pos2(px, hdr_rect.center().y),
+                            align,
+                            headers[i],
+                            FontId::proportional(11.0),
+                            theme::dim_text(ui),
+                        );
+                        x += w;
+                    }
 
+                    let body_fill = ui.visuals().extreme_bg_color;
+                    egui::Frame::new().fill(body_fill).show(ui, |ui| {
                     egui::ScrollArea::vertical()
                         .id_salt("db_study_table")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 0.0;
                             if matching_studies.is_empty() {
                                 ui.add_space(16.0);
-                                ui.label(tr.no_studies);
+                                ui.horizontal(|ui| {
+                                    ui.add_space(pad);
+                                    ui.label(tr.no_studies);
+                                });
                             }
                             for (row_i, &si) in matching_studies.iter().enumerate() {
                                 let st = &index.studies[si];
                                 let is_selected = self.selected_db_study == Some(si);
-                                let row_bg = if is_selected {
-                                    Color32::from_rgb(42, 76, 128)
-                                } else if row_i % 2 == 1 {
-                                    Color32::from_rgb(24, 27, 33)
-                                } else {
-                                    Color32::from_rgb(19, 21, 26)
-                                };
                                 let im_total: usize = st.series.iter().map(|s| s.slices.len()).sum();
                                 let mods: Vec<&str> = {
                                     let mut v: Vec<&str> = st.series.iter().map(|s| s.modality.as_str()).collect();
@@ -1137,43 +1256,118 @@ impl ViewerApp {
                                     v.dedup();
                                     v
                                 };
-                                let mod_str = mods.join("/");
+                                let mod_str = mods.join(" / ");
                                 let pname = if st.patient_name.trim().is_empty() {
-                                    "(Unnamed)"
+                                    if es { "(Sin nombre)".to_string() } else { "(Unnamed)".to_string() }
                                 } else {
-                                    &st.patient_name
+                                    st.patient_name.replace('^', " ")
                                 };
 
-                                let frame_resp = egui::Frame::new()
-                                    .fill(row_bg)
-                                    .inner_margin(egui::Margin::symmetric(8, 4))
-                                    .show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            ui.add_sized([name_w, 20.0], egui::Label::new(cell_txt(pname)).truncate());
-                                            ui.add_sized([40.0, 20.0], egui::Label::new(cell_mono(format!("{}", st.series.len()))));
-                                            ui.add_sized([52.0, 20.0], egui::Label::new(cell_mono(format!("{im_total}"))));
-                                            ui.add_sized([desc_w, 20.0], egui::Label::new(cell_txt(&st.description)).truncate());
-                                            ui.add_sized([74.0, 20.0], egui::Label::new(cell_mono(mod_str)));
-                                            ui.add_sized([96.0, 20.0], egui::Label::new(cell_mono(st.date.clone())));
-                                            ui.add_sized([116.0, 20.0], egui::Label::new(cell_mono(st.patient_id.clone())).truncate());
-                                            ui.horizontal(|ui| {
-                                                if ui.small_button("2D").on_hover_text("Open in 2D Viewer").clicked() {
-                                                    open_series = Some((si, 0));
-                                                }
-                                                if ui.small_button("⊞").on_hover_text("Tile all series").clicked() {
-                                                    tile_study = Some(si);
-                                                }
-                                                if ui.small_button("✕").on_hover_text("Remove from Library").clicked() {
-                                                    remove_uid = Some(st.uid.clone());
-                                                }
-                                            });
-                                        });
-                                    });
-                                let row_resp = ui.interact(
-                                    frame_resp.response.rect,
-                                    ui.scope_id().with(("db_row", si)),
+                                let (row_rect, row_resp) = ui.allocate_exact_size(
+                                    vec2(table_w, 26.0),
                                     Sense::click(),
                                 );
+                                let row_bg = if is_selected {
+                                    theme::ACCENT
+                                } else if row_resp.hovered() {
+                                    ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.45)
+                                } else if row_i % 2 == 1 {
+                                    ui.visuals().faint_bg_color
+                                } else {
+                                    Color32::TRANSPARENT
+                                };
+                                ui.painter().rect_filled(row_rect, 0.0, row_bg);
+                                let fg = if is_selected {
+                                    Color32::WHITE
+                                } else {
+                                    ui.visuals().text_color()
+                                };
+                                let fg_dim = if is_selected {
+                                    Color32::from_gray(235)
+                                } else {
+                                    theme::dim_text(ui)
+                                };
+                                let cells: [(String, bool); 7] = [
+                                    (pname, true),
+                                    (st.series.len().to_string(), false),
+                                    (im_total.to_string(), false),
+                                    (st.description.clone(), false),
+                                    (mod_str, false),
+                                    (st.date.clone(), false),
+                                    (st.patient_id.clone(), false),
+                                ];
+                                let mut x = row_rect.min.x + pad;
+                                for (i, (text, primary)) in cells.into_iter().enumerate() {
+                                    let w = cols[i];
+                                    let color = if primary || i == 3 { fg } else { fg_dim };
+                                    let mut job = egui::text::LayoutJob::simple_singleline(
+                                        text,
+                                        FontId::proportional(if primary { 13.0 } else { 12.5 }),
+                                        color,
+                                    );
+                                    job.wrap = egui::text::TextWrapping {
+                                        max_width: w - 14.0,
+                                        max_rows: 1,
+                                        break_anywhere: true,
+                                        overflow_character: Some('…'),
+                                    };
+                                    let galley = ui.painter().layout_job(job);
+                                    let gx = if right_aligned[i] {
+                                        x + w - 14.0 - galley.size().x
+                                    } else {
+                                        x
+                                    };
+                                    ui.painter().galley(
+                                        pos2(gx, row_rect.center().y - galley.size().y * 0.5),
+                                        galley,
+                                        color,
+                                    );
+                                    x += w;
+                                }
+
+                                // Row actions, shown on the selected or hovered row.
+                                let act_rect = Rect::from_min_max(
+                                    pos2(row_rect.max.x - w_act - pad, row_rect.min.y + 2.0),
+                                    pos2(row_rect.max.x - pad, row_rect.max.y - 2.0),
+                                );
+                                let show_actions = is_selected
+                                    || ui.rect_contains_pointer(row_rect);
+                                if show_actions {
+                                    let mut act_ui = ui.new_child(
+                                        egui::UiBuilder::new().max_rect(act_rect).layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                        ),
+                                    );
+                                    act_ui.spacing_mut().item_spacing.x = 2.0;
+                                    if is_selected {
+                                        act_ui.visuals_mut().widgets.inactive.fg_stroke.color =
+                                            Color32::WHITE;
+                                    }
+                                    let (h_remove, h_tile, h_open) = if es {
+                                        ("Quitar de la Biblioteca", "Abrir todas las series en mosaico", "Abrir en el visor")
+                                    } else {
+                                        ("Remove from Library", "Open all series tiled", "Open in viewer")
+                                    };
+                                    if icons::small_tool_button(&mut act_ui, Icon::Trash, false)
+                                        .on_hover_text(h_remove)
+                                        .clicked()
+                                    {
+                                        remove_uid = Some(st.uid.clone());
+                                    }
+                                    if icons::small_tool_button(&mut act_ui, Icon::Grid, false)
+                                        .on_hover_text(h_tile)
+                                        .clicked()
+                                    {
+                                        tile_study = Some(si);
+                                    }
+                                    if icons::small_tool_button(&mut act_ui, Icon::Eye, false)
+                                        .on_hover_text(h_open)
+                                        .clicked()
+                                    {
+                                        open_series = Some((si, 0));
+                                    }
+                                }
+
                                 if row_resp.clicked() {
                                     self.selected_db_study = Some(si);
                                 }
@@ -1182,11 +1376,12 @@ impl ViewerApp {
                                 }
                             }
                         });
+                    });
                 });
             },
         );
 
-        ui.separator();
+        ui.add_space(6.0);
 
         // Bottom Series Thumbnail Grid for the selected study
         let sel_si = self
@@ -1196,7 +1391,24 @@ impl ViewerApp {
         if let Some(si) = sel_si {
             let st = &index.studies[si];
             ui.horizontal(|ui| {
-                ui.strong(format!("{} — {} ({} series)", st.patient_name, st.description, st.series.len()));
+                ui.label(
+                    egui::RichText::new(st.patient_name.replace('^', " "))
+                        .strong()
+                        .size(13.0),
+                );
+                let mut sub = Vec::new();
+                if !st.description.trim().is_empty() {
+                    sub.push(st.description.trim().to_string());
+                }
+                if !st.date.is_empty() {
+                    sub.push(st.date.clone());
+                }
+                sub.push(format!("{} {}", st.series.len(), "series"));
+                ui.label(
+                    egui::RichText::new(sub.join("  ·  "))
+                        .size(11.5)
+                        .color(theme::dim_text(ui)),
+                );
             });
             egui::ScrollArea::horizontal()
                 .id_salt("db_series_grid")
@@ -1209,17 +1421,19 @@ impl ViewerApp {
                             let (rect, resp) = ui.allocate_exact_size(card_size, Sense::click());
                             let painter = ui.painter();
                             let bg = if resp.hovered() {
-                                Color32::from_rgb(38, 44, 56)
+                                ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.6)
                             } else {
-                                Color32::from_rgb(24, 27, 34)
+                                ui.visuals().faint_bg_color
                             };
-                            painter.rect_filled(rect, 5.0, bg);
-                            painter.rect_stroke(
-                                rect,
-                                5.0,
-                                Stroke::new(1.0, Color32::from_gray(55)),
-                                egui::StrokeKind::Inside,
-                            );
+                            painter.rect_filled(rect, 6.0, bg);
+                            if resp.hovered() {
+                                painter.rect_stroke(
+                                    rect,
+                                    6.0,
+                                    Stroke::new(1.0, theme::ACCENT_BRIGHT),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
                             let img_rect = Rect::from_min_size(rect.min + vec2(13.0, 6.0), vec2(88.0, 88.0));
                             painter.rect_filled(img_rect, 3.0, Color32::BLACK);
                             if let Some(tex) = self.thumbnails.get(&tkey) {
@@ -1229,8 +1443,8 @@ impl ViewerApp {
                                     img_rect.center(),
                                     Align2::CENTER_CENTER,
                                     &series.modality,
-                                    FontId::monospace(13.0),
-                                    Color32::from_gray(145),
+                                    FontId::proportional(13.0),
+                                    Color32::from_gray(120),
                                 );
                             }
                             let desc = if series.description.trim().is_empty() {
@@ -1243,15 +1457,15 @@ impl ViewerApp {
                                 pos2(rect.center().x, img_rect.max.y + 4.0),
                                 Align2::CENTER_TOP,
                                 short,
-                                FontId::proportional(10.0),
-                                Color32::from_gray(225),
+                                FontId::proportional(10.5),
+                                ui.visuals().text_color(),
                             );
                             painter.text(
                                 pos2(rect.center().x, img_rect.max.y + 17.0),
                                 Align2::CENTER_TOP,
-                                format!("{} · {} im", series.modality, series.slices.len()),
+                                format!("{} · {} {}", series.modality, series.slices.len(), tr.images),
                                 FontId::proportional(9.5),
-                                Color32::from_gray(155),
+                                theme::dim_text(ui),
                             );
                             if resp.clicked() || resp.double_clicked() {
                                 open_series = Some((si, ri));

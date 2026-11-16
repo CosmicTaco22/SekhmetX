@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.2] - 2026-11-16
+
+### Improved (Interface look — pass 1, toolbar / sidebar / library)
+- **One theme for the whole app (`src/ui/theme.rs`):** a single palette, spacing and text sizes replace the per-screen colours; the toolbar and status bar get their own darker chrome.
+- **Drawn toolbar icons (`src/ui/icons.rs`, `src/ui/toolbar.rs`):** mouse tools and ROI tools are icon buttons in segmented groups; Library, Sidebar, Open, layout, Ax·Cor·Sag, 3D MPR, 3D VR, View, Meta-Data and Cine are icon tiles with their own caption. The icons are our own vector drawings and stay sharp at any display scale. Emoji and text-only buttons are gone from the toolbar and slice strip.
+- **Series cards in the sidebar (`src/app/browser.rs`):** each series shows its thumbnail, description, a coloured plane badge (`AX` / `COR` / `SAG`) and modality, number and image count, instead of a monospaced text row.
+- **Library table (`src/app/browser.rs`):** left-aligned columns, numeric columns right-aligned, striped rows, accent-coloured selection, row actions (open, tile, remove) as icons that no longer run off the right edge; albums list with counts; headers translated to Spanish.
+
+### Fixed
+- `cargo clippy -- -D warnings` failed on Rust 1.97 (`needless_range_loop` in `src/imaging/convolution.rs`).
+
+## [0.5.1] - 2026-11-16
+
+### Added
+- **Dark mode by default with a Theme setting** (`Dark` / `Light` / `System`) in Settings and the first-run notice.
+- **Compare popover:** choose which viewports to compare; WL/WW linking is opt-in; disabled with fewer than two loaded viewports.
+- **Windows file metadata** embedded in the executable (`build.rs`) and symbols no longer fully stripped, to reduce antivirus false positives.
+
 ## [0.5.0] - 2026-11-16
 
 ### Added (3D Volume Rendering — Stage 5)
