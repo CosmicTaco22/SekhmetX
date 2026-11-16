@@ -25,4 +25,18 @@ fn main() {
     };
 
     println!("cargo:rustc-env=SEKHMETX_INTERNAL_VERSION={internal_version}");
+
+    #[cfg(windows)]
+    if std::env::var_os("CARGO_CFG_WINDOWS").is_some() {
+        let mut res = winres::WindowsResource::new();
+        res.set("ProductName", "SekhmetX");
+        res.set("FileDescription", "SekhmetX DICOM Medical Image Viewer");
+        res.set("CompanyName", "SekhmetX Open Source");
+        res.set("LegalCopyright", "Copyright (C) 2026 SekhmetX Contributors (LGPL-3.0-or-later)");
+        res.set("OriginalFilename", "sekhmetx.exe");
+        res.set("InternalName", "sekhmetx");
+        res.set("FileVersion", pkg_version);
+        res.set("ProductVersion", pkg_version);
+        let _ = res.compile();
+    }
 }

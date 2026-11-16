@@ -825,6 +825,27 @@ impl ViewerApp {
                     }
                 });
 
+                ui.horizontal(|ui| {
+                    let (theme_lbl, lbl_dark, lbl_light, lbl_sys) = match self.lang {
+                        crate::i18n::Lang::Es => ("Tema:", "🌙 Oscuro", "☀ Claro", "Sistema"),
+                        crate::i18n::Lang::En => ("Theme:", "🌙 Dark", "☀ Light", "System"),
+                    };
+                    ui.label(theme_lbl);
+                    for (mode, lbl) in [
+                        (super::ThemeMode::Dark, lbl_dark),
+                        (super::ThemeMode::Light, lbl_light),
+                        (super::ThemeMode::System, lbl_sys),
+                    ] {
+                        if ui.selectable_label(self.theme_mode == mode, lbl).clicked() {
+                            self.theme_mode = mode;
+                            mode.apply(ctx);
+                            if let Some(ref db) = self.db {
+                                let _ = db.set_setting("theme_mode", mode.as_str());
+                            }
+                        }
+                    }
+                });
+
                 ui.add_space(6.0);
                 ui.separator();
                 ui.label(tr.settings_studies_folder);
@@ -1112,6 +1133,27 @@ impl ViewerApp {
                         self.lang = crate::i18n::Lang::Es;
                         if let Some(ref db) = self.db {
                             let _ = db.set_setting("lang", "es");
+                        }
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    let (theme_lbl, lbl_dark, lbl_light, lbl_sys) = match self.lang {
+                        crate::i18n::Lang::Es => ("Tema:", "🌙 Oscuro", "☀ Claro", "Sistema"),
+                        crate::i18n::Lang::En => ("Theme:", "🌙 Dark", "☀ Light", "System"),
+                    };
+                    ui.label(theme_lbl);
+                    for (mode, lbl) in [
+                        (super::ThemeMode::Dark, lbl_dark),
+                        (super::ThemeMode::Light, lbl_light),
+                        (super::ThemeMode::System, lbl_sys),
+                    ] {
+                        if ui.selectable_label(self.theme_mode == mode, lbl).clicked() {
+                            self.theme_mode = mode;
+                            mode.apply(ctx);
+                            if let Some(ref db) = self.db {
+                                let _ = db.set_setting("theme_mode", mode.as_str());
+                            }
                         }
                     }
                 });

@@ -476,14 +476,30 @@ impl ViewerApp {
         self.message = Some("Locked 3D slice & angle alignment across viewports.".into());
     }
 
-    /// Optimal side-by-side comparison mode: links Zoom (`= mm` same physical size), WL/WW,
-    /// and Cut, copies WL/WW & pan from the active viewport, enables 3D MPR where volumes exist,
-    /// and aligns XYZ planes (orientation + slice height) across linked viewports.
+    /// Optimal side-by-side comparison mode: links Zoom (`= mm` same physical size), Cut,
+    /// and optionally WL/WW across the selected viewports, enables 3D MPR where volumes exist,
+    /// and aligns XYZ planes (orientation + slice height) across the compared viewports.
     pub(crate) fn compare_align_linked_viewports(&mut self) {
-        self.ensure_default_link_pair();
+        let cell_count = self.tiling.cell_count();
+        let chosen: Vec<usize> = (0..cell_count)
+            .filter(|&i| {
+                self.viewports[i].selected.is_some()
+                    && self.compare_vp_selected.get(i).copied().unwrap_or(true)
+            })
+            .collect();
+        if chosen.len() < 2 {
+            return;
+        }
+        for (i, vp) in self.viewports.iter_mut().enumerate().take(cell_count) {
+            vp.link_group = if chosen.contains(&i) { 1 } else { 0 };
+        }
+        if !chosen.contains(&self.active_viewport) {
+            self.active_viewport = chosen[0];
+        }
+
         self.link_zoom = true;
         self.link_zoom_same_size = true;
-        self.link_wl = true;
+        self.link_wl = self.compare_link_wl;
         self.link_cut = true;
 
         let leader_idx = self.active_viewport;
@@ -493,12 +509,15 @@ impl ViewerApp {
         if self.viewport_volume(leader_idx).is_some() && !self.viewports[leader_idx].mpr_enabled {
             self.viewports[leader_idx].mpr_enabled = true;
         }
-        let leader_win = self.viewports[leader_idx]
-            .window
-            .or_else(|| self.viewport_frame(leader_idx).map(|f| self.effective_window(leader_idx, f)));
+        let leader_win = if self.compare_link_wl {
+            self.viewports[leader_idx]
+                .window
+                .or_else(|| self.viewport_frame(leader_idx).map(|f| self.effective_window(leader_idx, f)))
+        } else {
+            None
+        };
         let leader_pan = self.viewports[leader_idx].pan;
         let leader_plane = self.effective_mpr_plane(leader_idx);
-        let cell_count = self.tiling.cell_count();
 
         let mat_vec = |m: [[f64; 3]; 3], v: [f64; 3]| -> [f64; 3] {
             [
@@ -508,8 +527,8 @@ impl ViewerApp {
             ]
         };
 
-        for other_idx in 0..cell_count {
-            if !self.are_viewports_linked(leader_idx, other_idx) {
+        for &other_idx in &chosen {
+            if other_idx == leader_idx {
                 continue;
             }
             let Some(other_sel) = self.viewports[other_idx].selected else {
@@ -548,10 +567,10 @@ impl ViewerApp {
         self.apply_same_size_zoom_from(leader_idx);
         self.message = Some(match self.lang {
             crate::i18n::Lang::Es => {
-                "Modo Comparación: Zoom (= mm), NV y planos XYZ sincronizados".into()
+                "Comparación activa: Zoom (= mm), Corte y planos XYZ sincronizados".into()
             }
             crate::i18n::Lang::En => {
-                "Compare Mode: Zoom (= mm), WL/WW & XYZ planes synchronized".into()
+                "Compare active: Zoom (= mm), Cut & XYZ planes synchronized".into()
             }
         });
     }

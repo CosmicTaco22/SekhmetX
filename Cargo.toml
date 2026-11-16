@@ -1,6 +1,6 @@
 [package]
 name = "sekhmetx"
-version = "0.5.0"
+version = "0.5.1"
 edition = "2024"
 description = "SekhmetX: a fast, native cross-platform DICOM viewer in Rust (modeled on IsiX / Horos / OsiriX)"
 license = "LGPL-3.0-or-later"
@@ -50,11 +50,14 @@ default = ["jpegls"]
 # JPEG-LS support needs a C++ compiler + CMake; enable with --features jpegls
 jpegls = ["dicom-pixeldata/charls"]
 
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"
+
 [profile.release]
 opt-level = 3
 lto = "thin"
 codegen-units = 1
-strip = true
+strip = "debuginfo"
 
 # Decode quickly even in debug builds
 [profile.dev.package."*"]

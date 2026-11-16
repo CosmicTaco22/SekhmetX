@@ -309,6 +309,8 @@ pub(crate) struct ViewerApp {
     pub(crate) link_zoom_same_size: bool,
     pub(crate) link_wl: bool,
     pub(crate) link_cut: bool,
+    pub(crate) compare_link_wl: bool,
+    pub(crate) compare_vp_selected: Vec<bool>,
     pub(crate) show_reference_lines: bool,
     pub(crate) show_annotations: bool,
 
@@ -380,6 +382,7 @@ pub(crate) struct ViewerApp {
     pub(crate) show_update_modal: bool,
     pub(crate) db: Option<crate::db::Database>,
     pub(crate) lang: crate::i18n::Lang,
+    pub(crate) theme_mode: ThemeMode,
     pub(crate) blend_siblings: bool,
     pub(crate) gpu_bilinear: bool,
     check_updates_on_startup: bool,
@@ -398,6 +401,41 @@ pub(crate) struct ViewerApp {
     confirm_delete_local_data: bool,
     patient_links: HashMap<String, String>,
     linking_source: Option<(String, Vec<String>)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum ThemeMode {
+    #[default]
+    Dark,
+    Light,
+    System,
+}
+
+impl ThemeMode {
+    pub(crate) fn from_str(s: &str) -> Self {
+        match s {
+            "light" => Self::Light,
+            "system" => Self::System,
+            _ => Self::Dark,
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+            Self::System => "system",
+        }
+    }
+
+    pub(crate) fn apply(self, ctx: &egui::Context) {
+        let pref = match self {
+            Self::Dark => egui::ThemePreference::Dark,
+            Self::Light => egui::ThemePreference::Light,
+            Self::System => egui::ThemePreference::System,
+        };
+        ctx.set_theme(pref);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -497,6 +535,12 @@ impl ViewerApp {
             .as_ref()
             .map(|s| s.patient_links())
             .unwrap_or_default();
+        let saved_theme_mode = db
+            .as_ref()
+            .and_then(|d| d.get_setting("theme_mode"))
+            .map(|s| ThemeMode::from_str(&s))
+            .unwrap_or(ThemeMode::Dark);
+        saved_theme_mode.apply(&cc.egui_ctx);
         let (copy_shot_tx, copy_shot_rx) = std::sync::mpsc::channel();
         let mut app = Self {
             index: None,
@@ -511,6 +555,8 @@ impl ViewerApp {
             link_zoom_same_size: true,
             link_wl: false,
             link_cut: false,
+            compare_link_wl: false,
+            compare_vp_selected: vec![true; 16],
             show_reference_lines: true,
             show_annotations: true,
             loader: Loader::new(move || ctx.request_repaint()),
@@ -576,6 +622,7 @@ impl ViewerApp {
             show_update_modal: false,
             db,
             lang: saved_lang,
+            theme_mode: saved_theme_mode,
             blend_siblings: false,
             gpu_bilinear: saved_bilinear,
             check_updates_on_startup: saved_startup_updates,
@@ -670,7 +717,7 @@ impl ViewerApp {
         &mut self.viewports[self.active_viewport]
     }
 
-    fn viewport_series(&self, vp_idx: usize) -> Option<&Series> {
+    pub(crate) fn viewport_series(&self, vp_idx: usize) -> Option<&Series> {
         let sel = self.viewports.get(vp_idx)?.selected?;
         self.series_at(sel)
     }
@@ -1795,6 +1842,7 @@ impl ViewerApp {
     /// Return to the full Database Library view and unload decoded frames/volumes for the active study.
     pub(crate) fn return_to_library(&mut self) {
         self.show_database_view = true;
+        self.message = None;
         self.playing = false;
         self.ortho_mpr_active = false;
         self.ortho_crosshair_lps = None;

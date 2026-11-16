@@ -1135,19 +1135,61 @@ impl ViewerApp {
                     }
                 }
                 ui.separator();
-                let (cmp_lbl, cmp_hover) = match self.lang {
+                let loaded_vps: Vec<usize> = (0..cell_count)
+                    .filter(|&i| self.viewports[i].selected.is_some())
+                    .collect();
+                let (cmp_lbl, cmp_hover, lbl_link_wl, lbl_vps, lbl_apply) = match self.lang {
                     crate::i18n::Lang::En => (
-                        "⚖ Compare",
-                        "Link Zoom (= mm), WL/WW & Cut and align XYZ 3D planes for side-by-side comparison",
+                        "⚖ Compare ▾",
+                        "Compare selected viewports (Zoom = mm, Cut & XYZ plane alignment)",
+                        "Link WL/WW",
+                        "Viewports to compare:",
+                        "⚖ Compare Selected",
                     ),
                     crate::i18n::Lang::Es => (
-                        "⚖ Comparar",
-                        "Vincular Zoom (= mm), NV y Corte y alinear planos XYZ 3D para comparación óptima",
+                        "⚖ Comparar ▾",
+                        "Comparar visores seleccionados (Zoom = mm, Corte y planos XYZ)",
+                        "Vincular NV/AV",
+                        "Visores a comparar:",
+                        "⚖ Comparar seleccionados",
                     ),
                 };
-                if ui.small_button(cmp_lbl).on_hover_text(cmp_hover).clicked() {
-                    self.compare_align_linked_viewports();
-                }
+                ui.add_enabled_ui(loaded_vps.len() >= 2, |ui| {
+                    ui.menu_button(cmp_lbl, |ui| {
+                        ui.set_min_width(230.0);
+                        ui.checkbox(&mut self.compare_link_wl, lbl_link_wl);
+                        ui.separator();
+                        ui.label(egui::RichText::new(lbl_vps).small().strong());
+                        let mut chosen_count = 0usize;
+                        for &vp_i in &loaded_vps {
+                            let desc = self
+                                .viewport_series(vp_i)
+                                .map(|s| {
+                                    if s.description.is_empty() {
+                                        s.modality.clone()
+                                    } else {
+                                        format!("{} · {}", s.modality, s.description)
+                                    }
+                                })
+                                .unwrap_or_default();
+                            if let Some(flag) = self.compare_vp_selected.get_mut(vp_i) {
+                                ui.checkbox(flag, format!("VP {}: {}", vp_i + 1, desc));
+                                if *flag {
+                                    chosen_count += 1;
+                                }
+                            }
+                        }
+                        ui.separator();
+                        ui.add_enabled_ui(chosen_count >= 2, |ui| {
+                            if ui.button(lbl_apply).clicked() {
+                                self.compare_align_linked_viewports();
+                                ui.close();
+                            }
+                        });
+                    })
+                    .response
+                    .on_hover_text(cmp_hover);
+                });
                 if ui
                     .small_button(tr.lock_3d_sync)
                     .on_hover_text(tr.lock_3d_sync_hover)
