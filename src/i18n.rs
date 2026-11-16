@@ -167,8 +167,6 @@ pub struct Strings {
     pub unlink_study: &'static str,
     pub linking_banner: &'static str,
     #[allow(dead_code)]
-    #[allow(dead_code)]
-    #[allow(dead_code)]
     pub settings_hover: &'static str,
     pub settings_title: &'static str,
     pub settings_language: &'static str,
