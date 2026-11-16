@@ -293,7 +293,9 @@ impl Volume3D {
         if d >= 2 && !missing_geom {
             let min_px_sp = dx.min(dy);
             let reg = SliceRegularity::evaluate(&origins, normal, min_px_sp);
-            if reg.is_irregular {
+            // Frames that all sit at one place are a cine, not a volume
+            // (IsiX 6.0.4 `SliceIntervalCorrection`): a zero interval is never a stack.
+            if reg.is_irregular || reg.mean_interval <= 1e-6 {
                 irregular_geom = true;
                 if !force {
                     let reason = if reg.mean_interval <= 1e-6 {
@@ -1506,6 +1508,66 @@ mod tests {
         assert_eq!(forced.depth, 1);
         assert_eq!(forced.width, 4);
         assert_eq!(forced.height, 4);
+    }
+
+    // IsiX 6.0.4 `SliceIntervalCorrection`: frames that all say they are at one
+    // place are a cine, and are not stacked into a volume.
+    #[test]
+    fn frames_at_one_position_are_a_cine_not_a_volume() {
+        let frame = Arc::new(Frame {
+            width: 4,
+            height: 4,
+            pixels: Pixels::Gray(vec![0.0; 16]),
+            stored_window: None,
+            full_window: Window { level: 0.0, width: 100.0 },
+            bits_window: None,
+            inverts: false,
+            voi_lut_applied: false,
+            slope: 1.0,
+            spacing: Some((1.0, 1.0)),
+            pixel_ratio: 1.0,
+            origin: Some([0.0, 0.0, 0.0]),
+            orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            is_3d_plane: true,
+            frame_of_reference_uid: None,
+            slice_thickness: Some(2.5),
+            slice_location: Some(0.0),
+            value_unit: "",
+        });
+        let slice = crate::dicom_index::SliceRef {
+            path: std::path::PathBuf::from("cine.dcm"),
+            frame: 0,
+            instance: 1,
+            position: Some([0.0, 0.0, 0.0]),
+            orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            is_3d_plane: true,
+            spacing: Some((1.0, 1.0)),
+            slice_location: Some(0.0),
+            frame_of_reference_uid: None,
+        };
+        let series = Series {
+            uid: "1.2.3.4".into(),
+            number: 1,
+            description: "Cine".into(),
+            modality: "XA".into(),
+            rows: 4,
+            columns: 4,
+            normal: Some([0.0, 0.0, 1.0]),
+            dominant_plane: crate::dicom_index::DominantPlane::Axial,
+            frame_of_reference_uid: None,
+            acquisition_time_secs: None,
+            acquisition_number: None,
+            convolution_kernel: None,
+            window_center: None,
+            window_width: None,
+            mpr_group_id: None,
+            slices: vec![slice.clone(), slice.clone(), slice.clone(), slice],
+        };
+        let frames = vec![frame.clone(), frame.clone(), frame.clone(), frame];
+        assert!(matches!(
+            Volume3D::from_series_checked(&series, &frames, false),
+            Err(VolumeError::IrregularSpacing { .. })
+        ));
     }
 
     #[test]

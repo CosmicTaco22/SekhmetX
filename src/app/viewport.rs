@@ -76,9 +76,10 @@ impl ViewerApp {
             return None;
         }
         let bar_w = (view.width() * 0.44).clamp(160.0, 320.0);
-        let bar_h = 22.0;
+        // Sits above the bottom ruler (drawn at the very edge) so the two never overlap.
+        let bar_h = 20.0;
         let bar_rect = Rect::from_center_size(
-            pos2(view.center().x, view.bottom() - 16.0),
+            pos2(view.center().x, view.bottom() - 24.0),
             vec2(bar_w, bar_h),
         );
         let prev_rect = Rect::from_min_size(bar_rect.min + vec2(3.0, 2.0), vec2(20.0, bar_h - 4.0));
@@ -592,28 +593,21 @@ impl ViewerApp {
 
         let prev_hover = hover_pos.is_some_and(|p| prev_rect.contains(p));
         let next_hover = hover_pos.is_some_and(|p| next_rect.contains(p));
-        painter.text(
-            prev_rect.center(),
-            Align2::CENTER_CENTER,
-            "◀",
-            FontId::proportional(11.0),
-            if prev_hover {
-                Color32::from_rgb(110, 190, 255)
-            } else {
-                Color32::from_gray(210)
-            },
-        );
-        painter.text(
-            next_rect.center(),
-            Align2::CENTER_CENTER,
-            "▶",
-            FontId::proportional(11.0),
-            if next_hover {
-                Color32::from_rgb(110, 190, 255)
-            } else {
-                Color32::from_gray(210)
-            },
-        );
+        for (rect, icon, hovered) in [
+            (prev_rect, crate::ui::icons::Icon::Previous, prev_hover),
+            (next_rect, crate::ui::icons::Icon::Next, next_hover),
+        ] {
+            crate::ui::icons::paint(
+                painter,
+                Rect::from_center_size(rect.center(), vec2(9.0, 9.0)),
+                icon,
+                if hovered {
+                    crate::ui::theme::accent_bright()
+                } else {
+                    Color32::from_gray(210)
+                },
+            );
+        }
 
         let cy = track_rect.center().y;
         painter.line_segment(
@@ -626,9 +620,9 @@ impl ViewerApp {
         let thumb_x = track_rect.min.x + t * track_rect.width();
         painter.line_segment(
             [pos2(track_rect.min.x, cy), pos2(thumb_x, cy)],
-            Stroke::new(3.0, Color32::from_rgb(70, 165, 255)),
+            Stroke::new(3.0, crate::ui::theme::accent()),
         );
-        painter.circle_filled(pos2(thumb_x, cy), 5.0, Color32::from_rgb(120, 195, 255));
+        painter.circle_filled(pos2(thumb_x, cy), 5.0, crate::ui::theme::accent_bright());
         painter.circle_stroke(
             pos2(thumb_x, cy),
             5.0,

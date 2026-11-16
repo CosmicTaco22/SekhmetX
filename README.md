@@ -61,7 +61,7 @@ or Pixmeo. It does not use their names or icons in the application.
 - Local SQLite library that opens instantly on later launches; studies grouped
   by patient, with manual linking of the same patient under different name
   spellings.
-- Full-window library view with modality albums, a study table, series
+- Full-window library view with modality albums, a sortable study table, series
   thumbnails and a study details pane; search by patient, ID, accession, study
   or series.
 - Axial, coronal and sagittal reconstructions of one acquisition are grouped

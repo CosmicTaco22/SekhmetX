@@ -313,13 +313,12 @@ impl ViewerApp {
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
-            .default_width(480.0)
+            .default_width(560.0)
             .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(tr.settings_language);
-                    if ui
-                        .selectable_label(self.lang == crate::i18n::Lang::En, "English")
+                    if crate::ui::icons::choice(ui, self.lang == crate::i18n::Lang::En, "English")
                         .clicked()
                     {
                         self.lang = crate::i18n::Lang::En;
@@ -327,8 +326,7 @@ impl ViewerApp {
                             let _ = db.set_setting("lang", "en");
                         }
                     }
-                    if ui
-                        .selectable_label(self.lang == crate::i18n::Lang::Es, "Español")
+                    if crate::ui::icons::choice(ui, self.lang == crate::i18n::Lang::Es, "Español")
                         .clicked()
                     {
                         self.lang = crate::i18n::Lang::Es;
@@ -340,8 +338,8 @@ impl ViewerApp {
 
                 ui.horizontal(|ui| {
                     let (theme_lbl, lbl_dark, lbl_light, lbl_sys) = match self.lang {
-                        crate::i18n::Lang::Es => ("Tema:", "🌙 Oscuro", "☀ Claro", "Sistema"),
-                        crate::i18n::Lang::En => ("Theme:", "🌙 Dark", "☀ Light", "System"),
+                        crate::i18n::Lang::Es => ("Tema:", "Oscuro", "Claro", "Sistema"),
+                        crate::i18n::Lang::En => ("Theme:", "Dark", "Light", "System"),
                     };
                     ui.label(theme_lbl);
                     for (mode, lbl) in [
@@ -349,7 +347,7 @@ impl ViewerApp {
                         (super::ThemeMode::Light, lbl_light),
                         (super::ThemeMode::System, lbl_sys),
                     ] {
-                        if ui.selectable_label(self.theme_mode == mode, lbl).clicked() {
+                        if crate::ui::icons::choice(ui, self.theme_mode == mode, lbl).clicked() {
                             self.theme_mode = mode;
                             mode.apply(ctx);
                             if let Some(ref db) = self.db {
@@ -360,12 +358,10 @@ impl ViewerApp {
                 });
                 self.draw_accent_settings(ui, ctx);
 
-                ui.add_space(6.0);
-                ui.separator();
-                ui.label(tr.settings_studies_folder);
+                crate::ui::icons::section_title(ui, tr.settings_studies_folder);
                 ui.horizontal(|ui| {
                     let cur = crate::db::managed_studies_dir();
-                    ui.monospace(cur.display().to_string());
+                    crate::ui::icons::path_box(ui, &cur.display().to_string());
                     if ui.button(tr.choose_folder).clicked()
                         && let Some(dir) = rfd::FileDialog::new().pick_folder()
                     {
@@ -379,9 +375,7 @@ impl ViewerApp {
                     }
                 });
 
-                ui.add_space(6.0);
-                ui.separator();
-                ui.strong(tr.settings_on_open);
+                crate::ui::icons::section_title(ui, tr.settings_on_open);
                 ui.horizontal(|ui| {
                     ui.label(tr.settings_add_to_db);
                     for (policy, label) in [
@@ -389,15 +383,14 @@ impl ViewerApp {
                         (crate::db::CopyToLibraryPolicy::Always, tr.settings_policy_always),
                         (crate::db::CopyToLibraryPolicy::Never, tr.settings_policy_never),
                     ] {
-                        if ui.selectable_label(self.copy_policy == policy, label).clicked() {
+                        if crate::ui::icons::choice(ui, self.copy_policy == policy, label).clicked() {
                             self.set_copy_policy(policy);
                         }
                     }
                 });
                 ui.horizontal(|ui| {
                     ui.label(tr.settings_storage_format);
-                    if ui
-                        .selectable_label(!self.study_storage_zip, tr.settings_format_unzip)
+                    if crate::ui::icons::choice(ui, !self.study_storage_zip, tr.settings_format_unzip)
                         .clicked()
                     {
                         self.study_storage_zip = false;
@@ -405,8 +398,7 @@ impl ViewerApp {
                             let _ = db.set_setting("study_storage_format", "unzip");
                         }
                     }
-                    if ui
-                        .selectable_label(self.study_storage_zip, tr.settings_format_zip)
+                    if crate::ui::icons::choice(ui, self.study_storage_zip, tr.settings_format_zip)
                         .clicked()
                     {
                         self.study_storage_zip = true;
@@ -416,26 +408,23 @@ impl ViewerApp {
                     }
                 });
 
-                ui.add_space(6.0);
-                ui.separator();
                 let (upd_hdr, lbl_auto, lbl_manual, lbl_check_now) = match self.lang {
                     crate::i18n::Lang::Es => (
                         "Actualizaciones",
                         "Buscar al iniciar",
                         "Solo manual",
-                        "🔄 Buscar ahora",
+                        "Buscar ahora",
                     ),
                     crate::i18n::Lang::En => (
                         "Updates",
                         "Check on startup",
                         "Manual only",
-                        "🔄 Check now",
+                        "Check now",
                     ),
                 };
-                ui.strong(upd_hdr);
+                crate::ui::icons::section_title(ui, upd_hdr);
                 ui.horizontal(|ui| {
-                    if ui
-                        .selectable_label(self.check_updates_on_startup, lbl_auto)
+                    if crate::ui::icons::choice(ui, self.check_updates_on_startup, lbl_auto)
                         .clicked()
                     {
                         self.check_updates_on_startup = true;
@@ -443,8 +432,7 @@ impl ViewerApp {
                             let _ = db.set_setting("check_updates_on_startup", "1");
                         }
                     }
-                    if ui
-                        .selectable_label(!self.check_updates_on_startup, lbl_manual)
+                    if crate::ui::icons::choice(ui, !self.check_updates_on_startup, lbl_manual)
                         .clicked()
                     {
                         self.check_updates_on_startup = false;
@@ -471,9 +459,18 @@ impl ViewerApp {
                         ui.horizontal(|ui| {
                             ui.colored_label(
                                 Color32::from_rgb(120, 225, 150),
-                                format!("⬆ {} available", info.tag_name),
+                                match self.lang {
+                                    crate::i18n::Lang::Es => format!("{} disponible", info.tag_name),
+                                    crate::i18n::Lang::En => format!("{} available", info.tag_name),
+                                },
                             );
-                            if ui.small_button("Install…").clicked() {
+                            if ui
+                                .small_button(match self.lang {
+                                    crate::i18n::Lang::Es => "Instalar…",
+                                    crate::i18n::Lang::En => "Install…",
+                                })
+                                .clicked()
+                            {
                                 self.show_update_modal = true;
                             }
                         });
@@ -482,21 +479,39 @@ impl ViewerApp {
                         ui.horizontal(|ui| {
                             ui.colored_label(
                                 Color32::from_rgb(120, 225, 150),
-                                format!("✅ {tag} installed"),
+                                match self.lang {
+                                    crate::i18n::Lang::Es => format!("{tag} instalada"),
+                                    crate::i18n::Lang::En => format!("{tag} installed"),
+                                },
                             );
-                            if ui.small_button("Restart…").clicked() {
+                            if ui
+                                .small_button(match self.lang {
+                                    crate::i18n::Lang::Es => "Reiniciar…",
+                                    crate::i18n::Lang::En => "Restart…",
+                                })
+                                .clicked()
+                            {
                                 self.show_update_modal = true;
                             }
                         });
                     }
                     crate::updater::UpdateStatus::UpToDate(tag) => {
-                        ui.small(format!("✓ v{} ({tag})", env!("CARGO_PKG_VERSION")));
+                        ui.small(match self.lang {
+                            crate::i18n::Lang::Es => format!("Al día: v{} ({tag})", env!("CARGO_PKG_VERSION")),
+                            crate::i18n::Lang::En => format!("Up to date: v{} ({tag})", env!("CARGO_PKG_VERSION")),
+                        });
                     }
                     crate::updater::UpdateStatus::Checking => {
-                        ui.small("Checking GitHub for updates…");
+                        ui.small(match self.lang {
+                            crate::i18n::Lang::Es => "Buscando actualizaciones en GitHub…",
+                            crate::i18n::Lang::En => "Checking GitHub for updates…",
+                        });
                     }
                     crate::updater::UpdateStatus::Installing => {
-                        ui.small("Downloading and installing update…");
+                        ui.small(match self.lang {
+                            crate::i18n::Lang::Es => "Descargando e instalando la actualización…",
+                            crate::i18n::Lang::En => "Downloading and installing update…",
+                        });
                     }
                     crate::updater::UpdateStatus::Error(err) => {
                         ui.colored_label(Color32::from_rgb(240, 120, 120), err);
@@ -520,15 +535,13 @@ impl ViewerApp {
                         .set_crash_report_opt_in(self.crash_report_opt_in);
                 }
 
-                ui.add_space(6.0);
-                ui.separator();
                 let data_lbl = match self.lang {
-                    crate::i18n::Lang::Es => "Carpeta de datos locales (base de datos y registros):",
-                    crate::i18n::Lang::En => "Local data folder (database and logs):",
+                    crate::i18n::Lang::Es => "Datos locales (base de datos y registros)",
+                    crate::i18n::Lang::En => "Local data (database and logs)",
                 };
-                ui.label(data_lbl);
+                crate::ui::icons::section_title(ui, data_lbl);
                 let data_dir = crate::crash_log::app_data_dir();
-                ui.monospace(data_dir.display().to_string());
+                crate::ui::icons::path_box(ui, &data_dir.display().to_string());
                 ui.horizontal(|ui| {
                     let open_lbl = match self.lang {
                         crate::i18n::Lang::Es => "Abrir carpeta",
@@ -698,8 +711,7 @@ impl ViewerApp {
                         crate::i18n::Lang::En => "Language / Idioma:",
                     };
                     ui.strong(lang_lbl);
-                    if ui
-                        .selectable_label(self.lang == crate::i18n::Lang::En, "English")
+                    if crate::ui::icons::choice(ui, self.lang == crate::i18n::Lang::En, "English")
                         .clicked()
                     {
                         self.lang = crate::i18n::Lang::En;
@@ -707,8 +719,7 @@ impl ViewerApp {
                             let _ = db.set_setting("lang", "en");
                         }
                     }
-                    if ui
-                        .selectable_label(self.lang == crate::i18n::Lang::Es, "Español")
+                    if crate::ui::icons::choice(ui, self.lang == crate::i18n::Lang::Es, "Español")
                         .clicked()
                     {
                         self.lang = crate::i18n::Lang::Es;
@@ -720,8 +731,8 @@ impl ViewerApp {
 
                 ui.horizontal(|ui| {
                     let (theme_lbl, lbl_dark, lbl_light, lbl_sys) = match self.lang {
-                        crate::i18n::Lang::Es => ("Tema:", "🌙 Oscuro", "☀ Claro", "Sistema"),
-                        crate::i18n::Lang::En => ("Theme:", "🌙 Dark", "☀ Light", "System"),
+                        crate::i18n::Lang::Es => ("Tema:", "Oscuro", "Claro", "Sistema"),
+                        crate::i18n::Lang::En => ("Theme:", "Dark", "Light", "System"),
                     };
                     ui.label(theme_lbl);
                     for (mode, lbl) in [
@@ -729,7 +740,7 @@ impl ViewerApp {
                         (super::ThemeMode::Light, lbl_light),
                         (super::ThemeMode::System, lbl_sys),
                     ] {
-                        if ui.selectable_label(self.theme_mode == mode, lbl).clicked() {
+                        if crate::ui::icons::choice(ui, self.theme_mode == mode, lbl).clicked() {
                             self.theme_mode = mode;
                             mode.apply(ctx);
                             if let Some(ref db) = self.db {
@@ -758,7 +769,7 @@ impl ViewerApp {
                     crate::i18n::Lang::En => "• Local patient data is stored at:",
                 };
                 ui.label(loc_lbl);
-                ui.monospace(data_dir.display().to_string());
+                crate::ui::icons::path_box(ui, &data_dir.display().to_string());
                 ui.add_space(6.0);
                 let studies_lbl = match self.lang {
                     crate::i18n::Lang::Es => "• Carpeta de la biblioteca de estudios (donde se guardan sus estudios):",
@@ -768,7 +779,7 @@ impl ViewerApp {
                 let tr = crate::i18n::tr(self.lang);
                 ui.horizontal(|ui| {
                     let cur_studies = crate::db::managed_studies_dir();
-                    ui.monospace(cur_studies.display().to_string());
+                    crate::ui::icons::path_box(ui, &cur_studies.display().to_string());
                     if ui.button(tr.choose_folder).clicked()
                         && let Some(dir) = rfd::FileDialog::new().pick_folder()
                     {

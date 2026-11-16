@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.5] - 2026-11-16
+
+### Ported from IsiX 6.0.4 (review in `porting/reports/2026-11-16-isix-6.0.4-review.md`)
+- **VOI LUT fixes (`src/imaging/voi_lut.rs`, `src/frame.rs`):** a VOI LUT is now applied to every image, including one whose pixels all fall outside the table (previously treated as a corrupt table and ignored); images with a rescale slope/intercept now use their VOI LUT, entered by the rescaled value; a one-entry table is valid. Affects mainly CR, DX and mammography. IsiX's tests translated.
+- **Cine is not a volume (`src/volume.rs`):** a series whose images all sit at the same position is no longer accepted as a 3D volume.
+- **Exponential slab-thickness slider (`src/imaging/slab_scale.rs`, `src/ui/toolbar.rs`):** fine steps for thin slabs and whole millimetres in between, with the thickness shown and editable beside it. The thick end stays at 50 mm (see `DEVIATIONS.md`).
+
+### Improved (interface)
+- **Library table sorts** by any column: click a header, click again to reverse. Default is patient name; the choice is remembered.
+- **Settings and first-run dialogs:** section headings, button-style choices, paths in boxes; update status messages translated to Spanish.
+- **Viewport slice slider** sits above the bottom ruler instead of on top of it, and follows the accent colour.
+- **Metadata inspector** translated to Spanish (it was English-only).
+- **Slab mode names** translated (`Fino`, `Media`).
+
+### Project
+- **IsiX tracking restored:** `porting/upstream.toml` is back (IsiX only) and marked reviewed up to IsiX 6.0.4; 11 new IsiX files assigned in the porting map.
+- **`AGENTS.md` / `GEMINI.md` rewritten** for the current layout, commands and the owner's standing rules.
+
 ## [0.5.4] - 2026-11-16
 
 ### Removed

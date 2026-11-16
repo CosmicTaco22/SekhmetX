@@ -366,6 +366,8 @@ pub(crate) struct ViewerApp {
     pub(crate) vr_tf_selected_stop: usize,
     pub(crate) vr_histogram_cache: Option<(u64, u32, u32, Vec<f32>)>,
     pub(crate) selected_db_study: Option<usize>,
+    /// Library table sort: column index (0 = patient name … 6 = patient ID) and direction.
+    pub(crate) db_sort: (usize, bool),
     pub(crate) show_metadata_inspector: bool,
     pub(crate) metadata_filter: String,
     pub(crate) metadata_cache: Option<metadata::MetadataCache>,
@@ -495,6 +497,15 @@ impl ViewerApp {
             .as_ref()
             .map(|s| s.study_storage_zip())
             .unwrap_or(false);
+        // "column,asc" e.g. "5,0" = by date, newest first. Default: patient name A→Z, as Horos.
+        let saved_db_sort = db
+            .as_ref()
+            .and_then(|d| d.get_setting("db_sort"))
+            .and_then(|s| {
+                let (c, a) = s.split_once(',')?;
+                Some((c.parse::<usize>().ok().filter(|c| *c < 7)?, a == "1"))
+            })
+            .unwrap_or((0, true));
         let first_run_ack = settings
             .as_ref()
             .map(|s| s.first_run_notice_ack())
@@ -574,6 +585,7 @@ impl ViewerApp {
             vr_tf_selected_stop: 0,
             vr_histogram_cache: None,
             selected_db_study: None,
+            db_sort: saved_db_sort,
             show_metadata_inspector: false,
             metadata_filter: String::new(),
             metadata_cache: None,

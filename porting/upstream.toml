@@ -1,0 +1,10 @@
+# The upstream project SekhmetX follows, and how far its changes have been reviewed.
+# `reviewed` is updated by: python3 tools/upstream.py mark-reviewed isix
+
+[upstream.isix]
+label = "IsiX"
+url = "https://github.com/ThalesMMS/IsiX-DICOM-Viewer-macOS"
+branch = "horos"
+# Last reviewed: IsiX 6.0.4. See porting/reports/2026-11-16-isix-6.0.4-review.md.
+reviewed = "087f2cd0f721a21f17840b911186fcd22a320160"
+reviewed_on = "2026-11-16"

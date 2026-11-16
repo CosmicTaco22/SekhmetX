@@ -30,6 +30,15 @@ const TOOLBAR_GROUPS: [ToolbarGroup; 7] = [
     ToolbarGroup::Cine,
 ];
 
+/// Slab mode name in the interface language (MIP and MinIP are the same in both).
+pub(crate) fn slab_label(mode: SlabMode, lang: crate::i18n::Lang) -> &'static str {
+    match (mode, lang) {
+        (SlabMode::Thin, crate::i18n::Lang::Es) => "Fino",
+        (SlabMode::Mean, crate::i18n::Lang::Es) => "Media",
+        _ => mode.label(),
+    }
+}
+
 impl ToolbarGroup {
     fn index(self) -> usize {
         match self {
@@ -949,7 +958,7 @@ impl ViewerApp {
                 if let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
                     let mut changed = false;
                     egui::ComboBox::from_id_salt("mpr_slab_mode")
-                        .selected_text(format!("{} {}", tr.slab_prefix, plane.slab_mode.label()))
+                        .selected_text(format!("{} {}", tr.slab_prefix, slab_label(plane.slab_mode, self.lang)))
                         .width(82.0)
                         .show_ui(ui, |ui| {
                             for m in [
@@ -958,23 +967,50 @@ impl ViewerApp {
                                 SlabMode::MinIp,
                                 SlabMode::Mean,
                             ] {
-                                if ui.selectable_value(&mut plane.slab_mode, m, m.label()).changed()
+                                if ui.selectable_value(&mut plane.slab_mode, m, slab_label(m, self.lang)).changed()
                                 {
                                     changed = true;
                                 }
                             }
                         });
-                    if plane.slab_mode != SlabMode::Thin
-                        && ui
+                    if plane.slab_mode != SlabMode::Thin {
+                        // Exponential scale (IsiX `ThickSlabSliderScale`): fine steps for thin
+                        // slabs, whole millimetres in between, thin end at the voxel size.
+                        // The thick end stays at 50 mm (see DEVIATIONS.md).
+                        let thin_end = self
+                            .viewport_volume(vp_idx)
+                            .map(|v| v.spacing.iter().copied().fold(f64::INFINITY, f64::min))
+                            .filter(|s| s.is_finite() && *s > 0.0)
+                            .unwrap_or(1.0)
+                            .min(1.0);
+                        let scale = crate::imaging::slab_scale::SlabSliderScale::new(thin_end, 50.0, true);
+                        let mut position = scale.position(plane.slab_thickness_mm);
+                        if ui
                             .add(
-                                egui::Slider::new(&mut plane.slab_thickness_mm, 1.0..=50.0)
-                                    .suffix(" mm")
-                                    .fixed_decimals(1),
+                                egui::Slider::new(&mut position, 0.0..=1.0)
+                                    .show_value(false)
+                                    .trailing_fill(true),
                             )
                             .changed()
                         {
+                            plane.slab_thickness_mm = scale.whole_thickness(position);
                             changed = true;
                         }
+                        let mut typed = plane.slab_thickness_mm;
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut typed)
+                                    .range(scale.minimum..=scale.maximum)
+                                    .speed(0.1)
+                                    .fixed_decimals(1)
+                                    .suffix(" mm"),
+                            )
+                            .changed()
+                        {
+                            plane.slab_thickness_mm = typed.clamp(scale.minimum, scale.maximum);
+                            changed = true;
+                        }
+                    }
                     if changed {
                         self.set_viewport_mpr_plane(vp_idx, plane, true);
                     }

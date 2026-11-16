@@ -1,4 +1,4 @@
-# Handoff: where the project stands (v0.5.4, 16 Nov 2026)
+# Handoff: where the project stands (v0.5.5, 16 Nov 2026)
 
 Written for whoever continues this, human or agent. It records what exists,
 the owner's standing rules, what was verified, what is unfinished, and what
@@ -70,7 +70,7 @@ These were set over the course of the project and are not all in `AGENTS.md`.
   file SekhmetX reads. Wait for the owner's design before starting it.
 - Dark theme is the default.
 
-## What exists (v0.5.4)
+## What exists (v0.5.5)
 
 - **2D viewer:** scroll, zoom, pan, rotate/flip, invert, cine, Horos window
   presets, 31 CLUTs, 22 convolution filters, GPU window/level with bilinear
@@ -151,15 +151,13 @@ Not verified:
   screenshots live in `docs/screenshots/` and must only show the synthetic
   phantom (`tools/testdata/`), never patient data.
 
-- **Docs out of date.** `AGENTS.md`, `GEMINI.md` and `README.md` still mention a
-  single `src/app.rs`, the `rdicom-viewer` binary and the `»` toolbar overflow
-  (replaced by wrapping in v0.4.3). `ROADMAP.md` checkboxes are stale.
-  `CHANGELOG.md` has no v0.5.1 entry.
-- **Upstream tracking half-removed.** `porting/upstream.toml` and
-  `.github/workflows/upstream.yml` were deleted in the v0.3.0 clean-up, but
-  `AGENTS.md` still tells agents to run `tools/upstream.py fetch` / `report`.
-  Whether those commands still work without the state file has not been
-  checked. The 17 IsiX commits after `a05084b6` were never reviewed.
+- **`ROADMAP.md` is stale** (its checkboxes predate most of the work);
+  `PORTING_MAP.md` and `CHANGELOG.md` are the current record.
+- **IsiX tracking** was restored in v0.5.5: `porting/upstream.toml` records
+  IsiX as reviewed up to 6.0.4 (`087f2cd0f721`), and the review is written up
+  in `porting/reports/2026-11-16-isix-6.0.4-review.md`, including what was
+  left unported and why. The weekly GitHub workflow that opened issues was not
+  restored. IsiX's history was rewritten upstream once; old hashes may vanish.
 - **Antivirus false positive** (Trend Micro flagged the unsigned exe). v0.5.1
   added Windows file metadata and stopped stripping symbols; code-signing or an
   installer is the lasting fix.
@@ -183,9 +181,9 @@ The owner was offered these after v0.5.1 and has not chosen yet. Ask him.
 5. 3D scissors/sculpting in volume rendering.
 6. App icon, code-signing and an installer.
 
-Housekeeping worth doing first: merge the lint fix into `master`, add the
-v0.5.1 changelog entry, and bring `AGENTS.md`, `GEMINI.md` and `README.md` in
-line with the current layout.
+Smaller candidates the IsiX 6.0.4 review turned up: live length ratios
+(`ROILengthRatio`), calibrating spacing from a known length
+(`RulerCalibration`), and ultrasound region calibration (`USRegion`).
 
 ## Working across sessions
 

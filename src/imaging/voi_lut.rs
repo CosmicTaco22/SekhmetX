@@ -1,7 +1,10 @@
 //! VOI LUT tables (PS 3.3 C.11.2), common on CR, DX and mammography.
 //!
 //! Follows IsiX `VOILUTMapping.swift`, Horos `VOILookupTable.swift` and
-//! `DCMPix+FrameLoading.swift` (`applyVOILUT`).
+//! `DCMPix+FrameLoading.swift` (`applyVOILUT`), as of IsiX 6.0.4: every frame
+//! is mapped (one lying wholly outside the table is uniform, not a sign of a
+//! corrupt table), a one-entry table is valid, and with a rescale the table is
+//! entered by the rescaled value (PS 3.3 C.11.2.1.1).
 
 use super::Window;
 
@@ -28,7 +31,7 @@ impl VoiLut {
         // Zero means 65536: the count is stored in 16 bits.
         let count = if descriptor[0] == 0 { 65_536 } else { descriptor[0] };
         let depth = descriptor[2];
-        if count <= 1 || count > 65_536 || !(8..=16).contains(&depth) {
+        if !(1..=65_536).contains(&count) || !(8..=16).contains(&depth) {
             return None;
         }
         let count = count as usize;
@@ -53,29 +56,27 @@ impl VoiLut {
     }
 
     /// Replaces each value by the table's entry for it: the first entry at or
-    /// below `first_mapped`, the last past the end. Values are read as 16-bit
-    /// samples (signed or not) and results truncated to 16 bits, as Horos does.
+    /// below `first_mapped`, the last past the end, truncated to 16 bits as
+    /// Horos does. Every value gets an entry; a table of no entry maps nothing.
     ///
-    /// Returns whether any value fell inside the table: a table that maps
-    /// nothing is taken for a corrupted one, and the caller should then keep
-    /// the original values.
-    pub fn apply(&self, values: &mut [f32], signed: bool) -> bool {
-        let number = self.entries.len() as i64;
-        let mut inside = false;
+    /// The table's input is the output of the modality LUT. With `rescaled`
+    /// false the values are stored samples, read as 16-bit (signed or not).
+    /// With `rescaled` true they already carry the rescale slope and intercept,
+    /// and each enters the table by its nearest integer.
+    pub fn apply(&self, values: &mut [f32], signed: bool, rescaled: bool) {
+        let Some(last) = self.entries.len().checked_sub(1) else {
+            return;
+        };
         for v in values.iter_mut() {
-            let raw = *v as i64;
-            let sample = if signed { raw as i16 as i64 } else { raw as u16 as i64 };
-            let mut index = sample - self.first_mapped as i64;
-            if index <= 0 {
-                index = 0;
-            } else if index >= number {
-                index = number - 1;
+            let value = if rescaled {
+                nearest_within_reach(*v as f64)
             } else {
-                inside = true;
-            }
-            *v = (self.entries[index as usize] as u16) as f32;
+                let raw = *v as i64;
+                if signed { raw as i16 as i64 } else { raw as u16 as i64 }
+            };
+            let index = (value - self.first_mapped as i64).clamp(0, last as i64) as usize;
+            *v = (self.entries[index] as u16) as f32;
         }
-        inside
     }
 
     /// The window that shows everything the table produces. The file's own
@@ -88,6 +89,21 @@ impl VoiLut {
     }
 }
 
+/// Past any first mapped value and any table: both are 16-bit quantities.
+const FARTHEST: i64 = 1 << 30;
+
+/// The integer a table is entered with for a rescaled value: the nearest one,
+/// held within what no table reaches. A rescale that gives no number gives 0.
+/// (IsiX `VOILUTMapping.modalityValue`.)
+fn nearest_within_reach(value: f64) -> i64 {
+    let value = value.round();
+    if value.is_nan() {
+        0
+    } else {
+        value.clamp(-(FARTHEST as f64), FARTHEST as f64) as i64
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,17 +112,70 @@ mod tests {
         VoiLut::new(&[4, first, 16], Some(&[100, 200, 300, 400]), None, true).unwrap()
     }
 
-    #[test]
-    fn values_below_take_the_first_entry_and_above_the_last() {
-        let mut values = [0.0, 10.0, 11.0, 12.0, 13.0, 99.0];
-        assert!(lut(10).apply(&mut values, false));
-        assert_eq!(values, [100.0, 100.0, 200.0, 300.0, 400.0, 400.0]);
+    /// IsiX `VOILUTMappingTests.mapped`: 16-bit samples through a table, with
+    /// an optional rescale applied first as the decoder does.
+    fn mapped(samples: &[i64], first: i64, table: &[u16], signed: bool, slope: f64, offset: f64) -> Vec<f32> {
+        let lut = VoiLut::new(&[table.len() as i64, first.rem_euclid(65_536), 16], Some(table), None, true).unwrap();
+        let rescaled = slope != 1.0 || offset != 0.0;
+        let mut values: Vec<f32> = samples
+            .iter()
+            .map(|&s| if rescaled { (s as f64 * slope + offset) as f32 } else { s as f32 })
+            .collect();
+        lut.apply(&mut values, signed, rescaled);
+        values
     }
 
     #[test]
-    fn a_table_that_maps_nothing_says_so() {
-        let mut values = [0.0, 5.0];
-        assert!(!lut(10).apply(&mut values, false));
+    fn values_below_take_the_first_entry_and_above_the_last() {
+        let mut values = [0.0, 10.0, 11.0, 12.0, 13.0, 99.0];
+        lut(10).apply(&mut values, false, false);
+        assert_eq!(values, [100.0, 100.0, 200.0, 300.0, 400.0, 400.0]);
+    }
+
+    // IsiX: aRescaledSampleEntersTheTableByItsRescaledValue
+    #[test]
+    fn a_rescaled_sample_enters_the_table_by_its_rescaled_value() {
+        let table = [1000, 1010, 1020, 1030];
+        // 2 x - 1024: the stored values 562, 563 and 564 are 100, 102 and 104.
+        assert_eq!(
+            mapped(&[0, 562, 563, 564, 4000], 100, &table, false, 2.0, -1024.0),
+            [1000.0, 1000.0, 1020.0, 1030.0, 1030.0]
+        );
+        // Signed samples and a negative first value: -3 and 1 are -1001 and -997.
+        assert_eq!(mapped(&[-3, 0, 1], -1000, &table, true, 1.0, -998.0), [1000.0, 1020.0, 1030.0]);
+        // The nearest integer: 100.4, 101.5 and 102.6.
+        assert_eq!(mapped(&[1004, 1015, 1026], 100, &table, false, 0.1, 0.0), [1000.0, 1020.0, 1030.0]);
+    }
+
+    // IsiX: aRescaleThatGivesNoNumberStaysWithinTheTable
+    #[test]
+    fn a_rescale_that_gives_no_number_stays_within_the_table() {
+        assert_eq!(nearest_within_reach(f64::NAN), 0);
+        assert!(nearest_within_reach(f64::INFINITY) > 1 << 20);
+        assert!(nearest_within_reach(f64::NEG_INFINITY) < -(1 << 20));
+        assert!(nearest_within_reach(60000.0 * 1e30) > 1 << 20);
+        assert_eq!(mapped(&[5], 0, &[1, 2, 3], false, 1e30, 0.0), [3.0]);
+    }
+
+    // IsiX: aFrameOnTheFirstEntryOrWhollyOutsideTheTableIsMapped
+    #[test]
+    fn a_frame_on_the_first_entry_or_wholly_outside_the_table_is_mapped() {
+        let table = [1000, 1010, 1020, 1030];
+        assert_eq!(mapped(&[100, 100, 100], 100, &table, false, 1.0, 0.0), [1000.0; 3]);
+        assert_eq!(mapped(&[0, 50, 99], 100, &table, false, 1.0, 0.0), [1000.0; 3]);
+        assert_eq!(mapped(&[104, 4095, 65535], 100, &table, false, 1.0, 0.0), [1030.0; 3]);
+    }
+
+    // IsiX: aTableOfOneEntryAnswersItForEveryValue
+    #[test]
+    fn a_table_of_one_entry_answers_it_for_every_value() {
+        assert_eq!(mapped(&[0, 300, 301, 65535], 300, &[777], false, 1.0, 0.0), [777.0; 4]);
+    }
+
+    // IsiX: signedSamplesBelowASignedFirstValue
+    #[test]
+    fn signed_samples_below_a_signed_first_value() {
+        assert_eq!(mapped(&[-3, -40, -2, -1, 7], -2, &[5, 6], true, 1.0, 0.0), [5.0, 5.0, 5.0, 6.0, 6.0]);
     }
 
     #[test]
@@ -114,7 +183,7 @@ mod tests {
         let lut = VoiLut::new(&[4, 65_534, 16], Some(&[1, 2, 3, 4]), None, true).unwrap();
         assert_eq!(lut.first_mapped, -2);
         let mut values = [-1.0, 0.0];
-        assert!(lut.apply(&mut values, true));
+        lut.apply(&mut values, true, false);
         assert_eq!(values, [2.0, 3.0]);
     }
 

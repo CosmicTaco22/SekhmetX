@@ -1106,6 +1106,36 @@ impl ViewerApp {
             }
         }
 
+        // Sort by the chosen column; ties keep a stable, predictable order (name, then date).
+        {
+            let (col, asc) = self.db_sort;
+            let images = |st: &crate::dicom_index::Study| -> usize {
+                st.series.iter().map(|s| s.slices.len()).sum()
+            };
+            let modality = |st: &crate::dicom_index::Study| -> String {
+                let mut v: Vec<&str> = st.series.iter().map(|s| s.modality.as_str()).collect();
+                v.sort_unstable();
+                v.dedup();
+                v.join("/")
+            };
+            matching_studies.sort_by(|&a, &b| {
+                let (sa, sb) = (&index.studies[a], &index.studies[b]);
+                let primary = match col {
+                    1 => sa.series.len().cmp(&sb.series.len()),
+                    2 => images(sa).cmp(&images(sb)),
+                    3 => sa.description.to_lowercase().cmp(&sb.description.to_lowercase()),
+                    4 => modality(sa).cmp(&modality(sb)),
+                    5 => sa.date.cmp(&sb.date),
+                    6 => sa.patient_id.cmp(&sb.patient_id),
+                    _ => sa.patient_name.to_lowercase().cmp(&sb.patient_name.to_lowercase()),
+                };
+                let primary = if asc { primary } else { primary.reverse() };
+                primary
+                    .then_with(|| sa.patient_name.to_lowercase().cmp(&sb.patient_name.to_lowercase()))
+                    .then_with(|| sb.date.cmp(&sa.date))
+            });
+        }
+
         let mut open_series: Option<(usize, usize)> = None;
         let mut tile_study: Option<usize> = None;
         let mut remove_uid: Option<String> = None;
@@ -1215,20 +1245,64 @@ impl ViewerApp {
                         egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 },
                         if dark { theme::RAISED } else { Color32::from_rgb(220, 222, 227) },
                     );
+                    // Click a header to sort by it; click again to reverse.
                     let mut x = hdr_rect.min.x + pad;
                     for (i, w) in cols.iter().enumerate() {
+                        let cell = Rect::from_min_max(
+                            pos2(x - 4.0, hdr_rect.min.y),
+                            pos2(x + w - 6.0, hdr_rect.max.y),
+                        );
+                        let resp = ui.interact(
+                            cell,
+                            ui.scope_id().with(("db_hdr", i)),
+                            Sense::click(),
+                        );
+                        let sorted = self.db_sort.0 == i;
+                        let color = if sorted || resp.hovered() {
+                            ui.visuals().strong_text_color()
+                        } else {
+                            theme::dim_text(ui)
+                        };
                         let (px, align) = if right_aligned[i] {
                             (x + w - 14.0, Align2::RIGHT_CENTER)
                         } else {
                             (x, Align2::LEFT_CENTER)
                         };
-                        ui.painter().text(
+                        let text_rect = ui.painter().text(
                             pos2(px, hdr_rect.center().y),
                             align,
                             headers[i],
                             FontId::proportional(11.0),
-                            theme::dim_text(ui),
+                            color,
                         );
+                        if sorted {
+                            // Small triangle: up = ascending, down = descending.
+                            let cx = if right_aligned[i] {
+                                text_rect.min.x - 8.0
+                            } else {
+                                text_rect.max.x + 8.0
+                            };
+                            let cy = hdr_rect.center().y;
+                            let d = if self.db_sort.1 { -1.0 } else { 1.0 };
+                            ui.painter().add(egui::Shape::convex_polygon(
+                                vec![
+                                    pos2(cx - 3.5, cy - 2.0 * d),
+                                    pos2(cx + 3.5, cy - 2.0 * d),
+                                    pos2(cx, cy + 2.5 * d),
+                                ],
+                                color,
+                                Stroke::NONE,
+                            ));
+                        }
+                        if resp.clicked() {
+                            self.db_sort = if sorted { (i, !self.db_sort.1) } else { (i, true) };
+                            if let Some(ref db) = self.db {
+                                let _ = db.set_setting(
+                                    "db_sort",
+                                    &format!("{i},{}", if self.db_sort.1 { 1 } else { 0 }),
+                                );
+                            }
+                        }
                         x += w;
                     }
 

@@ -186,6 +186,7 @@ pub(crate) fn parse_dicom_metadata(path: &Path) -> MetadataCache {
 
 impl ViewerApp {
     pub(crate) fn metadata_inspector_panel(&mut self, ui: &mut egui::Ui) {
+        let es = self.lang == crate::i18n::Lang::Es;
         let vp_idx = self.active_viewport;
         let slice_path = self
             .viewport_series(vp_idx)
@@ -194,7 +195,7 @@ impl ViewerApp {
         let series_title = self
             .viewport_series(vp_idx)
             .map(|s| format!("{} (Se {})", s.description, s.number))
-            .unwrap_or_else(|| "No active series".to_string());
+            .unwrap_or_else(|| (if es { "Ninguna serie activa" } else { "No active series" }).to_string());
 
         if let Some(ref path) = slice_path
             && self.metadata_cache.as_ref().map(|c| &c.path) != Some(path)
@@ -210,17 +211,17 @@ impl ViewerApp {
                 .map(|c| c.file_size_bytes as f64 / 1024.0)
                 .unwrap_or(0.0);
             ui.label(
-                egui::RichText::new(format!("Meta-Data: {series_title} ({size_kb:.0} KB)"))
+                egui::RichText::new(format!("{}: {series_title} ({size_kb:.0} KB)", if es { "Metadatos" } else { "Meta-Data" }))
                     .strong()
                     .size(12.5),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("✕").clicked() {
+                if crate::ui::icons::small_tool_button(ui, crate::ui::icons::Icon::Close, false).clicked() {
                     self.show_metadata_inspector = false;
                 }
                 if let Some(cache) = &self.metadata_cache
                     && !cache.entries.is_empty()
-                    && ui.small_button("Export Text").clicked()
+                    && ui.small_button(if es { "Exportar texto" } else { "Export text" }).clicked()
                     && let Some(save_path) = rfd::FileDialog::new()
                         .set_file_name("dicom_metadata.txt")
                         .save_file()
@@ -242,13 +243,19 @@ impl ViewerApp {
 
         // Search / Filter bar
         ui.horizontal(|ui| {
-            ui.label("🔍");
+            let (icon_rect, _) = ui.allocate_exact_size(egui::vec2(16.0, 22.0), egui::Sense::hover());
+            crate::ui::icons::paint(
+                ui.painter(),
+                egui::Rect::from_center_size(icon_rect.center(), egui::vec2(13.0, 13.0)),
+                crate::ui::icons::Icon::Search,
+                crate::ui::theme::dim_text(ui),
+            );
             ui.add(
                 egui::TextEdit::singleline(&mut self.metadata_filter)
-                    .hint_text("Search tag, field name, or value…")
+                    .hint_text(if es { "Buscar etiqueta, campo o valor…" } else { "Search tag, field name or value…" })
                     .desired_width(ui.available_width() - 60.0),
             );
-            if !self.metadata_filter.is_empty() && ui.small_button("Clear").clicked() {
+            if !self.metadata_filter.is_empty() && ui.small_button(if es { "Limpiar" } else { "Clear" }).clicked() {
                 self.metadata_filter.clear();
             }
         });
@@ -258,7 +265,7 @@ impl ViewerApp {
         let Some(cache) = &self.metadata_cache else {
             ui.centered_and_justified(|ui| {
                 ui.label(
-                    egui::RichText::new("Select a DICOM slice to inspect its tags.")
+                    egui::RichText::new(if es { "Seleccione una imagen para ver sus etiquetas DICOM." } else { "Select an image to inspect its DICOM tags." })
                         .color(Color32::from_gray(150)),
                 );
             });
@@ -284,7 +291,7 @@ impl ViewerApp {
             .collect();
 
         ui.label(
-            egui::RichText::new(format!("{} tags", filtered.len()))
+            egui::RichText::new(format!("{} {}", filtered.len(), if es { "etiquetas" } else { "tags" }))
                 .size(10.5)
                 .color(Color32::from_gray(145)),
         );
@@ -296,11 +303,11 @@ impl ViewerApp {
                     .striped(true)
                     .spacing([10.0, 3.0])
                     .show(ui, |ui| {
-                        ui.label(egui::RichText::new("Field Name").strong().size(11.0));
-                        ui.label(egui::RichText::new("Tag").strong().size(11.0));
+                        ui.label(egui::RichText::new(if es { "Campo" } else { "Field name" }).strong().size(11.0));
+                        ui.label(egui::RichText::new(if es { "Etiqueta" } else { "Tag" }).strong().size(11.0));
                         ui.label(egui::RichText::new("VR").strong().size(11.0));
-                        ui.label(egui::RichText::new("Size").strong().size(11.0));
-                        ui.label(egui::RichText::new("Content").strong().size(11.0));
+                        ui.label(egui::RichText::new(if es { "Tamaño" } else { "Size" }).strong().size(11.0));
+                        ui.label(egui::RichText::new(if es { "Contenido" } else { "Content" }).strong().size(11.0));
                         ui.end_row();
 
                         for entry in filtered {
@@ -323,7 +330,7 @@ impl ViewerApp {
                                     entry.tag_str, entry.name, entry.vr, entry.value
                                 ));
                             }
-                            name_resp.on_hover_text("Click to copy tag line");
+                            name_resp.on_hover_text(if es { "Clic para copiar esta línea" } else { "Click to copy this line" });
 
                             ui.label(
                                 egui::RichText::new(&entry.tag_str)

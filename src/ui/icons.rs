@@ -506,3 +506,41 @@ pub fn toggle_button(ui: &mut Ui, value: &mut bool, label: &str) -> Response {
     }
     resp
 }
+
+/// One option in a row of mutually exclusive choices (looks like a button, accent when chosen).
+pub fn choice(ui: &mut Ui, selected: bool, label: impl Into<egui::WidgetText>) -> Response {
+    ui.add(egui::Button::new(label).selected(selected))
+}
+
+/// Small dim heading that starts a section in a dialog.
+pub fn section_title(ui: &mut Ui, text: &str) {
+    ui.add_space(10.0);
+    ui.label(
+        egui::RichText::new(text.trim_end_matches(':').to_uppercase())
+            .size(10.5)
+            .strong()
+            .color(theme::dim_text(ui)),
+    );
+    ui.add_space(2.0);
+}
+
+/// A file-system path shown in an inset box, shortened in the middle if it is long.
+pub fn path_box(ui: &mut Ui, path: &str) {
+    let max_chars = 64;
+    let count = path.chars().count();
+    let shown = if count > max_chars {
+        let head: String = path.chars().take(24).collect();
+        let tail: String = path.chars().skip(count - (max_chars - 25)).collect();
+        format!("{head}…{tail}")
+    } else {
+        path.to_owned()
+    };
+    egui::Frame::new()
+        .fill(ui.visuals().extreme_bg_color)
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(8, 3))
+        .show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(shown).monospace().size(11.5)).selectable(true))
+                .on_hover_text(path);
+        });
+}

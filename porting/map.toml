@@ -61,7 +61,7 @@ name = "Colour tables, 3D presets, DICOM dictionaries"
 decision = "reuse"
 priority = 1
 progress = "partial"
-ported_from = "3e24831224b8"
+ported_from = "087f2cd0f721"
 rdicom = "src/imaging/clut.rs, src/imaging/clut_tables.rs"
 crates = "plist"
 notes = "All 31 Horos 2D colour lookup tables (26 .plist CLUTs + 5 procedural tables) ported and wired into GPU/CPU pipelines. 3D presets still to port."
@@ -87,7 +87,7 @@ priority = 0
 progress = "done"
 notes = "Glue between IsiX's old and new code. Rust needs none of it, but read it to find which module does the real work."
 paths = ['^IsiXLegacyBridge/', '^Horos/Sources/Adapters/']
-names = ['IsiX(Database|Network|Viewer)Adapter', 'HorosDCMFacade', 'HorosArchitectureAudit', 'HorosPlatformPolicy',
+names = ['AnyLanguage', 'IsiX(Database|Network|Viewer)Adapter', 'HorosDCMFacade', 'HorosArchitectureAudit', 'HorosPlatformPolicy',
          'HorosObjCException', 'MainActorCallbacks', 'DeferredCalls', 'ObservedThread', 'HorosBoundedTask']
 
 [[area]]
@@ -100,7 +100,7 @@ crates = "egui"
 notes = "Generic AppKit building blocks. Replaced by egui widgets; only copy their look where Horos users would notice."
 paths = ['^NSFont_OpenGL/',
          '^Nitrogen/']
-names = ['GLString', 'StringTexture', 'OpenGLScreenReader', 'ContextCleaner', 'DragMatrix(WithDelete)?', 'PlaceholderWindowController', 'OsiriXNotificationCenter', '(Static)?Schedul(er|able)', 'Survey',
+names = ['SliderValueBubble', 'TipMatrix', 'GLString', 'StringTexture', 'OpenGLScreenReader', 'ContextCleaner', 'DragMatrix(WithDelete)?', 'PlaceholderWindowController', 'OsiriXNotificationCenter', '(Static)?Schedul(er|able)', 'Survey',
          'NS[A-Z].*', 'My[A-Z].*', 'Dark(Box|Panel|Window)', 'KFSplitView', 'Button(AndText)?(Cell|Field)', 'ImageAndTextCell',
          'PrettyCell', 'MiddleAlignedTextFieldCell', 'OnOffSwitchControl(Cell)?', 'HorosModernControls', 'HorosAlertPanel',
          'ModalAlertPanel', 'HorosCellSlider', 'DNDArrayController', 'ContextMenuPruning', 'NativeFilterMenus',
@@ -172,7 +172,7 @@ name = "Geometry: vectors, planes, patient coordinates, Bezier paths"
 decision = "port"
 priority = 1
 progress = "partial"
-ported_from = "3e24831224b8"
+ported_from = "087f2cd0f721"
 rdicom = "src/geometry/ (vector3, line3, plane3, transform3d, bezier, orientation, image_plane)"
 notes = "Ported IsiXGeometry (Vector3, Line3, Plane3, AffineTransform3D, PlanarGeometry, PackedVectors, BezierCore) and IsiXImaging geometry (ImagePlaneGeometry, ImagePlaneCoordinates, PlaneGeometry, LineGeometry, ViewTransform, ViewportState, OrientationLetters) with unit tests."
 paths = ['^Modules/IsiXGeometry/', '^Modules/IsiXImaging/(Sources|Tests)/(Geometry|ViewGeometry)/']
@@ -185,7 +185,7 @@ name = "Pixel pipeline: frame loading, rescale, window/level, VOI LUT, overlays,
 decision = "port"
 priority = 1
 progress = "partial"
-ported_from = "3e24831224b8"
+ported_from = "087f2cd0f721"
 rdicom = "src/imaging/ (window, voi_lut, defaults, photometry, clut, clut_tables, convolution), src/frame.rs, src/loader.rs"
 notes = "Ported with IsiX's tests: requested/full window, linear and colour windowing, VOI LUT tables, default-window order, MONOCHROME1, ColorLookupTable, ColourTableState, ColourTableBook, 31 factory CLUTs, ImageConvolution, SeriesConvolution, ConvolutionKernelBook, 22 factory 2D convolution presets, and series mini-thumbnails."
 paths = ['^Modules/IsiXImaging/(Sources|Tests)/BufferOperations/(?!PETSUV|SUV|T1|T2|SyntheticDiffusion|BValue)',
@@ -202,12 +202,12 @@ name = "2D viewer: viewport, tools, scrolling, cine, annotations, layouts, sync,
 decision = "rebuild"
 priority = 1
 progress = "partial"
-ported_from = "3e24831224b8"
+ported_from = "aceba6ac9898"
 rdicom = "src/app.rs, src/gpu_view.rs, src/navigation.rs, src/imaging/drag.rs, src/imaging/presets.rs"
 crates = "egui, wgpu"
 notes = "Multi-series visual square-grid tiling picker (1x1..4x4), SliceSynchronizer (3D position, slice location, relative) + cross-study 6-DOF 3D rigid sync, ReferenceLines (3D scout/cut lines), OrientationLetters (A/P/R/L/S/I), GPU/CPU CLUTs, 22 Horos convolution filters, rotation/flip, calibrated scale bar, scrubber bar, and Horos presets."
 paths = ['^Modules/IsiXImaging/(Sources|Tests)/(Viewer(?!Fusion|Reconstruction|Export)[A-Za-z]*|View(Input|Drawing|Capture|Series|Presentation)|Annotations|SeriesOperations)/']
-names = ['Loupe(Controller|View|Window)', 'HangingProtocolController',
+names = ['SeriesRestoreCopies', 'Loupe(Controller|View|Window)', 'HangingProtocolController',
          'DCMView', 'DCMViewSettings', 'DCMCursor', 'ViewerController', 'ViewerControllerStorage', 'CinePlayback',
          'ImageNavigationSlider', 'MagnifierPresentation', 'PreciseMouse', 'ScrollDirection', 'ScrollPositionPreview.*',
          'ToolModeCapability', 'OsiriXToolbar', 'ViewerToolbarItem.*', 'Annotation(Overlay|Level|Presentation)', 'AnnotationsPopUp',
@@ -228,7 +228,7 @@ name = "ROIs and measurements: length, angle, ellipse, polygon, brush, statistic
 decision = "port"
 priority = 1
 progress = "partial"
-ported_from = "3e24831224b8"
+ported_from = "087f2cd0f721"
 rdicom = "src/roi/ (geometry, statistics, raster, mod), src/app.rs"
 notes = "Ported IsiXROI (ROIPlanarGeometry, ROIBoundingBox, ROIDragConstraint, ROISpline, ROIPixelStatistics, ROIValueStatistics, CalciumScoring, ROILengthRatio, ROIRasterConversion, ROIScanline, ROIPolygonClip, ROIPolygonFill, ROIMasks) with 22 unit tests, SQLite ROI persistence (`rois` table), `--roi` CLI comparison mode, and interactive Length, Angle, Oval/Ellipse, Rectangle, Closed Polygon, Freehand Pencil (with spline smoothing), and 2D Point/Probe ROIs."
 paths = ['^Modules/IsiXROI/']
@@ -242,7 +242,7 @@ name = "Local database and import: indexing, folders, archives, incoming, storag
 decision = "port"
 priority = 1
 progress = "partial"
-ported_from = "3e24831224b8"
+ported_from = "aceba6ac9898"
 rdicom = "src/dicom_index.rs, src/db.rs"
 crates = "rusqlite, zip"
 notes = "SQLite WAL v2 database with schema migrations, persistent managed library (`SekhmetX/Studies/<uid>/`) with Ask/Always/Never ZIP copy policy, disk usage reporting, missing-file flagging (`⚠ [files missing]`), Clear/Remove study, temporary non-destructive .zip archive extraction, dominant anatomical plane classification (AX/COR/SAG/OBL), and acquisition-time auto-grouping of multi-plane reconstructions."
@@ -267,7 +267,7 @@ name = "Study browser: study list, series thumbnails, previews, albums, search, 
 decision = "rebuild"
 priority = 1
 progress = "partial"
-ported_from = "3e24831224b8"
+ported_from = "aceba6ac9898"
 rdicom = "src/app.rs (browser panel), src/dicom_index.rs"
 notes = "Horos-style study browser with search filter bar, modality pills (All/CT/MR/US/DX/PT), live rendered 38x38 DICOM series mini-thumbnails, auto-detected MPR acquisition groups (AX/COR/SAG), and quick multi-series comparison tiling buttons."
 paths = ['^Modules/IsiXImaging/(Sources|Tests)/ViewerSeriesList/']
@@ -312,12 +312,12 @@ name = "MPR: orthogonal and oblique reslicing, thick slab MIP/MinIP"
 decision = "rebuild"
 priority = 2
 progress = "partial"
-ported_from = "3e24831224b8"
+ported_from = "aceba6ac9898"
 rdicom = "src/volume.rs, src/app.rs"
 crates = "wgpu, rayon"
 notes = "In-place single-viewport 3D MPR (Axial/Coronal/Sagittal/Oblique 3D trackball rotation), hybrid multi-series (AX/COR/SAG) tri-planar resolution fusion, and Thick-Slab MIP/MinIP/Mean ray-marched projections."
 paths = ['^Modules/IsiXImaging/(Sources|Tests)/ViewerReconstruction/']
-names = ['MPR.*', 'OrthogonalMPR(Controller|View|Viewer)', 'OrthogonalReslice', 'ResliceCacheLayout', 'ThickSlab(Controller|Range|SliderScale)',
+names = ['Reconstruction(CrossDrag|UndoEntries)', 'ThickSlabSliderHost', 'MPR.*', 'OrthogonalMPR(Controller|View|Viewer)', 'OrthogonalReslice', 'ResliceCacheLayout', 'ThickSlab(Controller|Range|SliderScale)',
          'HorosThickSlabSlider', 'ReconstructionPlanePreferences']
 
 [[area]]
@@ -345,7 +345,7 @@ name = "Anonymization and export (DICOM, images, movies)"
 decision = "port"
 priority = 2
 progress = "partial"
-ported_from = "3e24831224b8"
+ported_from = "aceba6ac9898"
 rdicom = "src/export.rs, src/ui/toolbar.rs, src/app.rs"
 notes = "PNG slice/series export with active presentation (WL/CLUT/invert/convolution) and Horos-aligned DICOM de-identification (private tag stripping, identifier scrubbing, consistent UID remapping)."
 paths = ['^Modules/IsiXImaging/(Sources|Tests)/ViewerExport/']
@@ -404,7 +404,7 @@ name = "Curved MPR (CPR) and straightened views"
 decision = "rebuild"
 priority = 3
 progress = "todo"
-names = ['CurvedMPR', 'Centerline',
+names = ['CurvedMPRVesselTrace', 'CurvedPathLibrary', 'Stenosis(Capture|Summary)', 'CurvedMPR', 'Centerline',
          'CPR.*', 'CurvedMPRPath']
 
 [[area]]
@@ -413,7 +413,7 @@ name = "Segmentation, registration, subtraction, SEG objects"
 decision = "port"
 priority = 3
 progress = "partial"
-ported_from = "3e24831224b8"
+ported_from = "aceba6ac9898"
 rdicom = "src/volume.rs (RigidTransform3D), src/app.rs"
 notes = "Automatic 6-DOF 3D rigid registration (foreground centroid + multi-scale Normalized Cross-Correlation) and manual 3D lock for cross-study comparison."
 paths = ['^MSRG/',

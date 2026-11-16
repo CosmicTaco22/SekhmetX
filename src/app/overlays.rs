@@ -244,7 +244,7 @@ impl ViewerApp {
         };
         let pad = 8.0;
         let bottom_pad = if Self::viewport_scrubber_rects(view, self.viewport_slice_count(vp_idx)).is_some() {
-            34.0
+            42.0
         } else {
             pad
         };
@@ -804,7 +804,13 @@ impl ViewerApp {
                 .mpr_plane
                 .as_ref()
                 .filter(|p| p.slab_mode != SlabMode::Thin)
-                .map(|p| format!(" · {} {:.1} mm", p.slab_mode.label(), p.slab_thickness_mm))
+                .map(|p| {
+                    format!(
+                        " · {} {:.1} mm",
+                        crate::ui::toolbar::slab_label(p.slab_mode, self.lang),
+                        p.slab_thickness_mm
+                    )
+                })
                 .unwrap_or_default();
             let reg_corr = vp.selected.and_then(|sel| {
                 self.registrations

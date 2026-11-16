@@ -330,19 +330,18 @@ pub fn load_frame(path: &Path, frame: u32) -> Result<Frame> {
             .and_then(|w| w.first().copied())
             .map(|w| Window::new(w.center as f32, w.width as f32));
 
-        // Horos applies a VOI LUT table only where the rescale is the identity:
-        // the table's input is the stored value, and with a rescale in the way
-        // the index would be wrong.
-        if slope == 1.0 && intercept == 0.0
-            && let Some(lut) = read_voi_lut(&obj, signed) {
-                let original = values.clone();
-                if lut.apply(&mut values, signed) {
-                    voi_lut_applied = true;
-                    stored_window = Some(lut.window());
-                } else {
-                    values = original; // a table that maps nothing is corrupt
-                }
-            }
+        // PS 3.3 C.11.2.1.1: the table's input is the output of the modality
+        // LUT, so with a rescale the values (already rescaled by the decoder)
+        // enter it by their nearest integer. Every frame is mapped; what the
+        // image holds afterwards is the table's output, with no rescale left.
+        // (IsiX 6.0.4 `DCMPix+FrameLoading.applyVOILUT`.)
+        let rescaled = slope != 1.0 || intercept != 0.0;
+        if let Some(lut) = read_voi_lut(&obj, signed) {
+            lut.apply(&mut values, signed, rescaled);
+            voi_lut_applied = true;
+            stored_window = Some(lut.window());
+        }
+        let (slope, intercept) = if voi_lut_applied { (1.0, 0.0) } else { (slope, intercept) };
 
         let full = window::full(&values, false);
         let bits = defaults::stored_range(
