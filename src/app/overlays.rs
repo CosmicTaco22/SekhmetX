@@ -769,8 +769,10 @@ impl ViewerApp {
         }
         text(view.left_top() + vec2(pad, pad), Align2::LEFT_TOP, tl.join("\n"));
 
-        // Top-Right: Patient & Study / Series identity
-        if let Some(study) = self.viewport_study(vp_idx) {
+        // Top-Right: Patient & Study / Series identity (hidden during anonymized Ctrl+C capture)
+        if !self.copy_anonymize_frame
+            && let Some(study) = self.viewport_study(vp_idx)
+        {
             let mut tr = vec![study.patient_name.clone()];
             let mut id_line = Vec::new();
             if !study.patient_id.is_empty() {
@@ -852,7 +854,8 @@ impl ViewerApp {
 
         // Bottom-Right: Acquisition date & application stamp
         let mut br = Vec::new();
-        if let Some(study) = self.viewport_study(vp_idx)
+        if !self.copy_anonymize_frame
+            && let Some(study) = self.viewport_study(vp_idx)
             && !study.date.is_empty()
         {
             br.push(study.date.clone());

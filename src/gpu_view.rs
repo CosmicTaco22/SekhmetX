@@ -327,6 +327,258 @@ struct Uniforms3D {
     vox_slab_delta: [f32; 4],
 }
 
+const VR_SHADER: &str = r#"
+struct UniformsVr {
+    low: f32,
+    inv_span: f32,
+    high: f32,
+    invert: u32,
+    use_clut: u32,
+    vr_mip: u32,
+    vol_w: u32,
+    vol_h: u32,
+    vol_d: u32,
+    vr_shading: u32,
+    voxel_scale: f32,
+    voxel_offset: f32,
+    rect_min: vec2<f32>,
+    rect_size: vec2<f32>,
+    half_ext: vec4<f32>,
+    cam_right: vec4<f32>,
+    cam_up: vec4<f32>,
+    cam_fwd: vec4<f32>,
+    zoom: f32,
+    ambient: f32,
+    diffuse: f32,
+    specular: f32,
+    clip_min: vec4<f32>,
+    clip_max: vec4<f32>,
+    bg_color: vec4<f32>,
+}
+
+@group(0) @binding(0) var vol_tex: texture_3d<i32>;
+@group(0) @binding(1) var<uniform> u: UniformsVr;
+@group(0) @binding(2) var clut_tex: texture_2d<f32>;
+
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+}
+
+@vertex
+fn vs_main(@builtin(vertex_index) vid: u32) -> VsOut {
+    var out: VsOut;
+    let x = f32((vid << 1u) & 2u) * 2.0 - 1.0;
+    let y = f32(vid & 2u) * 2.0 - 1.0;
+    out.pos = vec4<f32>(x, y, 0.0, 1.0);
+    return out;
+}
+
+fn load_voxel(ix: i32, iy: i32, iz: i32) -> f32 {
+    let cx = clamp(ix, 0, i32(u.vol_w) - 1);
+    let cy = clamp(iy, 0, i32(u.vol_h) - 1);
+    let cz = clamp(iz, 0, i32(u.vol_d) - 1);
+    let q = textureLoad(vol_tex, vec3<i32>(cx, cy, cz), 0).r;
+    return f32(q) * u.voxel_scale + u.voxel_offset;
+}
+
+fn sample_trilinear(uvw: vec3<f32>) -> f32 {
+    let fx = uvw.x * f32(u.vol_w) - 0.5;
+    let fy = uvw.y * f32(u.vol_h) - 0.5;
+    let fz = uvw.z * f32(u.vol_d) - 0.5;
+    let x0 = i32(floor(fx));
+    let y0 = i32(floor(fy));
+    let z0 = i32(floor(fz));
+    let tx = fx - f32(x0);
+    let ty = fy - f32(y0);
+    let tz = fz - f32(z0);
+
+    let c000 = load_voxel(x0, y0, z0);
+    let c100 = load_voxel(x0 + 1, y0, z0);
+    let c010 = load_voxel(x0, y0 + 1, z0);
+    let c110 = load_voxel(x0 + 1, y0 + 1, z0);
+    let c001 = load_voxel(x0, y0, z0 + 1);
+    let c101 = load_voxel(x0 + 1, y0, z0 + 1);
+    let c011 = load_voxel(x0, y0 + 1, z0 + 1);
+    let c111 = load_voxel(x0 + 1, y0 + 1, z0 + 1);
+
+    let c00 = mix(c000, c100, tx);
+    let c10 = mix(c010, c110, tx);
+    let c01 = mix(c001, c101, tx);
+    let c11 = mix(c011, c111, tx);
+    let c0 = mix(c00, c10, ty);
+    let c1 = mix(c01, c11, ty);
+    return mix(c0, c1, tz);
+}
+
+fn intersect_box(ro: vec3<f32>, rd: vec3<f32>, bmin: vec3<f32>, bmax: vec3<f32>) -> vec2<f32> {
+    let inv_rd = 1.0 / select(rd, vec3<f32>(1e-6), abs(rd) < vec3<f32>(1e-6));
+    let t0 = (bmin - ro) * inv_rd;
+    let t1 = (bmax - ro) * inv_rd;
+    let tmin = max(max(min(t0.x, t1.x), min(t0.y, t1.y)), min(t0.z, t1.z));
+    let tmax = min(min(max(t0.x, t1.x), max(t0.y, t1.y)), max(t0.z, t1.z));
+    return vec2<f32>(tmin, tmax);
+}
+
+fn sample_gradient(uvw: vec3<f32>) -> vec3<f32> {
+    let step = vec3<f32>(
+        1.0 / max(f32(u.vol_w), 1.0),
+        1.0 / max(f32(u.vol_h), 1.0),
+        1.0 / max(f32(u.vol_d), 1.0)
+    );
+    let gx = sample_trilinear(uvw + vec3<f32>(step.x, 0.0, 0.0))
+           - sample_trilinear(uvw - vec3<f32>(step.x, 0.0, 0.0));
+    let gy = sample_trilinear(uvw + vec3<f32>(0.0, step.y, 0.0))
+           - sample_trilinear(uvw - vec3<f32>(0.0, step.y, 0.0));
+    let gz = sample_trilinear(uvw + vec3<f32>(0.0, 0.0, step.z))
+           - sample_trilinear(uvw - vec3<f32>(0.0, 0.0, step.z));
+    return vec3<f32>(gx, gy, gz) / max(u.half_ext.xyz, vec3<f32>(1e-4));
+}
+
+fn sample_tf(t_in: f32) -> vec4<f32> {
+    var t = clamp(t_in, 0.0, 1.0);
+    if (u.invert != 0u) {
+        t = 1.0 - t;
+    }
+    let fidx = t * 255.0;
+    let i0 = i32(floor(fidx));
+    let i1 = min(i0 + 1, 255);
+    let frac = fidx - f32(i0);
+    let c0 = textureLoad(clut_tex, vec2<i32>(i0, 0), 0);
+    let c1 = textureLoad(clut_tex, vec2<i32>(i1, 0), 0);
+    return mix(c0, c1, frac);
+}
+
+fn map_mip_color(t_in: f32) -> vec3<f32> {
+    var t = clamp(t_in, 0.0, 1.0);
+    if (u.invert != 0u) {
+        t = 1.0 - t;
+    }
+    if (u.use_clut != 0u) {
+        let idx = i32(round(t * 255.0));
+        return textureLoad(clut_tex, vec2<i32>(idx, 0), 0).rgb;
+    }
+    return vec3<f32>(t, t, t);
+}
+
+@fragment
+fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
+    let ndc = (frag_pos.xy - u.rect_min) / u.rect_size;
+    if (ndc.x < 0.0 || ndc.x > 1.0 || ndc.y < 0.0 || ndc.y > 1.0) {
+        discard;
+    }
+    let aspect = u.rect_size.x / max(u.rect_size.y, 1.0);
+    let sx = (ndc.x * 2.0 - 1.0) * aspect / max(u.zoom, 0.1);
+    let sy = -(ndc.y * 2.0 - 1.0) / max(u.zoom, 0.1);
+
+    // Orthographic ray-casting from camera plane at distance 1.5
+    let ro = u.cam_right.xyz * (sx * 0.65) + u.cam_up.xyz * (sy * 0.65) - u.cam_fwd.xyz * 1.5;
+    let rd = normalize(u.cam_fwd.xyz);
+
+    let ext = u.half_ext.xyz;
+    let cmin = clamp(u.clip_min.xyz, vec3<f32>(0.0), vec3<f32>(0.99));
+    let cmax = clamp(u.clip_max.xyz, cmin + vec3<f32>(0.01), vec3<f32>(1.0));
+    let bmin = mix(-ext, ext, cmin);
+    let bmax = mix(-ext, ext, cmax);
+    let hit = intersect_box(ro, rd, bmin, bmax);
+    let t_start = max(hit.x, 0.0);
+    let t_end = hit.y;
+    if (t_end <= t_start) {
+        return vec4<f32>(u.bg_color.rgb, 1.0);
+    }
+
+    let steps = 192;
+    let dt = (t_end - t_start) / f32(steps);
+    let inv_two_ext = 1.0 / max(2.0 * ext, vec3<f32>(1e-5));
+
+    if (u.vr_mip != 0u) {
+        var max_v = -1e9;
+        for (var i = 0; i < steps; i = i + 1) {
+            let t = t_start + (f32(i) + 0.5) * dt;
+            let p = ro + rd * t;
+            let uvw = (p + ext) * inv_two_ext;
+            let val = sample_trilinear(uvw);
+            if (val > max_v) {
+                max_v = val;
+            }
+        }
+        let norm = clamp((max_v - u.low) * u.inv_span, 0.0, 1.0);
+        let col = map_mip_color(norm);
+        return vec4<f32>(col, 1.0);
+    }
+
+    var accum_rgb = vec3<f32>(0.0);
+    var accum_a = 0.0;
+    let density = dt * 48.0;
+    let view_dir = -rd;
+    let light_dir = normalize(u.cam_right.xyz * 0.45 + u.cam_up.xyz * 0.65 - rd * 0.60);
+    for (var i = 0; i < steps; i = i + 1) {
+        let t = t_start + (f32(i) + 0.5) * dt;
+        let p = ro + rd * t;
+        let uvw = (p + ext) * inv_two_ext;
+        let val = sample_trilinear(uvw);
+        let norm = clamp((val - u.low) * u.inv_span, 0.0, 1.0);
+        let tf = sample_tf(norm);
+        let a = 1.0 - pow(max(1.0 - tf.a, 0.0), density);
+        if (a > 0.002) {
+            var sample_rgb = tf.rgb;
+            if (u.vr_shading != 0u && tf.a > 0.02) {
+                let g = sample_gradient(uvw);
+                let g_len = length(g);
+                if (g_len > 1.0) {
+                    var n = g / g_len;
+                    if (dot(n, view_dir) < 0.0) {
+                        n = -n;
+                    }
+                    let diff = max(dot(n, light_dir), 0.0);
+                    let half_vec = normalize(light_dir + view_dir);
+                    let spec = pow(max(dot(n, half_vec), 0.0), 28.0);
+                    let lit = tf.rgb * (u.ambient + u.diffuse * diff) + vec3<f32>(u.specular * spec);
+                    let grad_w = smoothstep(5.0, 60.0, g_len);
+                    sample_rgb = mix(tf.rgb, clamp(lit, vec3<f32>(0.0), vec3<f32>(1.0)), grad_w);
+                }
+            }
+            accum_rgb = accum_rgb + (1.0 - accum_a) * sample_rgb * a;
+            accum_a = accum_a + (1.0 - accum_a) * a;
+            if (accum_a >= 0.985) {
+                break;
+            }
+        }
+    }
+    let final_rgb = accum_rgb + (1.0 - accum_a) * u.bg_color.rgb;
+    return vec4<f32>(final_rgb, 1.0);
+}
+"#;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct UniformsVr {
+    low: f32,
+    inv_span: f32,
+    high: f32,
+    invert: u32,
+    use_clut: u32,
+    vr_mip: u32,
+    vol_w: u32,
+    vol_h: u32,
+    vol_d: u32,
+    vr_shading: u32,
+    voxel_scale: f32,
+    voxel_offset: f32,
+    rect_min: [f32; 2],
+    rect_size: [f32; 2],
+    half_ext: [f32; 4],
+    cam_right: [f32; 4],
+    cam_up: [f32; 4],
+    cam_fwd: [f32; 4],
+    zoom: f32,
+    ambient: f32,
+    diffuse: f32,
+    specular: f32,
+    clip_min: [f32; 4],
+    clip_max: [f32; 4],
+    bg_color: [f32; 4],
+}
+
 struct UploadedSlice {
     key: SliceKey,
     view: wgpu::TextureView,
@@ -353,6 +605,8 @@ struct ViewportGpu3DSlot {
     bind_group: Option<wgpu::BindGroup>,
     bound_volume: Option<u64>,
     uploaded_clut: Option<ColorLookupTable>,
+    uploaded_vr_lut_hash: Option<u64>,
+    uploaded_vr_mode: Option<bool>,
 }
 
 fn upload_clut_if_changed(
@@ -418,10 +672,12 @@ struct Resources {
     layout: wgpu::BindGroupLayout,
     pipeline_3d: wgpu::RenderPipeline,
     layout_3d: wgpu::BindGroupLayout,
+    pipeline_vr: wgpu::RenderPipeline,
     slices: Vec<UploadedSlice>,
     volumes: Vec<UploadedVolume>,
     slots: HashMap<usize, ViewportGpuSlot>,
     slots_3d: HashMap<usize, ViewportGpu3DSlot>,
+    slots_vr: HashMap<usize, ViewportGpu3DSlot>,
 }
 
 impl Resources {
@@ -500,7 +756,7 @@ impl Resources {
 
         while self.volumes.len() >= MAX_CACHED_VOLUMES {
             let evicted = self.volumes.remove(0);
-            for slot in self.slots_3d.values_mut() {
+            for slot in self.slots_3d.values_mut().chain(self.slots_vr.values_mut()) {
                 if slot.bound_volume == Some(evicted.gpu_id) {
                     slot.bind_group = None;
                     slot.bound_volume = None;
@@ -692,6 +948,32 @@ pub fn install(cc: &eframe::CreationContext<'_>) -> Option<GpuInfo> {
         cache: None,
     });
 
+    let shader_vr = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("rdicom-volume-vr"),
+        source: wgpu::ShaderSource::Wgsl(VR_SHADER.into()),
+    });
+    let pipeline_vr = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("rdicom-volume-vr-rp"),
+        layout: Some(&pipeline_layout_3d),
+        vertex: wgpu::VertexState {
+            module: &shader_vr,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader_vr,
+            entry_point: Some("fs_main"),
+            targets: &[Some(rs.target_format.into())],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+
     let limits = device.limits();
     let max_texture = limits.max_texture_dimension_2d;
     let max_texture_3d = limits.max_texture_dimension_3d;
@@ -704,10 +986,12 @@ pub fn install(cc: &eframe::CreationContext<'_>) -> Option<GpuInfo> {
             layout,
             pipeline_3d,
             layout_3d,
+            pipeline_vr,
             slices: Vec::with_capacity(MAX_CACHED_TEXTURES),
             volumes: Vec::with_capacity(MAX_CACHED_VOLUMES),
             slots: HashMap::new(),
             slots_3d: HashMap::new(),
+            slots_vr: HashMap::new(),
         });
     Some(GpuInfo {
         max_texture,
@@ -943,6 +1227,8 @@ impl egui_wgpu::CallbackTrait for VolumeMprCallback {
                 bind_group: None,
                 bound_volume: None,
                 uploaded_clut: None,
+                uploaded_vr_lut_hash: None,
+                uploaded_vr_mode: None,
             }
         });
 
@@ -1064,6 +1350,264 @@ impl egui_wgpu::CallbackTrait for VolumeMprCallback {
             return;
         };
         render_pass.set_pipeline(&res.pipeline_3d);
+        render_pass.set_bind_group(0, bg, &[]);
+        render_pass.draw(0..3, 0..1);
+    }
+}
+
+/// GPU 3D Volume Rendering / MIP ray-caster callback.
+pub struct VolumeVrCallback {
+    pub viewport_id: usize,
+    pub volume: Arc<crate::volume::Volume3D>,
+    pub rect_px: Rect,
+    pub window: Window,
+    pub invert: bool,
+    pub clut: Option<ColorLookupTable>,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub zoom: f32,
+    pub vr_mip: bool,
+    pub vr_tf_lut: [u8; 256 * 4],
+    pub vr_shading: bool,
+    pub vr_ambient: f32,
+    pub vr_diffuse: f32,
+    pub vr_specular: f32,
+    pub vr_clip_min: [f32; 3],
+    pub vr_clip_max: [f32; 3],
+    pub vr_bg_color: [f32; 3],
+    pub rotation_deg: f32,
+    pub x_flipped: bool,
+    pub y_flipped: bool,
+}
+
+impl VolumeVrCallback {
+    pub fn into_shape(self, clip_rect: Rect) -> Shape {
+        Shape::Callback(egui_wgpu::Callback::new_paint_callback(clip_rect, self))
+    }
+}
+
+impl egui_wgpu::CallbackTrait for VolumeVrCallback {
+    fn prepare(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        _egui_encoder: &mut wgpu::CommandEncoder,
+        resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let Some(res) = resources.get_mut::<Resources>() else {
+            return Vec::new();
+        };
+
+        res.get_or_upload_volume(device, queue, &self.volume);
+
+        let slot = res.slots_vr.entry(self.viewport_id).or_insert_with(|| {
+            let uniform_buf = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("rdicom-volume-vr-uniform"),
+                size: std::mem::size_of::<UniformsVr>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            let (clut_tex, clut_view) = create_clut_texture(device);
+            ViewportGpu3DSlot {
+                uniform_buf,
+                clut_tex,
+                clut_view,
+                bind_group: None,
+                bound_volume: None,
+                uploaded_clut: None,
+                uploaded_vr_lut_hash: None,
+                uploaded_vr_mode: None,
+            }
+        });
+
+        if self.vr_mip {
+            if slot.uploaded_vr_mode != Some(true) {
+                slot.uploaded_clut = None;
+                slot.uploaded_vr_lut_hash = None;
+                slot.uploaded_vr_mode = Some(true);
+            }
+            upload_clut_if_changed(
+                queue,
+                &slot.clut_tex,
+                &mut slot.uploaded_clut,
+                self.clut.as_ref(),
+            );
+        } else {
+            let h = crate::imaging::vr_presets::lut_hash(&self.vr_tf_lut);
+            if slot.uploaded_vr_mode != Some(false) || slot.uploaded_vr_lut_hash != Some(h) {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &slot.clut_tex,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &self.vr_tf_lut,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(256 * 4),
+                        rows_per_image: Some(1),
+                    },
+                    wgpu::Extent3d {
+                        width: 256,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                slot.uploaded_vr_lut_hash = Some(h);
+                slot.uploaded_vr_mode = Some(false);
+            }
+        }
+
+        if (slot.bound_volume != Some(self.volume.gpu_id) || slot.bind_group.is_none())
+            && let Some(uploaded) = res.volumes.iter().find(|v| v.gpu_id == self.volume.gpu_id)
+        {
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("rdicom-volume-vr-bg"),
+                layout: &res.layout_3d,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&uploaded.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: slot.uniform_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::TextureView(&slot.clut_view),
+                    },
+                ],
+            });
+            slot.bind_group = Some(bg);
+            slot.bound_volume = Some(self.volume.gpu_id);
+        }
+
+        let phys_x = (self.volume.width as f32 * self.volume.spacing[0] as f32).max(1.0);
+        let phys_y = (self.volume.height as f32 * self.volume.spacing[1] as f32).max(1.0);
+        let phys_z = (self.volume.depth as f32 * self.volume.spacing[2] as f32).max(1.0);
+        let max_dim = phys_x.max(phys_y).max(phys_z);
+        let half_ext = [
+            0.5 * phys_x / max_dim,
+            0.5 * phys_y / max_dim,
+            0.5 * phys_z / max_dim,
+            0.0,
+        ];
+
+        // Build anatomical patient-LPS basis in voxel space:
+        // Patient Left (+X_lps), Anterior (-Y_lps), Superior (+Z_lps = head-up).
+        let norm3 = |v: [f32; 3]| -> [f32; 3] {
+            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-5);
+            [v[0] / l, v[1] / l, v[2] / l]
+        };
+        let cross3 = |a: [f32; 3], b: [f32; 3]| -> [f32; 3] {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        let v_left = norm3([
+            self.volume.row_dir[0] as f32,
+            self.volume.col_dir[0] as f32,
+            self.volume.slice_dir[0] as f32,
+        ]);
+        let v_sup = norm3([
+            self.volume.row_dir[2] as f32,
+            self.volume.col_dir[2] as f32,
+            self.volume.slice_dir[2] as f32,
+        ]);
+        let v_ant = norm3(cross3(v_left, v_sup));
+
+        // Orbit camera around volume center: yaw=0, pitch=0 looks from Anterior toward Posterior
+        // with Superior UP and Patient Left on the viewer's right (standard AP view).
+        let (sy, cy) = self.yaw.sin_cos();
+        let (sp, cp) = self.pitch.sin_cos();
+        let cam_dir = [
+            v_ant[0] * cy * cp + v_left[0] * sy * cp + v_sup[0] * sp,
+            v_ant[1] * cy * cp + v_left[1] * sy * cp + v_sup[1] * sp,
+            v_ant[2] * cy * cp + v_left[2] * sy * cp + v_sup[2] * sp,
+        ];
+        let fwd = norm3([-cam_dir[0], -cam_dir[1], -cam_dir[2]]);
+        let mut right = norm3(cross3(fwd, v_sup));
+        let mut up = norm3(cross3(right, fwd));
+
+        // Apply View menu in-plane rotation & flips
+        let rad = self.rotation_deg.to_radians();
+        let (sr, cr) = rad.sin_cos();
+        let r_rot = [
+            right[0] * cr + up[0] * sr,
+            right[1] * cr + up[1] * sr,
+            right[2] * cr + up[2] * sr,
+        ];
+        let u_rot = [
+            -right[0] * sr + up[0] * cr,
+            -right[1] * sr + up[1] * cr,
+            -right[2] * sr + up[2] * cr,
+        ];
+        right = if self.x_flipped {
+            [-r_rot[0], -r_rot[1], -r_rot[2]]
+        } else {
+            r_rot
+        };
+        up = if self.y_flipped {
+            [-u_rot[0], -u_rot[1], -u_rot[2]]
+        } else {
+            u_rot
+        };
+
+        let low = self.window.low();
+        let high = self.window.high();
+        let span = high - low;
+        let u = UniformsVr {
+            low,
+            inv_span: if span > 0.0 { 1.0 / span } else { 0.0 },
+            high,
+            invert: u32::from(self.invert),
+            use_clut: u32::from(self.clut.is_some()),
+            vr_mip: u32::from(self.vr_mip),
+            vol_w: self.volume.width as u32,
+            vol_h: self.volume.height as u32,
+            vol_d: self.volume.depth as u32,
+            vr_shading: u32::from(self.vr_shading),
+            voxel_scale: self.volume.voxel_scale,
+            voxel_offset: self.volume.voxel_offset,
+            rect_min: [self.rect_px.min.x, self.rect_px.min.y],
+            rect_size: [self.rect_px.width().max(1.0), self.rect_px.height().max(1.0)],
+            half_ext,
+            cam_right: [right[0], right[1], right[2], 0.0],
+            cam_up: [up[0], up[1], up[2], 0.0],
+            cam_fwd: [fwd[0], fwd[1], fwd[2], 0.0],
+            zoom: self.zoom,
+            ambient: self.vr_ambient,
+            diffuse: self.vr_diffuse,
+            specular: self.vr_specular,
+            clip_min: [self.vr_clip_min[0], self.vr_clip_min[1], self.vr_clip_min[2], 0.0],
+            clip_max: [self.vr_clip_max[0], self.vr_clip_max[1], self.vr_clip_max[2], 0.0],
+            bg_color: [self.vr_bg_color[0], self.vr_bg_color[1], self.vr_bg_color[2], 1.0],
+        };
+        queue.write_buffer(&slot.uniform_buf, 0, uniform_bytes(&u));
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        _info: PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        resources: &egui_wgpu::CallbackResources,
+    ) {
+        let Some(res) = resources.get::<Resources>() else {
+            return;
+        };
+        let Some(slot) = res.slots_vr.get(&self.viewport_id) else {
+            return;
+        };
+        let Some(bg) = &slot.bind_group else {
+            return;
+        };
+        render_pass.set_pipeline(&res.pipeline_vr);
         render_pass.set_bind_group(0, bg, &[]);
         render_pass.draw(0..3, 0..1);
     }

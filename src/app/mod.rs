@@ -26,9 +26,10 @@ use crate::frame::Frame;
 use crate::geometry::{
     ImagePlaneCoordinates, OrientationLetters, PlaneGeometry, SlicePlaneParams,
 };
-use crate::gpu_view::{self, GpuInfo, ImageCallback, QuadUvMapping, VolumeMprCallback};
+use crate::gpu_view::{self, GpuInfo, ImageCallback, QuadUvMapping, VolumeMprCallback, VolumeVrCallback};
 use crate::imaging::clut::{ColorLookupTable, ColourTableBook};
 use crate::imaging::convolution::FACTORY_CONVOLUTIONS;
+use crate::imaging::vr_presets::{TfStop, VrPreset};
 use crate::imaging::{defaults, drag, presets, Window};
 use crate::loader::{Job, Loader, SliceKey};
 use crate::navigation::{
@@ -174,6 +175,19 @@ pub(crate) struct ViewportCell {
     pub(crate) mpr_auto_applied: bool,
     pub(crate) mpr_plane: Option<MprPlane3D>,
     pub(crate) mpr_cached: Option<(MprPlane3D, Arc<Frame>, SliceKey)>,
+    pub(crate) vr_enabled: bool,
+    pub(crate) vr_yaw: f32,
+    pub(crate) vr_pitch: f32,
+    pub(crate) vr_mip: bool,
+    pub(crate) vr_preset: VrPreset,
+    pub(crate) vr_custom_stops: Vec<TfStop>,
+    pub(crate) vr_shading: bool,
+    pub(crate) vr_ambient: f32,
+    pub(crate) vr_diffuse: f32,
+    pub(crate) vr_specular: f32,
+    pub(crate) vr_clip_min: [f32; 3],
+    pub(crate) vr_clip_max: [f32; 3],
+    pub(crate) vr_bg_color: [f32; 3],
     pub(crate) link_group: u8,
     mpr_seq: usize,
     texture: Option<TextureHandle>,
@@ -202,6 +216,19 @@ impl ViewportCell {
             mpr_auto_applied: false,
             mpr_plane: None,
             mpr_cached: None,
+            vr_enabled: false,
+            vr_yaw: 0.55,
+            vr_pitch: -0.25,
+            vr_mip: false,
+            vr_preset: VrPreset::Default,
+            vr_custom_stops: VrPreset::Default.default_stops(),
+            vr_shading: true,
+            vr_ambient: 0.28,
+            vr_diffuse: 0.72,
+            vr_specular: 0.35,
+            vr_clip_min: [0.0, 0.0, 0.0],
+            vr_clip_max: [1.0, 1.0, 1.0],
+            vr_bg_color: [0.02, 0.02, 0.03],
             link_group: 0,
             mpr_seq: 0,
             texture: None,
@@ -216,6 +243,8 @@ impl ViewportCell {
         self.rotation = 0.0;
         self.x_flipped = false;
         self.y_flipped = false;
+        self.vr_yaw = 0.55;
+        self.vr_pitch = -0.25;
     }
 
     fn reset_series_state(&mut self, sel: Option<(usize, usize)>) {
@@ -277,6 +306,7 @@ pub(crate) struct ViewerApp {
     pub(crate) active_viewport: usize,
     pub(crate) sync_mode: SliceSynchronization,
     pub(crate) link_zoom: bool,
+    pub(crate) link_zoom_same_size: bool,
     pub(crate) link_wl: bool,
     pub(crate) link_cut: bool,
     pub(crate) show_reference_lines: bool,
@@ -323,7 +353,16 @@ pub(crate) struct ViewerApp {
     cursor_info: Option<String>,
 
     pub(crate) show_browser: bool,
+    pub(crate) sidebar_compact: bool,
     pub(crate) show_database_view: bool,
+    copy_shot: CopyShotState,
+    copy_shot_tx: std::sync::mpsc::Sender<Arc<egui::ColorImage>>,
+    copy_shot_rx: Receiver<Arc<egui::ColorImage>>,
+    pub(crate) copy_anonymize_frame: bool,
+    pub(crate) viewport_rects: Vec<Rect>,
+    pub(crate) show_vr_tf_editor: bool,
+    pub(crate) vr_tf_selected_stop: usize,
+    pub(crate) vr_histogram_cache: Option<(u64, u32, u32, Vec<f32>)>,
     pub(crate) selected_db_study: Option<usize>,
     pub(crate) show_metadata_inspector: bool,
     pub(crate) metadata_filter: String,
@@ -359,6 +398,13 @@ pub(crate) struct ViewerApp {
     confirm_delete_local_data: bool,
     patient_links: HashMap<String, String>,
     linking_source: Option<(String, Vec<String>)>,
+}
+
+#[derive(Clone, Copy)]
+enum CopyShotState {
+    Idle,
+    Armed(Rect),
+    WaitingForImage(Rect),
 }
 
 #[derive(Clone, Copy)]
@@ -451,6 +497,7 @@ impl ViewerApp {
             .as_ref()
             .map(|s| s.patient_links())
             .unwrap_or_default();
+        let (copy_shot_tx, copy_shot_rx) = std::sync::mpsc::channel();
         let mut app = Self {
             index: None,
             scan: None,
@@ -461,6 +508,7 @@ impl ViewerApp {
             active_viewport: 0,
             sync_mode: SliceSynchronization::Absolute,
             link_zoom: false,
+            link_zoom_same_size: true,
             link_wl: false,
             link_cut: false,
             show_reference_lines: true,
@@ -501,7 +549,16 @@ impl ViewerApp {
             last_tick: 0.0,
             cursor_info: None,
             show_browser: true,
+            sidebar_compact: false,
             show_database_view: false,
+            copy_shot: CopyShotState::Idle,
+            copy_shot_tx,
+            copy_shot_rx,
+            copy_anonymize_frame: false,
+            viewport_rects: vec![Rect::NOTHING; 16],
+            show_vr_tf_editor: false,
+            vr_tf_selected_stop: 0,
+            vr_histogram_cache: None,
             selected_db_study: None,
             show_metadata_inspector: false,
             metadata_filter: String::new(),
@@ -1265,6 +1322,15 @@ impl ViewerApp {
         if ctx.egui_wants_keyboard_input() {
             return;
         }
+        if !self.show_database_view
+            && ctx.input(|i| {
+                i.events.iter().any(|e| matches!(e, egui::Event::Copy))
+                    || (i.modifiers.command && i.key_pressed(Key::C))
+            })
+        {
+            self.request_copy_active_viewport(ctx);
+            return;
+        }
         let keys = [
             Key::ArrowUp,
             Key::ArrowDown,
@@ -1537,11 +1603,60 @@ impl ViewerApp {
                 ui.colored_label(Color32::from_rgb(255, 180, 80), msg);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let (cog_rect, cog_resp) =
+                    ui.allocate_exact_size(vec2(24.0, 18.0), egui::Sense::click());
+                let bg = if cog_resp.hovered() || self.show_settings_modal {
+                    Color32::from_gray(68)
+                } else {
+                    Color32::from_gray(44)
+                };
+                ui.painter().rect_filled(cog_rect, 4.0, bg);
+                ui.painter().text(
+                    cog_rect.center() + vec2(0.0, 0.5),
+                    egui::Align2::CENTER_CENTER,
+                    "⚙",
+                    egui::FontId::proportional(13.0),
+                    Color32::from_gray(225),
+                );
+                if cog_resp.on_hover_text(tr.settings_hover).clicked() {
+                    self.show_settings_modal = !self.show_settings_modal;
+                }
                 ui.label(
                     egui::RichText::new(format!("v{}", crate::BUILD_VERSION))
                         .small()
                         .color(Color32::from_gray(150)),
                 );
+                match &self.update_status {
+                    crate::updater::UpdateStatus::Available(info) => {
+                        let lbl = format!("⬆ {}", info.tag_name);
+                        if ui
+                            .small_button(
+                                egui::RichText::new(lbl)
+                                    .strong()
+                                    .color(Color32::from_rgb(120, 225, 150)),
+                            )
+                            .on_hover_text(format!("Update {} available — click to install", info.tag_name))
+                            .clicked()
+                        {
+                            self.show_update_modal = true;
+                        }
+                    }
+                    crate::updater::UpdateStatus::Installed(tag) => {
+                        let lbl = format!("✅ {tag}");
+                        if ui
+                            .small_button(
+                                egui::RichText::new(lbl)
+                                    .strong()
+                                    .color(Color32::from_rgb(120, 225, 150)),
+                            )
+                            .on_hover_text("Update installed — click to restart SekhmetX")
+                            .clicked()
+                        {
+                            self.show_update_modal = true;
+                        }
+                    }
+                    _ => {}
+                }
                 if self.previous_crash_pending {
                     let lbl = match self.lang {
                         crate::i18n::Lang::Es => "⚠ Registro de Fallo",
@@ -1603,9 +1718,114 @@ impl ViewerApp {
 
 }
 
+impl ViewerApp {
+    /// Arm an anonymized HD screenshot of the currently active viewport for clipboard copy.
+    pub(crate) fn request_copy_active_viewport(&mut self, ctx: &egui::Context) {
+        let Some(&rect) = self.viewport_rects.get(self.active_viewport) else {
+            return;
+        };
+        if !rect.is_positive() {
+            return;
+        }
+        self.copy_shot = CopyShotState::Armed(rect);
+        ctx.request_repaint();
+    }
+
+    /// Drive the 2-frame anonymized clipboard screenshot capture and copy cropped RGBA to clipboard.
+    fn process_copy_screenshot(&mut self, ctx: &egui::Context) {
+        if let Ok(image) = self.copy_shot_rx.try_recv()
+            && let CopyShotState::WaitingForImage(rect) = self.copy_shot
+        {
+            self.copy_shot = CopyShotState::Idle;
+            self.copy_anonymize_frame = false;
+            let ppp = ctx.pixels_per_point();
+            let iw = image.width();
+            let ih = image.height();
+            if iw > 0 && ih > 0 {
+                let x0 = ((rect.min.x * ppp).round() as isize).clamp(0, iw as isize) as usize;
+                let y0 = ((rect.min.y * ppp).round() as isize).clamp(0, ih as isize) as usize;
+                let x1 = ((rect.max.x * ppp).round() as isize).clamp(0, iw as isize) as usize;
+                let y1 = ((rect.max.y * ppp).round() as isize).clamp(0, ih as isize) as usize;
+                let cw = x1.saturating_sub(x0);
+                let ch = y1.saturating_sub(y0);
+                if cw > 0 && ch > 0 {
+                    let mut bytes = Vec::with_capacity(cw * ch * 4);
+                    for y in y0..y1 {
+                        let row_start = y * iw + x0;
+                        for px in &image.pixels[row_start..row_start + cw] {
+                            bytes.extend_from_slice(&px.to_array());
+                        }
+                    }
+                    match arboard::Clipboard::new().and_then(|mut cb| {
+                        cb.set_image(arboard::ImageData {
+                            width: cw,
+                            height: ch,
+                            bytes: std::borrow::Cow::Owned(bytes),
+                        })
+                    }) {
+                        Ok(()) => {
+                            self.message = Some(match self.lang {
+                                crate::i18n::Lang::Es => {
+                                    format!("Imagen HD anonimizada copiada ({cw}×{ch})")
+                                }
+                                crate::i18n::Lang::En => {
+                                    format!("Copied anonymized HD image ({cw}×{ch})")
+                                }
+                            });
+                        }
+                        Err(err) => {
+                            self.message = Some(format!("Clipboard error: {err}"));
+                        }
+                    }
+                }
+            }
+        }
+        if let CopyShotState::Armed(rect) = self.copy_shot {
+            self.copy_anonymize_frame = true;
+            self.copy_shot = CopyShotState::WaitingForImage(rect);
+            let tx = self.copy_shot_tx.clone();
+            let ctx_clone = ctx.clone();
+            ctx.request_screenshot(move |image| {
+                let _ = tx.send(image);
+                ctx_clone.request_repaint();
+            });
+        }
+    }
+
+    /// Return to the full Database Library view and unload decoded frames/volumes for the active study.
+    pub(crate) fn return_to_library(&mut self) {
+        self.show_database_view = true;
+        self.playing = false;
+        self.ortho_mpr_active = false;
+        self.ortho_crosshair_lps = None;
+        self.ortho_saved_tiling = None;
+        self.crosshair_drag = None;
+        self.pending_mpr_activate = None;
+        self.show_metadata_inspector = false;
+        self.metadata_cache = None;
+        for vp in &mut self.viewports {
+            vp.selected = None;
+            vp.reset_view();
+            vp.reset_clut();
+            vp.invert = false;
+            vp.mpr_enabled = false;
+            vp.mpr_plane = None;
+            vp.mpr_cached = None;
+            vp.vr_enabled = false;
+        }
+        self.cache.clear();
+        self.volumes.clear();
+        self.volume_errors.clear();
+        self.failed.clear();
+        self.registrations.clear();
+        self.registrations_in_flight.clear();
+    }
+}
+
 impl eframe::App for ViewerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        self.process_copy_screenshot(&ctx);
         self.poll_background(&ctx);
         self.handle_dropped_files(&ctx);
         self.handle_keys(&ctx);
@@ -1616,11 +1836,18 @@ impl eframe::App for ViewerApp {
             egui::CentralPanel::default().show(ui, |ui| self.database_view(ui));
         } else {
             if self.show_browser {
-                egui::Panel::left("browser")
-                    .resizable(true)
-                    .default_size(290.0)
-                    .min_size(220.0)
-                    .show(ui, |ui| self.browser(ui));
+                if self.sidebar_compact {
+                    egui::Panel::left("browser_compact")
+                        .resizable(false)
+                        .exact_size(96.0)
+                        .show(ui, |ui| self.browser(ui));
+                } else {
+                    egui::Panel::left("browser")
+                        .resizable(true)
+                        .default_size(290.0)
+                        .min_size(220.0)
+                        .show(ui, |ui| self.browser(ui));
+                }
             }
             if self.show_metadata_inspector {
                 egui::Panel::right("metadata_inspector")
@@ -1635,6 +1862,7 @@ impl eframe::App for ViewerApp {
         self.draw_update_modal(&ctx);
         self.draw_pacs_modal(&ctx);
         self.draw_settings_modal(&ctx);
+        self.draw_vr_tf_editor(&ctx);
         self.draw_crash_modal(&ctx);
         self.draw_first_run_notice_modal(&ctx);
     }

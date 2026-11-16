@@ -12,6 +12,7 @@ pub mod drag;
 pub mod photometry;
 pub mod presets;
 pub mod voi_lut;
+pub mod vr_presets;
 pub mod window;
 
 /// A window: `level` is the centre, `width` the span. level − width/2 shows

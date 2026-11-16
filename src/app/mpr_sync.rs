@@ -61,8 +61,53 @@ impl ViewerApp {
         }
     }
 
+    fn viewport_fov_mm(&self, vp_idx: usize) -> Option<f32> {
+        if self.viewports.get(vp_idx)?.mpr_enabled
+            && let Some(vol) = self.viewport_volume(vp_idx)
+        {
+            let fx = vol.width as f32 * vol.spacing[0] as f32;
+            let fy = vol.height as f32 * vol.spacing[1] as f32;
+            return Some(fx.max(fy).max(1.0));
+        }
+        let f = self.viewport_frame(vp_idx)?;
+        let (rs, cs) = f.spacing?;
+        let w = f.width as f32 * cs as f32;
+        let h = f.height as f32 * rs as f32;
+        Some(w.max(h).max(1.0))
+    }
+
+    fn viewport_min_side(&self, vp_idx: usize) -> f32 {
+        self.viewport_rects
+            .get(vp_idx)
+            .filter(|r| r.is_positive())
+            .map_or(1.0, |r| r.width().min(r.height()).max(1.0))
+    }
+
+    pub(crate) fn apply_same_size_zoom_from(&mut self, leader_idx: usize) {
+        let Some(leader_fov) = self.viewport_fov_mm(leader_idx) else {
+            return;
+        };
+        let leader_zoom = self.viewports[leader_idx].zoom;
+        let leader_side = self.viewport_min_side(leader_idx);
+        let count = self.tiling.cell_count();
+        for i in 0..count {
+            if self.are_viewports_linked(leader_idx, i)
+                && self.viewports[i].selected.is_some()
+                && let Some(other_fov) = self.viewport_fov_mm(i)
+            {
+                let other_side = self.viewport_min_side(i);
+                let z = leader_zoom * (other_fov / leader_fov.max(1e-3)) * (leader_side / other_side);
+                self.viewports[i].zoom = z.clamp(0.05, 50.0);
+            }
+        }
+    }
+
     pub(super) fn sync_zoom_from(&mut self, leader_idx: usize, factor: f32) {
         if !self.ortho_mpr_active && !self.link_zoom {
+            return;
+        }
+        if self.link_zoom_same_size && !self.ortho_mpr_active && self.viewport_fov_mm(leader_idx).is_some() {
+            self.apply_same_size_zoom_from(leader_idx);
             return;
         }
         let count = self.tiling.cell_count();
@@ -362,8 +407,10 @@ impl ViewerApp {
     }
 
     /// Manually locks the current 3D plane & slice offset of all visible follower viewports
-    /// to the active leader viewport (`âš“ Lock 3D Sync`).
+    /// to the active leader viewport (`⚓ Lock 3D Sync`).
     pub(crate) fn lock_current_3d_alignment(&mut self) {
+        self.ensure_default_link_pair();
+        self.link_cut = true;
         let leader_idx = self.active_viewport;
         let Some(leader_sel) = self.viewports[leader_idx].selected else {
             return;
@@ -427,6 +474,86 @@ impl ViewerApp {
             self.registrations.insert(pair, reg);
         }
         self.message = Some("Locked 3D slice & angle alignment across viewports.".into());
+    }
+
+    /// Optimal side-by-side comparison mode: links Zoom (`= mm` same physical size), WL/WW,
+    /// and Cut, copies WL/WW & pan from the active viewport, enables 3D MPR where volumes exist,
+    /// and aligns XYZ planes (orientation + slice height) across linked viewports.
+    pub(crate) fn compare_align_linked_viewports(&mut self) {
+        self.ensure_default_link_pair();
+        self.link_zoom = true;
+        self.link_zoom_same_size = true;
+        self.link_wl = true;
+        self.link_cut = true;
+
+        let leader_idx = self.active_viewport;
+        let Some(leader_sel) = self.viewports[leader_idx].selected else {
+            return;
+        };
+        if self.viewport_volume(leader_idx).is_some() && !self.viewports[leader_idx].mpr_enabled {
+            self.viewports[leader_idx].mpr_enabled = true;
+        }
+        let leader_win = self.viewports[leader_idx]
+            .window
+            .or_else(|| self.viewport_frame(leader_idx).map(|f| self.effective_window(leader_idx, f)));
+        let leader_pan = self.viewports[leader_idx].pan;
+        let leader_plane = self.effective_mpr_plane(leader_idx);
+        let cell_count = self.tiling.cell_count();
+
+        let mat_vec = |m: [[f64; 3]; 3], v: [f64; 3]| -> [f64; 3] {
+            [
+                m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+                m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+                m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+            ]
+        };
+
+        for other_idx in 0..cell_count {
+            if !self.are_viewports_linked(leader_idx, other_idx) {
+                continue;
+            }
+            let Some(other_sel) = self.viewports[other_idx].selected else {
+                continue;
+            };
+            if let Some(w) = leader_win {
+                self.viewports[other_idx].window = Some(w);
+            }
+            self.viewports[other_idx].pan = leader_pan;
+
+            if self.viewport_volume(other_idx).is_some() {
+                self.viewports[other_idx].mpr_enabled = true;
+            }
+            if let Some(lp) = leader_plane.as_ref()
+                && let Some(mut op) = self.effective_mpr_plane(other_idx)
+            {
+                let leader_lps = lp.slice_center_lps();
+                if let Some(reg) = self.registrations.get(&(leader_sel, other_sel)).cloned() {
+                    let target_lps = reg.transform_point(leader_lps);
+                    op.u_axis = mat_vec(reg.rotation, lp.u_axis);
+                    op.v_axis = mat_vec(reg.rotation, lp.v_axis);
+                    op.normal = mat_vec(reg.rotation, lp.normal);
+                    op.offset_mm = dot3(sub3(target_lps, op.center_lps), op.normal);
+                } else {
+                    op.u_axis = lp.u_axis;
+                    op.v_axis = lp.v_axis;
+                    op.normal = lp.normal;
+                    op.offset_mm = dot3(sub3(leader_lps, op.center_lps), op.normal);
+                }
+                self.viewports[other_idx].mpr_plane = Some(op);
+                self.viewports[other_idx].mpr_cached = None;
+                self.sync_slice_index_from_mpr_plane(other_idx);
+            }
+        }
+
+        self.apply_same_size_zoom_from(leader_idx);
+        self.message = Some(match self.lang {
+            crate::i18n::Lang::Es => {
+                "Modo Comparación: Zoom (= mm), NV y planos XYZ sincronizados".into()
+            }
+            crate::i18n::Lang::En => {
+                "Compare Mode: Zoom (= mm), WL/WW & XYZ planes synchronized".into()
+            }
+        });
     }
 
     pub(super) fn assign_series_to_viewport(&mut self, vp_idx: usize, sel: Option<(usize, usize)>) {

@@ -1,6 +1,6 @@
 [package]
 name = "sekhmetx"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "SekhmetX: a fast, native cross-platform DICOM viewer in Rust (modeled on IsiX / Horos / OsiriX)"
 license = "LGPL-3.0-or-later"
@@ -17,6 +17,8 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 eframe = { version = "0.37", default-features = true }
 # Native "Open folder" dialog
 rfd = "0.17"
+# Cross-platform clipboard (for Ctrl+C anonymized HD viewport screenshot)
+arboard = "3"
 
 # Auto-update (GitHub Releases check + in-place binary replacement)
 ureq = "3"

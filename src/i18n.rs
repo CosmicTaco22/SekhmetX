@@ -8,25 +8,11 @@ pub enum Lang {
 }
 
 impl Lang {
-    pub fn code(self) -> &'static str {
-        match self {
-            Lang::En => "en",
-            Lang::Es => "es",
-        }
-    }
-
     pub fn from_code(s: &str) -> Self {
         if s.eq_ignore_ascii_case("es") || s.to_ascii_lowercase().starts_with("es") {
             Lang::Es
         } else {
             Lang::En
-        }
-    }
-
-    pub fn toggle(self) -> Self {
-        match self {
-            Lang::En => Lang::Es,
-            Lang::Es => Lang::En,
         }
     }
 }
@@ -123,8 +109,6 @@ pub struct Strings {
     pub view_hover: &'static str,
     pub cine_hover: &'static str,
     pub cine_speed_hover: &'static str,
-    pub lang_hover: &'static str,
-    pub more_tools_hover: &'static str,
     pub tiling_hover: &'static str,
     pub viewport_singular: &'static str,
     pub viewport_plural: &'static str,
@@ -136,7 +120,6 @@ pub struct Strings {
     pub grp_wl_clut: &'static str,
     pub grp_view_3d: &'static str,
     pub grp_cine: &'static str,
-    pub grp_app: &'static str,
     // Scrubber & MPR strip
     pub prev_series: &'static str,
     pub next_series: &'static str,
@@ -256,7 +239,6 @@ pub struct Strings {
     pub settings_storage_format: &'static str,
     pub settings_format_unzip: &'static str,
     pub settings_format_zip: &'static str,
-    pub settings_check_updates: &'static str,
     pub pacs_msg_starting_dl: &'static str,
     pub pacs_refresh_watch_hover: &'static str,
     pub pacs_refresh_watch_btn: &'static str,
@@ -353,8 +335,6 @@ pub const EN: Strings = Strings {
     view_hover: "Orientation, Invert, Reference Lines, HUD, Sync & Reset",
     cine_hover: "Play / pause cine loop (Space / P)",
     cine_speed_hover: "Cine playback speed",
-    lang_hover: "Switch language (English / Español)",
-    more_tools_hover: "More toolbar items",
     tiling_hover: "Viewport grid layout",
     viewport_singular: "viewport",
     viewport_plural: "viewports",
@@ -365,7 +345,6 @@ pub const EN: Strings = Strings {
     grp_wl_clut: "WL/WW & CLUT",
     grp_view_3d: "2D / 3D",
     grp_cine: "Cine",
-    grp_app: "App",
     prev_series: "Previous series ([)",
     next_series: "Next series (])",
     first_slice: "First slice (Home)",
@@ -476,7 +455,6 @@ pub const EN: Strings = Strings {
     settings_storage_format: "Library Storage Format:",
     settings_format_unzip: "Unzipped (DICOM files)",
     settings_format_zip: "Compressed (.zip)",
-    settings_check_updates: "Check for updates on startup",
     pacs_msg_starting_dl: "Starting download (please wait):",
     pacs_refresh_watch_hover: "Refresh Watch Folder (scan for new or updated studies)",
     pacs_refresh_watch_btn: "↻ Refresh",
@@ -573,8 +551,6 @@ pub const ES: Strings = Strings {
     view_hover: "Orientación, Invertir, Líneas de referencia, HUD, Sincr. y Restablecer",
     cine_hover: "Reproducir / pausar cine (Espacio / P)",
     cine_speed_hover: "Velocidad de reproducción cine",
-    lang_hover: "Cambiar idioma (English / Español)",
-    more_tools_hover: "Más herramientas",
     tiling_hover: "Distribución de visores",
     viewport_singular: "visor",
     viewport_plural: "visores",
@@ -585,7 +561,6 @@ pub const ES: Strings = Strings {
     grp_wl_clut: "WL/WW y CLUT",
     grp_view_3d: "2D / 3D",
     grp_cine: "Cine",
-    grp_app: "App",
     prev_series: "Serie anterior ([)",
     next_series: "Serie siguiente (])",
     first_slice: "Primer corte (Inicio)",
@@ -696,7 +671,6 @@ pub const ES: Strings = Strings {
     settings_storage_format: "Formato en Biblioteca:",
     settings_format_unzip: "Descomprimido (archivos DICOM)",
     settings_format_zip: "Comprimido (.zip)",
-    settings_check_updates: "Buscar actualizaciones al iniciar",
     pacs_msg_starting_dl: "Iniciando descarga (esperá):",
     pacs_refresh_watch_hover: "Actualizar Carpeta de Descargas (buscar estudios nuevos o actualizados)",
     pacs_refresh_watch_btn: "↻ Actualizar",
@@ -721,8 +695,6 @@ mod tests {
         assert_eq!(Lang::from_code("es-AR"), Lang::Es);
         assert_eq!(Lang::from_code("en"), Lang::En);
         assert_eq!(Lang::from_code("unknown"), Lang::En);
-        assert_eq!(Lang::Es.code(), "es");
-        assert_eq!(Lang::En.toggle(), Lang::Es);
     }
 
     #[test]
@@ -748,10 +720,10 @@ mod tests {
                 s.presets_prefix, s.preset_default, s.preset_full_dyn, s.filter_prefix,
                 s.filter_none, s.filter_no_filter, s.ortho_mpr_hover, s.mpr_3d_hover,
                 s.rotate_ccw, s.rotate_cw, s.smooth_interp, s.view_hover, s.cine_hover,
-                s.cine_speed_hover, s.lang_hover, s.more_tools_hover, s.tiling_hover,
+                s.cine_speed_hover, s.tiling_hover,
                 s.viewport_singular, s.viewport_plural,
                 s.grp_database, s.grp_windows, s.grp_mouse, s.grp_roi,
-                s.grp_wl_clut, s.grp_view_3d, s.grp_cine, s.grp_app,
+                s.grp_wl_clut, s.grp_view_3d, s.grp_cine,
                 s.prev_series, s.next_series,
                 s.first_slice, s.prev_slice, s.slice_word, s.next_slice, s.last_slice,
                 s.ax_hover, s.cor_hover, s.sag_hover, s.nat_hover, s.slab_prefix,
@@ -790,7 +762,7 @@ mod tests {
                 s.settings_on_open, s.settings_add_to_db, s.settings_policy_ask,
                 s.settings_policy_always, s.settings_policy_never,
                 s.settings_storage_format, s.settings_format_unzip,
-                s.settings_format_zip, s.settings_check_updates,
+                s.settings_format_zip,
                 s.pacs_msg_starting_dl, s.pacs_refresh_watch_hover,
             ];
             for f in fields {

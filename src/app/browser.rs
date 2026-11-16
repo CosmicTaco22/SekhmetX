@@ -1,5 +1,41 @@
 use super::*;
 
+fn paint_series_drag_preview(ui: &egui::Ui, index: &crate::dicom_index::Index) {
+    let Some(payload) = egui::DragAndDrop::payload::<(usize, usize)>(ui.ctx()) else {
+        return;
+    };
+    let (si, ri) = *payload;
+    let Some(series) = index.studies.get(si).and_then(|st| st.series.get(ri)) else {
+        return;
+    };
+    let Some(pos) = ui.input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos())) else {
+        return;
+    };
+    let desc = if series.description.is_empty() {
+        "(no description)"
+    } else {
+        series.description.as_str()
+    };
+    let label = format!(
+        "{} [{}] · {}",
+        series.modality,
+        series.dominant_plane.badge(),
+        desc
+    );
+    egui::Area::new(egui::Id::unique("series_drag_preview"))
+        .order(egui::Order::Tooltip)
+        .interactable(false)
+        .fixed_pos(pos + vec2(14.0, 14.0))
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style())
+                .fill(Color32::from_rgb(24, 38, 56))
+                .stroke(Stroke::new(1.5, Color32::from_rgb(80, 175, 255)))
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new(label).strong().color(Color32::WHITE));
+                });
+        });
+}
+
 fn paint_aspect_fit_thumb(
     painter: &egui::Painter,
     box_rect: Rect,
@@ -49,7 +85,12 @@ impl ViewerApp {
             return;
         }
 
-        // Active-study header + Back to Database button
+        if self.sidebar_compact {
+            self.browser_compact(ui);
+            return;
+        }
+
+        // Compact-sidebar toggle button (Back to Library is in the top-left toolbar)
         let active_si = self
             .active_cell()
             .selected
@@ -57,12 +98,19 @@ impl ViewerApp {
             .or(self.selected_db_study);
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let back_lbl = match self.lang {
-                crate::i18n::Lang::En => "← Database",
-                crate::i18n::Lang::Es => "← Base de datos",
+            let (compact_lbl, compact_hover) = match self.lang {
+                crate::i18n::Lang::En => ("◧ Compact", "Compact sidebar to thumbnail strip"),
+                crate::i18n::Lang::Es => (
+                    "◧ Compactar",
+                    "Compactar barra lateral a tira de miniaturas",
+                ),
             };
-            if ui.small_button(back_lbl).clicked() {
-                self.show_database_view = true;
+            if ui
+                .small_button(compact_lbl)
+                .on_hover_text(compact_hover)
+                .clicked()
+            {
+                self.sidebar_compact = true;
             }
         });
         ui.add_space(2.0);
@@ -332,7 +380,7 @@ impl ViewerApp {
                                     // Draw 38x38 Horos-style series thumbnail box
                                     let thumb_size = vec2(52.0, 52.0);
                                     let (thumb_rect, thumb_resp) =
-                                        ui.allocate_exact_size(thumb_size, Sense::click());
+                                        ui.allocate_exact_size(thumb_size, Sense::click_and_drag());
                                     let painter = ui.painter();
                                     painter.rect_filled(
                                         thumb_rect,
@@ -378,8 +426,9 @@ impl ViewerApp {
                                             is_active,
                                             egui::RichText::new(text).monospace().size(11.5),
                                         )
+                                        .interact(Sense::click_and_drag())
                                         .on_hover_text(format!(
-                                            "{} {}, {}×{}, plane: {}{} (click for active viewport, right-click to assign)",
+                                            "{} {}, {}×{}, plane: {}{} (click or drag to viewport, right-click to assign)",
                                             series.slices.len(),
                                             tr.images,
                                             series.columns,
@@ -387,6 +436,9 @@ impl ViewerApp {
                                             series.dominant_plane.badge(),
                                             if series.is_mpr_capable() { " · 3D MPR Ready" } else { "" }
                                         ));
+                                    if thumb_resp.drag_started() || resp.drag_started() {
+                                        egui::DragAndDrop::set_payload(ui.ctx(), (si, ri));
+                                    }
                                     if resp.clicked() || thumb_resp.clicked() {
                                         *clicked = Some((self.active_viewport, (si, ri), false));
                                     }
@@ -632,6 +684,10 @@ impl ViewerApp {
             return;
         }
 
+        if let Some(ref idx) = self.index {
+            paint_series_drag_preview(ui, idx);
+        }
+
         for job in thumb_jobs {
             self.thumbnails_queued
                 .insert((job.key.scan_gen, job.key.study, job.key.series));
@@ -656,6 +712,173 @@ impl ViewerApp {
             if enable_mpr {
                 self.viewports[vp_idx].mpr_enabled = true;
             }
+        }
+    }
+
+    /// Compact thumbnail-strip sidebar showing the current patient's acquisitions
+    /// with a cut badge (`AX`/`COR`/`SAG`) under each thumbnail.
+    fn browser_compact(&mut self, ui: &mut egui::Ui) {
+        ui.add_space(4.0);
+        ui.vertical_centered(|ui| {
+            let (exp_lbl, exp_hover) = match self.lang {
+                crate::i18n::Lang::En => ("◧ Expand", "Expand sidebar"),
+                crate::i18n::Lang::Es => ("◧ Expandir", "Expandir barra lateral"),
+            };
+            if ui
+                .small_button(exp_lbl)
+                .on_hover_text(exp_hover)
+                .clicked()
+            {
+                self.sidebar_compact = false;
+            }
+        });
+        ui.separator();
+
+        let active_si = self
+            .active_cell()
+            .selected
+            .map(|(si, _)| si)
+            .or(self.selected_db_study);
+        let active_sel = self.active_cell().selected;
+        let scan_gen = self.scan_gen;
+
+        let Some(index) = &self.index else {
+            return;
+        };
+
+        let patient_key = active_si
+            .and_then(|si| index.studies.get(si))
+            .map(|st| self.patient_group_key(st));
+        let study_indices: Vec<usize> = index
+            .studies
+            .iter()
+            .enumerate()
+            .filter(|(_, st)| {
+                patient_key
+                    .as_ref()
+                    .is_none_or(|pk| &self.patient_group_key(st) == pk)
+            })
+            .map(|(si, _)| si)
+            .collect();
+
+        let mut clicked: Option<(usize, (usize, usize))> = None;
+        let mut thumb_jobs: Vec<Job> = Vec::new();
+        let multi_study = study_indices.len() > 1;
+
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for &si in &study_indices {
+                    let study = &index.studies[si];
+                    if multi_study {
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                egui::RichText::new(study.date.as_str())
+                                    .size(9.5)
+                                    .color(Color32::from_gray(140)),
+                            );
+                        });
+                    }
+                    for (ri, series) in study.series.iter().enumerate() {
+                        let tkey = (scan_gen, si, ri);
+                        self.queue_thumb_for_series(&mut thumb_jobs, si, ri, series);
+                        let is_active = active_sel == Some((si, ri));
+
+                        ui.vertical_centered(|ui| {
+                            let thumb_size = vec2(68.0, 68.0);
+                            let (thumb_rect, thumb_resp) =
+                                ui.allocate_exact_size(thumb_size, Sense::click_and_drag());
+                            let painter = ui.painter();
+                            painter.rect_filled(
+                                thumb_rect,
+                                4.0,
+                                Color32::from_rgb(12, 14, 18),
+                            );
+                            if let Some(tex) = self.thumbnails.get(&tkey) {
+                                paint_aspect_fit_thumb(painter, thumb_rect, tex);
+                            } else {
+                                painter.text(
+                                    thumb_rect.center(),
+                                    Align2::CENTER_CENTER,
+                                    &series.modality,
+                                    FontId::monospace(11.0),
+                                    Color32::from_gray(145),
+                                );
+                            }
+                            let border_col = if is_active {
+                                Color32::from_rgb(80, 175, 255)
+                            } else if thumb_resp.hovered() {
+                                Color32::from_gray(130)
+                            } else {
+                                Color32::from_gray(60)
+                            };
+                            painter.rect_stroke(
+                                thumb_rect,
+                                4.0,
+                                Stroke::new(if is_active { 2.0 } else { 1.0 }, border_col),
+                                egui::StrokeKind::Inside,
+                            );
+
+                            let desc = if series.description.is_empty() {
+                                "(no description)"
+                            } else {
+                                series.description.as_str()
+                            };
+                            let cut_badge = series.dominant_plane.badge();
+                            let hover_txt = format!(
+                                "{} · {} ({cut_badge})\n{} im",
+                                series.modality,
+                                desc,
+                                series.slices.len()
+                            );
+                            let thumb_resp = thumb_resp.on_hover_text(hover_txt);
+                            if thumb_resp.drag_started() {
+                                egui::DragAndDrop::set_payload(ui.ctx(), (si, ri));
+                            }
+                            if thumb_resp.clicked() {
+                                clicked = Some((self.active_viewport, (si, ri)));
+                            }
+
+                            let badge_color = match cut_badge {
+                                "AX" => Color32::from_rgb(110, 190, 255),
+                                "COR" => Color32::from_rgb(130, 225, 160),
+                                "SAG" => Color32::from_rgb(255, 195, 105),
+                                _ => Color32::from_gray(175),
+                            };
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "{cut_badge} · {}",
+                                    series.slices.len()
+                                ))
+                                .size(10.0)
+                                .strong()
+                                .color(if is_active {
+                                    Color32::WHITE
+                                } else {
+                                    badge_color
+                                }),
+                            );
+                        });
+                        ui.add_space(4.0);
+                    }
+                    if multi_study {
+                        ui.separator();
+                    }
+                }
+            });
+
+        if let Some(ref idx) = self.index {
+            paint_series_drag_preview(ui, idx);
+        }
+
+        for job in thumb_jobs {
+            self.thumbnails_queued
+                .insert((job.key.scan_gen, job.key.study, job.key.series));
+            self.loader.request(job);
+        }
+        if let Some((vp_idx, sel)) = clicked {
+            self.active_viewport = vp_idx;
+            self.assign_series_to_viewport(vp_idx, Some(sel));
         }
     }
 

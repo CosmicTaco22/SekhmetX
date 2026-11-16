@@ -94,6 +94,9 @@ impl ViewerApp {
     }
 
     fn render_single_viewport(&mut self, ui: &mut egui::Ui, vp_idx: usize, view: Rect) {
+        if let Some(slot) = self.viewport_rects.get_mut(vp_idx) {
+            *slot = view;
+        }
         let response = ui.allocate_rect(view, Sense::click_and_drag());
         if (response.clicked() || response.drag_started() || response.secondary_clicked())
             && self.active_viewport != vp_idx {
@@ -122,6 +125,7 @@ impl ViewerApp {
                 Color32::GRAY,
             );
             self.draw_viewport_border(&painter, vp_idx, view);
+            self.handle_series_drop(ui, &painter, vp_idx, view);
             return;
         }
 
@@ -159,6 +163,13 @@ impl ViewerApp {
                         self.set_viewport_slice(vp_idx, idx, true);
                     }
             }
+
+        if self.viewports[vp_idx].vr_enabled
+            && let Some(vol) = self.viewport_volume(vp_idx).cloned()
+        {
+            self.render_vr_viewport(ui, &painter, vp_idx, view, &response, vol);
+            return;
+        }
 
         let mut gpu_mpr = self.mpr_gpu_target(vp_idx);
         let mpr_pair = if gpu_mpr.is_none() {
@@ -411,6 +422,8 @@ impl ViewerApp {
         self.draw_scrubber_bar(ui, &painter, vp_idx, view);
         self.draw_viewport_border(&painter, vp_idx, view);
         self.draw_link_badge(ui, &painter, vp_idx, view);
+        self.handle_series_drop(ui, &painter, vp_idx, view);
+        self.viewport_context_menu(&response, vp_idx);
     }
 
     fn ortho_crosshair_screen_pos(
@@ -748,6 +761,457 @@ impl ViewerApp {
             clut,
             uv_map,
         }
+    }
+
+    fn render_vr_viewport(
+        &mut self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        vp_idx: usize,
+        view: Rect,
+        response: &egui::Response,
+        vol: Arc<crate::volume::Volume3D>,
+    ) {
+        // Double-click resets 3D VR orbit & zoom
+        if response.double_clicked() {
+            self.viewports[vp_idx].reset_view();
+        }
+
+        // Scroll wheel zooms 3D VR camera
+        let hovered = response.hovered();
+        if hovered {
+            let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
+            if scroll_y.abs() > 0.1 {
+                let factor = (scroll_y / 240.0).exp();
+                let z = &mut self.viewports[vp_idx].zoom;
+                *z = (*z * factor).clamp(0.25, 8.0);
+                self.sync_zoom_from(vp_idx, factor);
+            }
+        }
+
+        // Left-drag orbits 3D camera; Right-drag adjusts WL/WW
+        if response.dragged_by(egui::PointerButton::Primary) {
+            let delta = response.drag_delta();
+            let vp = &mut self.viewports[vp_idx];
+            vp.vr_yaw -= delta.x * 0.008;
+            vp.vr_pitch = (vp.vr_pitch + delta.y * 0.008).clamp(-1.52, 1.52);
+        } else if response.dragged_by(egui::PointerButton::Secondary) {
+            let delta = response.drag_delta();
+            let base = if let Some(w) = self.viewports[vp_idx].window {
+                Some(w)
+            } else {
+                self.viewport_frame(vp_idx).map(|f| self.effective_window(vp_idx, f))
+            };
+            if let Some(w) = base {
+                let scale = (w.width.abs() / 250.0).max(0.5);
+                let d_width = delta.x * scale;
+                let d_level = -delta.y * scale;
+                self.viewports[vp_idx].window = Some(Window {
+                    level: w.level + d_level,
+                    width: (w.width + d_width).max(1.0),
+                });
+                self.sync_window_delta(vp_idx, d_level, d_width);
+            }
+        }
+
+        let ppp = ui.ctx().pixels_per_point();
+        let rect_px = Rect::from_min_max(
+            pos2(view.min.x * ppp, view.min.y * ppp),
+            pos2(view.max.x * ppp, view.max.y * ppp),
+        );
+        let fallback_win = Window {
+            level: 300.0,
+            width: 1200.0,
+        };
+        let window = self.viewports[vp_idx]
+            .window
+            .or_else(|| self.viewport_frame(vp_idx).map(|f| self.effective_window(vp_idx, f)))
+            .unwrap_or(fallback_win);
+        let vp = &self.viewports[vp_idx];
+        let invert = vp.effective_invert();
+        let clut = self.active_clut_table(vp_idx);
+        let vr_tf_lut =
+            crate::imaging::vr_presets::build_lut_from_stops(&vp.vr_custom_stops, clut.as_ref());
+        let cb = VolumeVrCallback {
+            viewport_id: vp_idx,
+            volume: vol,
+            rect_px,
+            window,
+            invert,
+            clut,
+            yaw: vp.vr_yaw,
+            pitch: vp.vr_pitch,
+            zoom: vp.zoom,
+            vr_mip: vp.vr_mip,
+            vr_tf_lut,
+            vr_shading: vp.vr_shading,
+            vr_ambient: vp.vr_ambient,
+            vr_diffuse: vp.vr_diffuse,
+            vr_specular: vp.vr_specular,
+            vr_clip_min: vp.vr_clip_min,
+            vr_clip_max: vp.vr_clip_max,
+            vr_bg_color: vp.vr_bg_color,
+            rotation_deg: vp.rotation,
+            x_flipped: vp.x_flipped,
+            y_flipped: vp.y_flipped,
+        };
+        painter.add(cb.into_shape(view));
+
+        // Clone `vol`? No, `vol` was moved into `cb`; read orientation from `self.viewport_volume(vp_idx)` for cube!
+        if let Some(v_ref) = self.viewport_volume(vp_idx) {
+            Self::draw_vr_orientation_cube(
+                painter,
+                view,
+                v_ref,
+                &self.viewports[vp_idx],
+            );
+        }
+
+        if self.show_annotations {
+            let font = FontId::proportional(11.5);
+            let mode_str = if self.viewports[vp_idx].vr_mip {
+                "3D MIP".to_string()
+            } else {
+                format!("3D VR · {}", self.viewports[vp_idx].vr_preset.label())
+            };
+            let tl = format!(
+                "{mode_str}\nWL: {:.0}  WW: {:.0}\nZoom: {:.0}%  (Drag to orbit · Right-drag WL/WW)",
+                window.level,
+                window.width,
+                self.viewports[vp_idx].zoom * 100.0
+            );
+            painter.text(
+                view.left_top() + vec2(11.0, 11.0),
+                Align2::LEFT_TOP,
+                &tl,
+                font.clone(),
+                Color32::from_black_alpha(220),
+            );
+            painter.text(
+                view.left_top() + vec2(10.0, 10.0),
+                Align2::LEFT_TOP,
+                tl,
+                font,
+                Color32::from_gray(232),
+            );
+        }
+
+        self.draw_viewport_border(painter, vp_idx, view);
+        self.draw_link_badge(ui, painter, vp_idx, view);
+        self.handle_series_drop(ui, painter, vp_idx, view);
+        self.viewport_context_menu(response, vp_idx);
+    }
+
+    fn draw_vr_orientation_cube(
+        painter: &egui::Painter,
+        view: Rect,
+        vol: &crate::volume::Volume3D,
+        vp: &ViewportCell,
+    ) {
+        if view.width() < 140.0 || view.height() < 140.0 {
+            return;
+        }
+        let norm3 = |v: [f32; 3]| -> [f32; 3] {
+            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-5);
+            [v[0] / l, v[1] / l, v[2] / l]
+        };
+        let cross3 = |a: [f32; 3], b: [f32; 3]| -> [f32; 3] {
+            [
+                a[1] * b[2] - a[2] * b[1],
+                a[2] * b[0] - a[0] * b[2],
+                a[0] * b[1] - a[1] * b[0],
+            ]
+        };
+        let dot = |a: [f32; 3], b: [f32; 3]| -> f32 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] };
+
+        let v_left = norm3([
+            vol.row_dir[0] as f32,
+            vol.col_dir[0] as f32,
+            vol.slice_dir[0] as f32,
+        ]);
+        let v_sup = norm3([
+            vol.row_dir[2] as f32,
+            vol.col_dir[2] as f32,
+            vol.slice_dir[2] as f32,
+        ]);
+        let v_ant = norm3(cross3(v_left, v_sup));
+
+        let (sy, cy) = vp.vr_yaw.sin_cos();
+        let (sp, cp) = vp.vr_pitch.sin_cos();
+        let cam_dir = [
+            v_ant[0] * cy * cp + v_left[0] * sy * cp + v_sup[0] * sp,
+            v_ant[1] * cy * cp + v_left[1] * sy * cp + v_sup[1] * sp,
+            v_ant[2] * cy * cp + v_left[2] * sy * cp + v_sup[2] * sp,
+        ];
+        let fwd = norm3([-cam_dir[0], -cam_dir[1], -cam_dir[2]]);
+        let right0 = norm3(cross3(fwd, v_sup));
+        let up0 = norm3(cross3(right0, fwd));
+
+        let rad = vp.rotation.to_radians();
+        let (sr, cr) = rad.sin_cos();
+        let r_rot = [
+            right0[0] * cr + up0[0] * sr,
+            right0[1] * cr + up0[1] * sr,
+            right0[2] * cr + up0[2] * sr,
+        ];
+        let u_rot = [
+            -right0[0] * sr + up0[0] * cr,
+            -right0[1] * sr + up0[1] * cr,
+            -right0[2] * sr + up0[2] * cr,
+        ];
+        let right = if vp.x_flipped {
+            [-r_rot[0], -r_rot[1], -r_rot[2]]
+        } else {
+            r_rot
+        };
+        let up = if vp.y_flipped {
+            [-u_rot[0], -u_rot[1], -u_rot[2]]
+        } else {
+            u_rot
+        };
+
+        let center = view.right_bottom() - vec2(40.0, 40.0);
+        let radius = 20.0;
+        let project = |v: [f32; 3]| -> (Pos2, f32) {
+            let sx = dot(v, right) * radius;
+            let sy = -dot(v, up) * radius;
+            let sz = -dot(v, fwd);
+            (center + vec2(sx, sy), sz)
+        };
+
+        // Draw subtle backdrop disc
+        painter.circle_filled(
+            center,
+            28.0,
+            Color32::from_rgba_unmultiplied(12, 16, 22, 175),
+        );
+        painter.circle_stroke(center, 28.0, Stroke::new(1.0, Color32::from_gray(55)));
+
+        // Draw the 3 anatomical axes + 6 face labels sorted back-to-front
+        let faces: [([f32; 3], &str, Color32); 6] = [
+            (v_left, "L", Color32::from_rgb(120, 225, 160)),
+            ([-v_left[0], -v_left[1], -v_left[2]], "R", Color32::from_rgb(120, 225, 160)),
+            (v_ant, "A", Color32::from_rgb(255, 195, 95)),
+            ([-v_ant[0], -v_ant[1], -v_ant[2]], "P", Color32::from_rgb(255, 195, 95)),
+            (v_sup, "S", Color32::from_rgb(100, 195, 255)),
+            ([-v_sup[0], -v_sup[1], -v_sup[2]], "I", Color32::from_rgb(100, 195, 255)),
+        ];
+        let mut projected: Vec<(Pos2, f32, &str, Color32)> = faces
+            .iter()
+            .map(|&(dir, lbl, col)| {
+                let (p, z) = project(dir);
+                (p, z, lbl, col)
+            })
+            .collect();
+        projected.sort_by(|a, b| a.1.total_cmp(&b.1));
+        for (p, z, lbl, col) in projected {
+            let alpha = if z >= 0.0 { 255 } else { 95 };
+            let line_col = Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), alpha);
+            painter.line_segment([center, p], Stroke::new(if z >= 0.0 { 1.8 } else { 1.0 }, line_col));
+            if z >= -0.15 {
+                painter.text(
+                    p,
+                    Align2::CENTER_CENTER,
+                    lbl,
+                    FontId::proportional(10.5),
+                    line_col,
+                );
+            }
+        }
+    }
+
+    fn handle_series_drop(
+        &mut self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        vp_idx: usize,
+        view: Rect,
+    ) {
+        let Some(payload) = egui::DragAndDrop::payload::<(usize, usize)>(ui.ctx()) else {
+            return;
+        };
+        let pointer_in = ui
+            .input(|i| i.pointer.hover_pos().or(i.pointer.interact_pos()))
+            .is_some_and(|p| view.contains(p));
+        if !pointer_in {
+            return;
+        }
+        painter.rect_stroke(
+            view.shrink(2.0),
+            0.0,
+            Stroke::new(3.0, Color32::from_rgb(80, 200, 255)),
+            egui::StrokeKind::Inside,
+        );
+        let drop_lbl = match self.lang {
+            crate::i18n::Lang::Es => "Soltar para cargar serie",
+            crate::i18n::Lang::En => "Drop to load series",
+        };
+        let pill = Rect::from_center_size(view.center(), vec2(170.0, 28.0));
+        painter.rect_filled(pill, 6.0, Color32::from_rgba_unmultiplied(20, 65, 110, 225));
+        painter.rect_stroke(
+            pill,
+            6.0,
+            Stroke::new(1.5, Color32::from_rgb(100, 205, 255)),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            pill.center(),
+            Align2::CENTER_CENTER,
+            drop_lbl,
+            FontId::proportional(12.5),
+            Color32::WHITE,
+        );
+
+        if ui.input(|i| i.pointer.any_released()) {
+            let (si, ri) = *payload;
+            egui::DragAndDrop::clear_payload(ui.ctx());
+            self.active_viewport = vp_idx;
+            self.assign_series_to_viewport(vp_idx, Some((si, ri)));
+            if ui.input(|i| i.modifiers.shift) {
+                self.viewports[vp_idx].mpr_enabled = true;
+            }
+        }
+    }
+
+    fn viewport_context_menu(&mut self, response: &egui::Response, vp_idx: usize) {
+        response.context_menu(|ui| {
+            self.active_viewport = vp_idx;
+            let tr = crate::i18n::tr(self.lang);
+            let copy_lbl = match self.lang {
+                crate::i18n::Lang::Es => "📋 Copiar Imagen Anonimizada (Ctrl+C)",
+                crate::i18n::Lang::En => "📋 Copy Anonymized Image (Ctrl+C)",
+            };
+            if ui.button(copy_lbl).clicked() {
+                self.request_copy_active_viewport(ui.ctx());
+                ui.close();
+            }
+            ui.menu_button(tr.export_menu, |ui| {
+                if ui.button(tr.export_png).clicked() {
+                    self.export_active_png();
+                    ui.close();
+                }
+                if ui.button(tr.export_anon_dicom).clicked() {
+                    self.export_active_anonymized_dicom();
+                    ui.close();
+                }
+            });
+            ui.separator();
+
+            let has_series = self.viewports[vp_idx].selected.is_some();
+            let has_vol = self.viewport_volume(vp_idx).is_some();
+            if has_series {
+                let mut mpr_on = self.viewports[vp_idx].mpr_enabled;
+                if ui.toggle_value(&mut mpr_on, format!("🧊 {}", tr.mpr_3d)).changed() {
+                    if mpr_on {
+                        self.viewports[vp_idx].vr_enabled = false;
+                        self.request_mpr_mode(vp_idx, false);
+                    } else {
+                        self.disable_viewport_mpr(vp_idx);
+                    }
+                    ui.close();
+                }
+                if has_vol && !self.ortho_mpr_active {
+                    let mut vr_on = self.viewports[vp_idx].vr_enabled;
+                    if ui.toggle_value(&mut vr_on, "🧊 VR").changed() {
+                        self.viewports[vp_idx].vr_enabled = vr_on;
+                        if vr_on {
+                            self.disable_viewport_mpr(vp_idx);
+                        }
+                        ui.close();
+                    }
+                }
+                let mut ortho_on = self.ortho_mpr_active;
+                if ui.toggle_value(&mut ortho_on, format!("⊞ {}", tr.ortho_mpr)).changed() {
+                    if ortho_on {
+                        self.request_mpr_mode(vp_idx, true);
+                    } else {
+                        self.toggle_orthogonal_mpr();
+                    }
+                    ui.close();
+                }
+                ui.separator();
+            }
+
+            let presets_list: Vec<(String, Window)> = self
+                .presets
+                .hot_key_order()
+                .into_iter()
+                .filter_map(|e| Some((e.name.clone(), e.window?)))
+                .collect();
+            if !presets_list.is_empty() {
+                ui.menu_button("WL / WW", |ui| {
+                    if ui.button(tr.preset_default).clicked() {
+                        self.set_active_window(None);
+                        ui.close();
+                    }
+                    ui.separator();
+                    for (name, w) in &presets_list {
+                        if ui.button(name).clicked() {
+                            self.set_active_window(Some(*w));
+                            ui.close();
+                        }
+                    }
+                });
+            }
+
+            let transform_lbl = match self.lang {
+                crate::i18n::Lang::Es => "Transformar",
+                crate::i18n::Lang::En => "Transform",
+            };
+            ui.menu_button(transform_lbl, |ui| {
+                if ui.button(tr.rotate_ccw).clicked() {
+                    let vp = &mut self.viewports[vp_idx];
+                    vp.rotation = (vp.rotation - 90.0).rem_euclid(360.0);
+                    ui.close();
+                }
+                if ui.button(tr.rotate_cw).clicked() {
+                    let vp = &mut self.viewports[vp_idx];
+                    vp.rotation = (vp.rotation + 90.0).rem_euclid(360.0);
+                    ui.close();
+                }
+                let mut xf = self.viewports[vp_idx].x_flipped;
+                if ui.toggle_value(&mut xf, format!("⇄ {}", tr.flip_h)).changed() {
+                    self.viewports[vp_idx].x_flipped = xf;
+                }
+                let mut yf = self.viewports[vp_idx].y_flipped;
+                if ui.toggle_value(&mut yf, format!("⇅ {}", tr.flip_v)).changed() {
+                    self.viewports[vp_idx].y_flipped = yf;
+                }
+                ui.toggle_value(&mut self.viewports[vp_idx].invert, tr.invert);
+            });
+
+            if !self.viewports[vp_idx].vr_enabled
+                && ui.button(format!("🗑 {}", tr.clear_rois)).clicked()
+            {
+                let cur_slice = self.viewports[vp_idx].slice;
+                if let Some(key) = self.viewport_slice_key(vp_idx, cur_slice)
+                    && let Some(sref) = self.index.as_ref().and_then(|idx| {
+                        idx.studies
+                            .get(key.study)?
+                            .series
+                            .get(key.series)?
+                            .slices
+                            .get(key.slice)
+                    })
+                {
+                    let mk = (sref.path.clone(), sref.frame);
+                    self.measures.remove(&mk);
+                }
+                ui.close();
+            }
+            ui.separator();
+            if ui.button(format!("↺ {}", tr.reset_viewport)).clicked() {
+                let vp = &mut self.viewports[vp_idx];
+                vp.reset_view();
+                vp.reset_clut();
+                vp.invert = false;
+                vp.mpr_enabled = false;
+                vp.mpr_plane = None;
+                vp.mpr_cached = None;
+                self.set_active_window(None);
+                ui.close();
+            }
+        });
     }
 
     fn gpu_callback(
