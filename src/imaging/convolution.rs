@@ -67,8 +67,8 @@ impl ImageConvolution {
         let size = self.size;
         let half = (size / 2) as isize;
         let mut whole = [0i32; 25];
-        for i in 0..(size * size) {
-            whole[i] = (self.weights[i] as i32) as i16 as i32;
+        for (dst, &weight) in whole.iter_mut().zip(&self.weights[..size * size]) {
+            *dst = (weight as i32) as i16 as i32;
         }
         let divisor = (self.normalization as i32).max(0);
         let mut out = vec![0u8; len];
