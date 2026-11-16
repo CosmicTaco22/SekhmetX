@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] - 2026-11-16
+
+### Added (3D Volume Rendering — Stage 5)
+- **3D Clipping / Crop Box (`src/gpu_view.rs`, `src/ui/toolbar.rs`, `src/app/mod.rs`):** Added `✂ Clip` sliders (`X / Y / Z` min/max bounds) to intersect 3D rays against the cropped sub-volume, plus **Reset Clip**.
+- **3D Background Color Controls (`src/gpu_view.rs`, `src/ui/toolbar.rs`):** Added `🎨 BG` presets (`Black`, `Dark Slate`, `Deep Navy`, `White`) and custom RGB picker.
+- **3D Anatomical Orientation Cube Widget (`src/app/viewport.rs`):** Added live `L/R`, `A/P`, and `S/I` axis widget in the bottom-right corner of 3D VR/MIP viewports.
+
+## [0.4.10] - 2026-11-16
+
+### Added (3D Volume Rendering — Stage 4)
+- **Interactive Histogram & 1D Transfer-Function Curve Editor (`src/app/modals.rs`, `src/imaging/vr_presets.rs`, `src/gpu_view.rs`):**
+  - Added cached 128-bin log-scaled HU histogram behind a draggable piecewise-linear opacity/color curve (`📈 TF`).
+  - Supports dragging control points, double-clicking to add stops, right-clicking (or `🗑`) to remove interior stops, RGB color editing, and dirty-hashed GPU LUT uploads.
+
+## [0.4.9] - 2026-11-16
+
+### Added & Fixed (Comparison Linking & Zoom Modes)
+- **Two Zoom-Link Modes (`src/app/mpr_sync.rs`, `src/ui/toolbar.rs`):** Added **`= mm`** (same physical FOV size across viewports) vs **`Rel`** (preserve relative zoom at moment of link) when `🔗 Zoom` is active.
+- **Fixed `⚓ Lock 3D Sync`:** Now automatically ensures a default link pair and turns on `🔗 Cut` (`link_cut = true`).
+- **`⚖ Compare` / `⚖ Comparar` Mode (`src/app/mpr_sync.rs`, `src/ui/toolbar.rs`):** One-click comparison links Zoom (`= mm`), WL/WW, and Cut, matches WL/WW/pan/zoom, enables 3D MPR on linked volumes, and aligns 3D XYZ planes via `RigidTransform3D`.
+
+## [0.4.8] - 2026-11-15
+
+### Added (Productivity & Clipboard)
+- **`Ctrl+C` / `Cmd+C` Anonymized HD Screenshot (`src/app/mod.rs`, `src/app/overlays.rs`):** Captures the active 2D/MPR/VR viewport at full display resolution with patient PHI stripped and copies it to the OS clipboard via `arboard`.
+- **Right-Click Viewport Context Menu (`src/app/viewport.rs`):** Clean right-click menu with Copy Anonymized Image, Export, 3D MPR/VR/Ax-Cor-Sag toggles, WL/WW Presets, Transform, Clear ROIs, and Reset Viewport.
+- **Drag-and-Drop Series / Cuts (`src/app/browser.rs`, `src/app/viewport.rs`):** Drag any series or compact thumbnail directly onto any empty or loaded viewport.
+
+## [0.4.7] - 2026-11-15
+
+### Added & Fixed (3D Volume Rendering — Stage 3)
+- **3D Gradient Normals & Blinn-Phong Shading (`src/gpu_view.rs`, `src/ui/toolbar.rs`):** Added physical-aspect central-difference gradient estimation and studio key-light Blinn-Phong shading with **`☀ Shading`** toggle and **Ambient / Diffuse / Specular** sliders.
+- **Centered Settings Cog (`src/app/mod.rs`):** Custom painted `24×18` pill in the status bar centering `⚙`.
+
+## [0.4.6] - 2026-11-15
+
+### Added (3D Volume Rendering — Stage 2)
+- **1D RGBA Transfer Function LUTs & OsiriX-Style 3D Presets (`src/imaging/vr_presets.rs`, `src/gpu_view.rs`, `src/ui/toolbar.rs`):** Added `Default`, `Bone`, `Angio / Vascular`, `Soft Tissue`, and `Lung / Airway` presets with linearly interpolated LUT sampling and exponential opacity correction.
+
+## [0.4.5] - 2026-11-15
+
+### Improved (Toolbar & Settings)
+- Moved Settings (`⚙`) and update indicator to the bottom-right status bar; removed the `App` toolbar group.
+- Added **Updates** mode controls (`Check on startup` / `Manual only` + `Check now`) in Settings and a **Language** selector to the first-run notice modal.
+
+## [0.4.4] - 2026-11-15
+
+### Improved (Non-Fullscreen Layout)
+- Inlined the slice scrubber & MPR/VR strip onto the second toolbar row when wrapped groups leave room, eliminating the mostly-empty third row.
+
+## [0.4.3] - 2026-11-15
+
+### Improved (Responsive Toolbar, Library Unload & Compact Sidebar)
+- Replaced the `»` overflow popup with dynamic multi-row toolbar wrapping and mode-specific group/button hiding (Library vs 2D/MPR vs 3D VR).
+- Moved highlighted **`← Library`** / **`← Biblioteca`** to the top-left toolbar (unloading decoded frames/volumes on return).
+- Added **Compact Sidebar Mode** (`96 px` thumbnail strip of the current patient's acquisitions with `AX`/`COR`/`SAG` cut badges).
+
+## [0.4.2] - 2026-11-15
+
+### Fixed (3D VR Orientation & Rotation)
+- Derived the 3D VR camera basis (`v_left`, `v_sup`, `v_ant`) from `Volume3D`'s DICOM patient-LPS vectors so Superior/head is always up and Inferior/pelvis is always down.
+- Wired View-menu `Rotate 90° CCW/CW` and `Flip H/V` into `VolumeVrCallback`.
+
+## [0.4.1] - 2026-11-15
+
+### Added (3D Volume Rendering — Stage 1)
+- Added WGSL GPU 3D ray-caster (`VR` alpha-compositing & `3D MIP`), `🧊 VR` toolbar toggle, `VR | MIP | Front | Left | Top` strip, and interactive 3D orbit/zoom/WL.
+
+## [0.4.0] - 2026-11-15
+
+### Added (OsiriX-Inspired UI Overhaul)
+- Full-screen Database Library view, OsiriX-style grouped toolbar, multi-viewport link groups (`1–4`) with colored badges, and side-by-side DICOM Meta-Data Inspector.
+
+---
+
 ## [0.2.7] - 2026-11-14
 
 ### Improved (Default Scroll, Auto-3D MPR & Plane Hotkeys)
