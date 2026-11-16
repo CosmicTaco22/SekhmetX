@@ -302,6 +302,7 @@ pub(crate) struct ViewerApp {
     message: Option<String>,
 
     pub(crate) tiling: ViewportTiling,
+    pub(crate) maximized_viewport: Option<usize>,
     pub(crate) viewports: Vec<ViewportCell>,
     pub(crate) active_viewport: usize,
     pub(crate) sync_mode: SliceSynchronization,
@@ -527,6 +528,7 @@ impl ViewerApp {
             scan_gen: 0,
             message: None,
             tiling: ViewportTiling::default(),
+            maximized_viewport: None,
             viewports,
             active_viewport: 0,
             sync_mode: SliceSynchronization::Absolute,
@@ -1695,6 +1697,7 @@ impl ViewerApp {
     /// Return to the full Database Library view and unload decoded frames/volumes for the active study.
     pub(crate) fn return_to_library(&mut self) {
         self.show_database_view = true;
+        self.maximized_viewport = None;
         self.message = None;
         self.playing = false;
         self.ortho_mpr_active = false;

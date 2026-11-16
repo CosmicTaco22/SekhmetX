@@ -5,10 +5,17 @@ impl ViewerApp {
         let full_rect = ui.available_rect_before_wrap();
         let rows = self.tiling.rows.max(1);
         let cols = self.tiling.columns.max(1);
+
+        self.cursor_info = None;
+        if let Some(max_idx) = self.maximized_viewport
+            && max_idx < rows * cols
+        {
+            self.render_single_viewport(ui, max_idx, full_rect.shrink(1.0));
+            return;
+        }
         let cell_w = full_rect.width() / cols as f32;
         let cell_h = full_rect.height() / rows as f32;
 
-        self.cursor_info = None;
         for r in 0..rows {
             for c in 0..cols {
                 let vp_idx = r * cols + c;
@@ -1071,14 +1078,95 @@ impl ViewerApp {
         response.context_menu(|ui| {
             self.active_viewport = vp_idx;
             let tr = crate::i18n::tr(self.lang);
+
+            // Quick-tool icon palette at the top of the menu (2 compact rows)
+            if !self.viewports[vp_idx].vr_enabled {
+                use crate::ui::icons::{small_tool_button, Icon};
+                let nav_tools: [(Icon, Tool, &str); 6] = [
+                    (Icon::WindowLevel, Tool::WindowLevel, tr.wl),
+                    (Icon::Scroll, Tool::Scroll, tr.scroll),
+                    (Icon::Pan, Tool::Pan, tr.pan),
+                    (Icon::Zoom, Tool::Zoom, tr.zoom),
+                    (Icon::Rotate, Tool::Rotate, tr.rot),
+                    (Icon::Orbit, Tool::Orbit3D, tr.orbit_3d),
+                ];
+                let roi_tools: [(Icon, Tool, &str); 6] = [
+                    (Icon::Length, Tool::Length, tr.roi_length),
+                    (Icon::Angle, Tool::Angle, tr.roi_angle),
+                    (Icon::Oval, Tool::Oval, tr.roi_oval),
+                    (Icon::Rectangle, Tool::Rect, tr.roi_rect),
+                    (Icon::Polygon, Tool::Polygon, tr.roi_polygon),
+                    (Icon::Point, Tool::Point, tr.roi_point),
+                ];
+                for row in [&nav_tools, &roi_tools] {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 3.0;
+                        for &(icon, t, tip) in row {
+                            if small_tool_button(ui, icon, self.tool == t)
+                                .on_hover_text(tip)
+                                .clicked()
+                            {
+                                self.tool = t;
+                                self.drawing.clear();
+                                self.angle_pending = None;
+                                ui.close();
+                            }
+                        }
+                    });
+                }
+                ui.separator();
+            }
+
             let copy_lbl = match self.lang {
-                crate::i18n::Lang::Es => "📋 Copiar Imagen Anonimizada (Ctrl+C)",
-                crate::i18n::Lang::En => "📋 Copy Anonymized Image (Ctrl+C)",
+                crate::i18n::Lang::Es => "Copiar imagen anonimizada (Ctrl+C)",
+                crate::i18n::Lang::En => "Copy anonymized image (Ctrl+C)",
             };
             if ui.button(copy_lbl).clicked() {
                 self.request_copy_active_viewport(ui.ctx());
                 ui.close();
             }
+
+            // Switch series in this viewport directly from the canvas
+            if let Some((si, cur_ri)) = self.viewports[vp_idx].selected
+                && let Some(study) = self.study_at(si)
+                && study.series.len() > 1
+            {
+                let series_items: Vec<(usize, String)> = study
+                    .series
+                    .iter()
+                    .enumerate()
+                    .map(|(ri, s)| {
+                        let desc = if s.description.is_empty() {
+                            "(no description)"
+                        } else {
+                            s.description.as_str()
+                        };
+                        (
+                            ri,
+                            format!(
+                                "{} Se {} [{}] · {}",
+                                s.modality,
+                                s.number,
+                                s.dominant_plane.badge(),
+                                desc
+                            ),
+                        )
+                    })
+                    .collect();
+                let switch_lbl = match self.lang {
+                    crate::i18n::Lang::Es => "Cambiar serie",
+                    crate::i18n::Lang::En => "Switch series",
+                };
+                ui.menu_button(switch_lbl, |ui| {
+                    for (ri, lbl) in &series_items {
+                        if ui.selectable_label(*ri == cur_ri, lbl).clicked() {
+                            self.assign_series_to_viewport(vp_idx, Some((si, *ri)));
+                            ui.close();
+                        }
+                    }
+                });
+            }
+
             ui.menu_button(tr.export_menu, |ui| {
                 if ui.button(tr.export_png).clicked() {
                     self.export_active_png();
@@ -1095,7 +1183,7 @@ impl ViewerApp {
             let has_vol = self.viewport_volume(vp_idx).is_some();
             if has_series {
                 let mut mpr_on = self.viewports[vp_idx].mpr_enabled;
-                if ui.toggle_value(&mut mpr_on, format!("🧊 {}", tr.mpr_3d)).changed() {
+                if ui.toggle_value(&mut mpr_on, tr.mpr_3d).changed() {
                     if mpr_on {
                         self.viewports[vp_idx].vr_enabled = false;
                         self.request_mpr_mode(vp_idx, false);
@@ -1106,7 +1194,7 @@ impl ViewerApp {
                 }
                 if has_vol && !self.ortho_mpr_active {
                     let mut vr_on = self.viewports[vp_idx].vr_enabled;
-                    if ui.toggle_value(&mut vr_on, "🧊 VR").changed() {
+                    if ui.toggle_value(&mut vr_on, "3D VR").changed() {
                         self.viewports[vp_idx].vr_enabled = vr_on;
                         if vr_on {
                             self.disable_viewport_mpr(vp_idx);
@@ -1115,7 +1203,7 @@ impl ViewerApp {
                     }
                 }
                 let mut ortho_on = self.ortho_mpr_active;
-                if ui.toggle_value(&mut ortho_on, format!("⊞ {}", tr.ortho_mpr)).changed() {
+                if ui.toggle_value(&mut ortho_on, tr.ortho_mpr).changed() {
                     if ortho_on {
                         self.request_mpr_mode(vp_idx, true);
                     } else {
@@ -1148,6 +1236,30 @@ impl ViewerApp {
                 });
             }
 
+            if !self.viewports[vp_idx].vr_enabled {
+                let cur_conv = self.viewports[vp_idx].convolution_idx;
+                ui.menu_button(tr.filter_prefix, |ui| {
+                    if ui
+                        .selectable_label(cur_conv.is_none(), tr.filter_no_filter)
+                        .clicked()
+                    {
+                        let vp = &mut self.viewports[vp_idx];
+                        vp.convolution_idx = None;
+                        vp.conv_cached = None;
+                        ui.close();
+                    }
+                    ui.separator();
+                    for (idx, k) in FACTORY_CONVOLUTIONS.iter().enumerate() {
+                        if ui.selectable_label(cur_conv == Some(idx), k.name).clicked() {
+                            let vp = &mut self.viewports[vp_idx];
+                            vp.convolution_idx = Some(idx);
+                            vp.conv_cached = None;
+                            ui.close();
+                        }
+                    }
+                });
+            }
+
             let transform_lbl = match self.lang {
                 crate::i18n::Lang::Es => "Transformar",
                 crate::i18n::Lang::En => "Transform",
@@ -1164,18 +1276,18 @@ impl ViewerApp {
                     ui.close();
                 }
                 let mut xf = self.viewports[vp_idx].x_flipped;
-                if ui.toggle_value(&mut xf, format!("⇄ {}", tr.flip_h)).changed() {
+                if ui.toggle_value(&mut xf, tr.flip_h).changed() {
                     self.viewports[vp_idx].x_flipped = xf;
                 }
                 let mut yf = self.viewports[vp_idx].y_flipped;
-                if ui.toggle_value(&mut yf, format!("⇅ {}", tr.flip_v)).changed() {
+                if ui.toggle_value(&mut yf, tr.flip_v).changed() {
                     self.viewports[vp_idx].y_flipped = yf;
                 }
                 ui.toggle_value(&mut self.viewports[vp_idx].invert, tr.invert);
             });
 
             if !self.viewports[vp_idx].vr_enabled
-                && ui.button(format!("🗑 {}", tr.clear_rois)).clicked()
+                && ui.button(tr.clear_rois).clicked()
             {
                 let cur_slice = self.viewports[vp_idx].slice;
                 if let Some(key) = self.viewport_slice_key(vp_idx, cur_slice)
@@ -1193,8 +1305,40 @@ impl ViewerApp {
                 }
                 ui.close();
             }
+
             ui.separator();
-            if ui.button(format!("↺ {}", tr.reset_viewport)).clicked() {
+            if self.tiling.cell_count() > 1 {
+                let is_max = self.maximized_viewport == Some(vp_idx);
+                let max_lbl = match (self.lang, is_max) {
+                    (crate::i18n::Lang::Es, false) => "Maximizar visor",
+                    (crate::i18n::Lang::Es, true) => "Restaurar cuadrícula",
+                    (crate::i18n::Lang::En, false) => "Maximize viewport",
+                    (crate::i18n::Lang::En, true) => "Restore grid",
+                };
+                if ui.button(max_lbl).clicked() {
+                    self.maximized_viewport = if is_max { None } else { Some(vp_idx) };
+                    ui.close();
+                }
+            }
+            let mut images_only = !self.show_annotations;
+            let img_only_lbl = match self.lang {
+                crate::i18n::Lang::Es => "Solo imágenes (ocultar HUD)",
+                crate::i18n::Lang::En => "Images only (hide HUD)",
+            };
+            if ui.toggle_value(&mut images_only, img_only_lbl).changed() {
+                self.show_annotations = !images_only;
+            }
+            if self.viewports[vp_idx].link_group != 0 {
+                let unlink_lbl = match self.lang {
+                    crate::i18n::Lang::Es => "Desenlazar grupo",
+                    crate::i18n::Lang::En => "Unlink group",
+                };
+                if ui.button(unlink_lbl).clicked() {
+                    self.viewports[vp_idx].link_group = 0;
+                    ui.close();
+                }
+            }
+            if ui.button(tr.reset_viewport).clicked() {
                 let vp = &mut self.viewports[vp_idx];
                 vp.reset_view();
                 vp.reset_clut();

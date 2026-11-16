@@ -825,6 +825,7 @@ impl ViewerApp {
 
     pub(crate) fn set_tiling(&mut self, tiling: ViewportTiling) {
         self.tiling = tiling;
+        self.maximized_viewport = None;
         let count = tiling.cell_count();
         if self.active_viewport >= count {
             self.active_viewport = 0;

@@ -122,15 +122,11 @@ Local data lives in `%LOCALAPPDATA%\SekhmetX` (or beside the exe when a
 
 ## What was verified, and what was not
 
-Verified on Linux, 16 Nov 2026, at v0.5.1 plus the lint fix:
-- `cargo test --release`: 105 passed, 0 failed.
-- `cargo clippy --release -- -D warnings`: clean after one fix in
-  `src/imaging/convolution.rs` (Rust 1.97 rejects an indexed loop). That fix is
-  commit `5f7fd63` on branch `claude/fervent-johnson-ekq5ps` and is **not yet on
-  `master`**; CI uses stable Rust and will fail on the same lint without it.
-- `cargo build --release` succeeds; `python3 tools/test_map.py` passes.
-- Synthetic CT and CR series (`tools/testdata/`): 161 of 161 images decode;
-  `--list`, `--check` and `--render` work.
+Verified on Windows, 16 Nov 2026, at v0.5.6:
+- `cargo clippy --release -- -D warnings`: clean (`0` warnings; `5f7fd63` is merged on `master`).
+- `cargo test --release`: 113 passed, 0 failed.
+- `cargo build --release` succeeds (`target/release/sekhmetx.exe`).
+- `python3 tools/test_map.py` and synthetic CT/CR series (`tools/testdata/`, 161 images) were verified at v0.5.1–v0.5.5.
 
 Verified by the owner on Windows: the interface, MPR, volume rendering, compare
 by hand, version by version (the PACS portal flow, since removed, too).
