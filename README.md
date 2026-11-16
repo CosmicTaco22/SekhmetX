@@ -1,110 +1,237 @@
 # SekhmetX
 
-A fast, native radiological DICOM viewer for Windows, macOS, and Linux, written in Rust (`eframe`/`egui` + `wgpu` + `dicom-rs`). It is a from-scratch rewrite modeled directly on [IsiX DICOM Viewer](https://github.com/ThalesMMS/IsiX-DICOM-Viewer-macOS) (and Horos / OsiriX before it) for its geometry, pixel pipeline, ROI statistics, and radiological workflow.
+**A fast, native DICOM viewer for Windows, macOS and Linux — a Rust port of [IsiX DICOM Viewer](https://github.com/ThalesMMS/IsiX-DICOM-Viewer-macOS).**
 
-> **Not a medical device.** For personal use, teaching, research, and second looks only; not certified for primary clinical diagnosis.
+[![Latest release](https://img.shields.io/github/v/release/CosmicTaco22/SekhmetX?label=download&sort=semver)](https://github.com/CosmicTaco22/SekhmetX/releases/latest)
+[![CI](https://github.com/CosmicTaco22/SekhmetX/actions/workflows/ci.yml/badge.svg)](https://github.com/CosmicTaco22/SekhmetX/actions/workflows/ci.yml)
+[![License: LGPL v3](https://img.shields.io/badge/license-LGPL--3.0--or--later-blue.svg)](LICENSE)
+![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-informational)
 
----
+![Three-plane MPR with linked crosshairs](docs/screenshots/ortho.png)
 
-## Key Features
+SekhmetX brings the IsiX / Horos way of reading studies to every desktop.
+[IsiX](https://github.com/ThalesMMS/IsiX-DICOM-Viewer-macOS), by
+**Thales Matheus M Santos ([@ThalesMMS](https://github.com/ThalesMMS))**, is an
+independently maintained fork of [Horos](https://github.com/horosproject/horos),
+which is itself derived from OsiriX. All three are macOS-only. SekhmetX rebuilds
+IsiX piece by piece in Rust so the same layout, shortcuts and behaviour run
+natively on Windows, macOS and Linux from a single executable.
 
-- **Direct Folder, File & Streaming `.zip` Archive Opening:**
-  - Open folders recursively, individual DICOM files, or **`.zip` / ZIP64 patient archives** (streamed safely into a per-process `%TEMP%\sekhmetx-zip-<pid>` folder with path-traversal protection, size/entry caps, and automatic cleanup).
-- **Horos-Style Icon Toolbar & Bilingual UI (`EN` / `ES`):**
-  - Toolbar ordered to match IsiX / Horos (`ViewerToolbarCatalog`), with drawn icons, captions under each group, and groups that wrap onto a second row on narrower windows so nothing is hidden.
-  - Dark (default), Light or System theme, a choice of accent colours (or your own) with an optional tinted toolbar, and **English / Spanish** interface, all chosen in Settings and remembered.
-- **Horos Study Browser with Search, Local SQLite Library & Live Mini-Thumbnails:**
-  - Crash-safe local SQLite database (WAL mode, schema v2 migrations) storing study/series metadata, persistent ROIs, and preferences. *(Note: patient metadata in the local SQLite database is stored unencrypted on disk.)*
-  - Managed library storage (`SekhmetX/Studies/<StudyUID>/`) with configurable **`Ask` / `Always` / `Never`** copy policy when opening `.zip` archives, live library disk-usage reporting (MB), **`⚠ [files missing]`** badges if source files move, per-study **`Remove from library`**, and one-click **`Clear`** library reset.
-  - Full-window Library view with a study table, modality albums, series thumbnails and a study details pane.
-  - Instant search bar (`🔍`) filtering by patient name, ID, accession, study, or series description, plus one-click modality filter pills (`All`, `CT`, `MR`, `US`, `DX/CR`, `PT/NM`).
-  - Live rendered **38×38 DICOM series mini-thumbnails**, dominant anatomical plane badges (`[AX]`, `[COR]`, `[SAG]`, `[OBL]`), and **Acquisition-Time MPR Auto-Grouping** (`🧊 MPR [AX·COR·SAG]`).
-- **Exact Native-Plane & In-Place Single-Viewport 3D MPR, Thick-Slab MIP/MinIP/Mean & Trackball Rotation:**
-  - Native-plane `Thin` MPR returns bit-identical source slice voxels and source slice thickness (`Thk`), and switching `Ax` / `Cor` / `Sag` (or opening `⊞ Ax·Cor·Sag`) automatically uses the native high-definition Axial, Coronal, or Sagittal sibling series in the MPR group when present.
-  - **`3D Rotate` (`O`)** trackball orbit inside any single viewport, **`⊞ Ax·Cor·Sag`** 3-pane orthogonal MPR with interactive crosshairs, **Thick-Slab Projections (`Thin / MIP / MinIP / Mean`, `1.0–50.0 mm`)**, and opt-in **Blend Siblings** mode.
-  - **3D Geometry Validation & Gantry Tilt Support:** Ported `SliceIntervalRegularity` validation, full 3×3 matrix inversion in `lps_to_voxel` for tilted gantries, unverified-geometry measurement guards, and pixel-unit (`px`) fallback when `PixelSpacing` is absent.
-- **Multi-Series Comparison Layouts & Non-Blocking Cross-Study 3D Synchronization:**
-  - Interactive **`4 × 4` visual square-grid layout picker (`⊞ Layout`)** (`1×1` up to `4×4` / 16 viewports).
-  - Worker-thread 6-DOF **Normalized Cross-Correlation (NCC)** rigid registration with `FrameOfReferenceUID` identity fast path, alignment score / position-sync fallback banners, and manual **`⚓ Lock 3D Sync`** override.
-- **Horos / IsiX Regions of Interest (`IsiXROI`) & Pixel Statistics:**
-  - **`Length` (`L` / `M`)**, **`Angle` (`A`)**, **`◯ Oval` (`E`)**, **`▭ Rect` (`B`)**, **`⬠ Closed Polygon` (`G`)**, **`✏ Freehand Pencil` (`F`, with cubic spline smoothing)**, and **`⌖ Point Probe` (`T`)**.
-  - Live calibrated **Area ($\text{cm}^2 / \text{mm}^2$)**, **Perimeter**, **Mean**, **SD**, **Min**, and **Max** (`HU`) reading unconvolved source pixels, with automatic per-slice persistence in SQLite (`rois` table).
-- **GPU Window/Level with Bilinear Interpolation, 31 Horos CLUTs & 22 Horos 2D Convolution Filters:**
-  - Hardware-accelerated WGSL shader pipeline (`wgpu`) with post-windowing **Bilinear Interpolation** (toggleable in View), CPU fallback (`RDICOM_CPU=1`), **31 Horos CLUTs**, and **22 Horos 2D Convolution Filters**.
-- **In-App Auto-Updater:**
-  - Checks GitHub Releases (`CosmicTaco22/SekhmetX`), displays release notes, verifies `SHA256SUMS` before replacing the binary in-place, and supports a startup-check toggle. *(Note: release binaries are currently **unsigned**; `SHA256SUMS` protects against corrupted downloads, and Windows SmartScreen / macOS Gatekeeper may ask for confirmation on first launch.)*
-- **Export & DICOM De-Identification:**
-  - Export individual slices or entire series to PNG (preserving active WL/WW, CLUT, invert, and convolution filter) or export anonymized DICOM series with private tags stripped, patient/institution identifiers scrubbed, and UIDs consistently remapped.
+It is written by a radiologist who reads on both a Mac and a Windows PC, for
+people who want a light, responsive viewer that feels like the one they already
+know.
+
+> **Not a medical device.** SekhmetX is for personal use, teaching, research and
+> second opinions. It is not certified for primary diagnosis.
 
 ---
 
-## Mouse and Keyboard Controls
+## How the port works
+
+IsiX is about 380,000 lines of Swift and Objective-C built on AppKit, Metal and
+Core Data, so it cannot simply be recompiled for other systems. SekhmetX takes a
+different route:
+
+- **Logic is ported, file by file.** Window/level rules, VOI LUTs, geometry,
+  ROI statistics, colour tables and convolution filters are translated from the
+  IsiX sources, keeping their rounding and edge cases. Ported files name the
+  IsiX file they follow.
+- **IsiX's tests come along.** The expected results in IsiX's test suites are
+  translated into Rust tests next to the ported code, so the port is checked
+  against the original's own answers.
+- **Screens are rebuilt.** The interface is rebuilt with
+  [egui](https://github.com/emilk/egui) and the GPU drawing with
+  [wgpu](https://wgpu.rs) (Direct3D 12, Metal or Vulkan), laid out to match
+  Horos and IsiX.
+- **Every IsiX file has a place.** [`PORTING_MAP.md`](PORTING_MAP.md) assigns
+  all IsiX files to an area with a decision, a priority and its progress, and
+  [`tools/upstream.py`](tools/upstream.py) reports what changed upstream since
+  the last review so new IsiX work can be followed.
+
+SekhmetX is not made, sponsored or endorsed by IsiX, the Horos Project, Purview
+or Pixmeo. It does not use their names or icons in the application.
+
+---
+
+## Features
+
+**Library**
+- Opens folders, single DICOM files and `.zip` / ZIP64 archives (streamed, with
+  path and size checks).
+- Local SQLite library that opens instantly on later launches; studies grouped
+  by patient, with manual linking of the same patient under different name
+  spellings.
+- Full-window library view with modality albums, a study table, series
+  thumbnails and a study details pane; search by patient, ID, accession, study
+  or series.
+- Axial, coronal and sagittal reconstructions of one acquisition are grouped
+  together, and MIP series are kept apart from their source stacks.
+
+**2D viewing**
+- GPU window/level with optional bilinear smoothing and a CPU fallback.
+- Horos window presets (keys `1`–`9`), 31 Horos colour tables and 22 Horos
+  convolution filters.
+- Corner annotations, orientation letters, rulers and reference lines.
+- Layouts from 1×1 to 4×4, drag-and-drop of series onto any viewport, and
+  colour-coded link groups for zoom, window/level and slice position.
+
+**MPR and 3D**
+- In-place 3D MPR and a three-pane Ax·Cor·Sag view with linked crosshairs.
+- Native planes return the original pixels unchanged; when the scanner already
+  produced coronal or sagittal series, those are shown instead of a
+  reconstruction.
+- Thick-slab MIP, MinIP and mean; oblique planes with a 3D rotate tool;
+  gantry-tilt support and slice-spacing checks.
+- GPU volume rendering and 3D MIP with presets, shading, a transfer-function
+  editor, clipping and an orientation cube.
+- Side-by-side comparison of studies from different dates with automatic 3D
+  alignment.
+
+**Measurements**
+- Length, angle, oval, rectangle, polygon, pencil and point, with area, mean,
+  SD, minimum and maximum from the unfiltered pixels; saved per slice.
+
+**Export and privacy**
+- PNG export of an image or a whole series, and anonymized DICOM export (private
+  tags removed, identifiers scrubbed, UIDs remapped consistently).
+- `Ctrl+C` / `Cmd+C` copies the active viewport to the clipboard without
+  patient details.
+- A DICOM metadata inspector beside the image.
+
+**Application**
+- English and Spanish interface; dark, light or system theme; accent colour of
+  your choice.
+- In-app updater that checks GitHub Releases and verifies the download's
+  SHA-256 before installing.
+- Opt-in crash reports that you review before anything is sent.
+
+---
+
+## Download and requirements
+
+Download the latest build from
+[**Releases**](https://github.com/CosmicTaco22/SekhmetX/releases/latest):
+
+| System | File |
+|---|---|
+| Windows, x86-64 | `sekhmetx-vX.Y.Z-windows-x86_64.zip` |
+| Windows on ARM | `sekhmetx-vX.Y.Z-windows-arm64.zip` |
+| macOS, Apple Silicon | `sekhmetx-vX.Y.Z-macos-arm64-app.zip` (app) or `.tar.gz` |
+| Linux, x86-64 | `sekhmetx-vX.Y.Z-linux-x86_64.tar.gz` |
+
+Each release has a `SHA256SUMS` file. Builds are not yet code-signed, so
+Windows SmartScreen and macOS Gatekeeper may ask for confirmation the first
+time. A graphics card with Direct3D 12, Metal or Vulkan is used when present.
+
+### Coming from Horos or IsiX
+
+SekhmetX keeps its own library and does not open the Horos or IsiX database.
+Open your study folders, files or `.zip` exports with **Open**, or drop them on
+the window; they are added to the library and open instantly afterwards.
+
+---
+
+## Mouse and keyboard
 
 | Action | Control |
 |---|---|
-| Previous / next slice | Mouse wheel, `↑` / `↓` / `←` / `→`, `Scroll` tool (default), toolbar slider, or bottom viewport scrubber |
-| Switch Axial / Coronal / Sagittal plane | `A` (Axial) · `C` (Coronal) · `S` (Sagittal), or toolbar `Ax` / `Cor` / `Sag` |
-| Jump 10 slices / first / last | `Page Up` / `Page Down`, `Home` / `End`, toolbar `⏮` / `⏭` |
-| Previous / next series | `[` / `]`, or toolbar `◀ Se` / `Se ▶` |
-| Active tool | Left click / drag |
-| Pan | Middle drag, or `Pan` tool |
-| Zoom | Right drag, `Ctrl` + wheel, or `Zoom` tool (`Z`) |
-| In-plane 2D rotate / flip | `Rotate` tool, `↺ 90°`, `↻ 90°`, `H` (Flip H), `V` (Flip V) |
-| In-place 3D MPR orbit | `3D Rotate` tool (`O`) — drag to orbit 3D plane, `Shift` + drag to roll |
-| Reset view | Double-click, `R`, or toolbar `Reset` |
-| Window presets | `1` CT Abdomen · `2` CT Bone · `3` CT Brain · `4` CT Pulmonary · `5` VR Endoscopy · `0` Default |
-| Invert greyscale | `I` |
-| ROI & measurement tools | `L`/`M` Length · `A` Angle · `E` Oval · `B` Rect · `G` Polygon (`Enter` to close) · `F` Pencil · `T` Point |
-| Delete last ROI on slice | `Delete` or `Backspace` (`🗑 Clear ROIs` clears slice) |
-| Cine play / pause | `P` or `Space` |
+| Previous / next image | Mouse wheel, `↑` `↓` `←` `→`, or the slice slider |
+| Jump 10 images / first / last | `Page Up` / `Page Down`, `Home` / `End` |
+| Previous / next series | `[` / `]` |
+| Axial / coronal / sagittal | `A` / `C` / `S` (uses the scanner's own series when available) |
+| Window / level, zoom | `W`, `Z`; right drag zooms, middle drag pans |
+| 3D rotate (oblique MPR) | `O`, then drag; `Shift` + drag to roll |
+| Window presets | `1`–`9`, `0` for the default |
+| Invert | `I` |
+| Measurements | `L`/`M` length · `E` oval · `B` rectangle · `G` polygon (`Enter` closes) · `F` pencil · `T` point; angle from the ROI menu |
+| Delete last measurement | `Delete` / `Backspace` |
+| Cine | `P` or `Space` |
+| Flip | `H` / `V` |
+| Reset view | `R` or double-click |
+| Copy image without patient details | `Ctrl+C` / `Cmd+C` |
 
 ---
 
-## Releases & Building
+## Build from source
 
-### Download from GitHub Releases
-Every tagged release (`v*`) automatically builds **SekhmetX** (`sekhmetx`) for **Windows (`x86_64` & `arm64`)**, **macOS (`arm64` `.app` & `.tar.gz`)**, and **Linux (`x86_64`)** via GitHub Actions and attaches them to the [GitHub Releases](../../releases) page alongside the changelog notes from [CHANGELOG.md](CHANGELOG.md). You can also update directly inside the app via the toolbar **`🔄`** update button.
+You need stable [Rust](https://rustup.rs), a C/C++ compiler and CMake (for
+OpenJPEG and CharLS). On Windows, install the Visual Studio C++ Build Tools.
+On Linux, install the GTK 3, xkbcommon, Wayland, Vulkan/GL and D-Bus
+development packages (see [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
+for the exact list).
 
-### Build from Source on Windows
-1. Install Rust (<https://rustup.rs>) with the Visual Studio C++ Build Tools, plus CMake (`winget install Kitware.CMake` or `scoop install cmake`).
-2. Build and run:
-   ```powershell
-   cargo test --release
-   cargo build --release
-   .\target\release\sekhmetx.exe
-   ```
+```bash
+git clone https://github.com/CosmicTaco22/SekhmetX.git
+cd SekhmetX
+cargo test --release
+cargo build --release
+```
 
----
+The program is `target/release/sekhmetx` (`sekhmetx.exe` on Windows).
+`cargo build --release --no-default-features` drops JPEG-LS support and the
+CMake requirement.
 
-## Command-Line Helpers
+### Command-line helpers
 
-```powershell
-sekhmetx --list FOLDER_OR_ZIP             # print studies and series found
-sekhmetx --check FOLDER_OR_ZIP            # decode every image and report failures
+```bash
+sekhmetx FOLDER_OR_ZIP                       # open the viewer
+sekhmetx --list FOLDER_OR_ZIP                # list studies and series
+sekhmetx --check FOLDER_OR_ZIP               # decode every image, report failures
 sekhmetx --render FOLDER OUT.png [SERIES] [IMAGE] [WIDTH LEVEL]
 sekhmetx --roi FOLDER_OR_FILE [SERIES IMAGE] (ellipse|rect|length) X1 Y1 X2 Y2
 ```
 
+`--roi` prints the same statistics as the viewer, for comparing measurements
+against Horos or IsiX.
+
 ---
 
-## Code Layout
+## More screenshots
 
-| Path | Role |
+| Comparing two series side by side | Library |
 |---|---|
-| `src/dicom_index.rs` | Folder & `.zip` scan, DICOM tag parsing, plane classification (`AX`/`COR`/`SAG`), MPR acquisition grouping |
-| `src/frame.rs` | Pixel decoding, modality rescale, VOI LUT, 2D convolution application, series mini-thumbnails |
-| `src/geometry/` | Ported `IsiXGeometry` & `IsiXImaging` 3D vectors, lines, planes, transforms, Bezier splines, orientation letters |
-| `src/imaging/` | Ported `IsiXImaging` window/level, VOI LUT, defaults, photometry, 31 Horos CLUTs, 22 convolution kernels |
-| `src/roi/` | Ported `IsiXROI` planar geometry, cubic splines, scanline rasterizer, Sutherland-Hodgman clipper, pixel statistics |
-| `src/volume.rs` | 3D volume assembly, in-place oblique 3D MPR reslicing, thick-slab MIP/MinIP/Mean, 6-DOF 3D rigid registration |
-| `src/navigation.rs` | Multi-series `ViewportTiling`, `SliceSynchronizer`, and `ReferenceLines` |
-| `src/gpu_view.rs` | `wgpu` hardware-accelerated window/level, CLUT, and quad UV orientation renderer |
-| `src/loader.rs` | Multi-threaded priority background slice decoder |
-| `src/app/` | The window: library and sidebar, viewport grid, overlays, MPR/sync, dialogs |
-| `src/ui/` | Theme, drawn icons, and the toolbar |
-| `CHANGELOG.md` | Release history and changelog |
-| `PORTING_MAP.md` | Full IsiX / Horos module porting map and progress tracker |
+| ![Two linked viewports](docs/screenshots/compare.png) | ![Library view](docs/screenshots/library.png) |
 
-## Licence
+Screenshots use a synthetic test phantom, not patient data.
 
-LGPL-3.0-or-later, matching IsiX and Horos.
+---
+
+## Project documents
+
+| File | What it is |
+|---|---|
+| [`PORTING_MAP.md`](PORTING_MAP.md) | Every IsiX file, its area, decision and progress |
+| [`DEVIATIONS.md`](DEVIATIONS.md) | Where SekhmetX knowingly differs from IsiX, and why |
+| [`CHANGELOG.md`](CHANGELOG.md) | Release history |
+| [`BUGS.md`](BUGS.md) | Known issues |
+| [`HANDOFF.md`](HANDOFF.md) | Project history and decisions, for contributors |
+
+---
+
+## License and credits
+
+SekhmetX is free software under the **GNU Lesser General Public License,
+version 3 or later** ([`LICENSE`](LICENSE), which supplements the GNU GPL v3 in
+[`COPYING`](COPYING)). Parts of it are derived from IsiX, which is distributed
+under the LGPL v3, and through it from Horos and OsiriX. SekhmetX is
+distributed **without any warranty**; see the licence for details.
+
+Credit for the work SekhmetX ports belongs to:
+
+- **Thales Matheus M Santos ([@ThalesMMS](https://github.com/ThalesMMS))**,
+  author and maintainer of [IsiX DICOM Viewer](https://github.com/ThalesMMS/IsiX-DICOM-Viewer-macOS);
+- the **Horos Project** and **Nimble Co LLC d/b/a Purview** ([Horos](https://github.com/horosproject/horos));
+- the **OsiriX team** (OsiriX, from which Horos derives);
+- **Yves Starreveld**, whose Horos work IsiX incorporates;
+- and everyone else credited in the IsiX and Horos repositories.
+
+SekhmetX also builds on open-source libraries, each under its own licence:
+[dicom-rs](https://github.com/Enet4/dicom-rs) (MIT / Apache-2.0),
+[egui / eframe](https://github.com/emilk/egui) and [wgpu](https://github.com/gfx-rs/wgpu)
+(MIT / Apache-2.0), [OpenJPEG](https://www.openjpeg.org) (BSD-2-Clause),
+[CharLS](https://github.com/team-charls/charls) (BSD-3-Clause) and
+[SQLite](https://sqlite.org) (public domain), among others listed in
+[`Cargo.lock`](Cargo.lock). See [`NOTICE`](NOTICE) for the full attribution.
+
+OsiriX, Horos and IsiX are names of their respective owners and are used here
+only to describe where SekhmetX's design and code come from.

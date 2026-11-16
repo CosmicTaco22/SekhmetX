@@ -1,0 +1,55 @@
+SekhmetX
+Copyright (C) 2026 SekhmetX contributors
+
+SekhmetX is free software: you can redistribute it and/or modify it under the
+terms of the GNU Lesser General Public License as published by the Free
+Software Foundation, either version 3 of the License, or (at your option) any
+later version. See LICENSE (GNU LGPL v3) and COPYING (GNU GPL v3, which the
+LGPL supplements).
+
+SekhmetX is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR
+A PARTICULAR PURPOSE. It is not a medical device and is not certified for
+primary diagnosis.
+
+-------------------------------------------------------------------------------
+Derived work
+-------------------------------------------------------------------------------
+
+Parts of SekhmetX are ported from IsiX DICOM Viewer
+  https://github.com/ThalesMMS/IsiX-DICOM-Viewer-macOS
+  Author and maintainer: Thales Matheus M Santos (ThalesMMS)
+  Licensed under the GNU Lesser General Public License, version 3.
+
+IsiX is an independently maintained fork of Horos
+  https://github.com/horosproject/horos
+  Horos Project; Nimble Co LLC d/b/a Purview
+which is derived from OsiriX (OsiriX team / Pixmeo). IsiX also incorporates
+work by Yves Starreveld. The copyright and licence notices of these projects
+apply to the portions derived from them; ported Rust files name the IsiX file
+they follow in a comment at the top.
+
+SekhmetX is not made, sponsored or endorsed by IsiX, the Horos Project,
+Purview or Pixmeo. OsiriX, Horos and IsiX are names of their respective owners.
+Their names and icons are not used in the SekhmetX application.
+
+Reference data bundled from Horos/IsiX, such as colour lookup tables, window
+presets and convolution kernels, keeps the licence of its source.
+
+-------------------------------------------------------------------------------
+Third-party software
+-------------------------------------------------------------------------------
+
+SekhmetX links to open-source libraries, each under its own licence, including:
+
+  dicom-rs (dicom-object, dicom-core, dicom-pixeldata, ...)  MIT OR Apache-2.0
+  egui / eframe                                              MIT OR Apache-2.0
+  wgpu                                                       MIT OR Apache-2.0
+  OpenJPEG (via openjpeg-sys)                                BSD-2-Clause
+  CharLS (via charls)                                        BSD-3-Clause
+  SQLite (via rusqlite, bundled)                             Public domain
+  rusqlite                                                   MIT
+  rayon, serde, image, zip, ureq, sha2, keyring, ...         MIT and/or Apache-2.0
+
+The complete list of Rust dependencies and versions is in Cargo.lock; each
+crate's licence is declared in its own package metadata.

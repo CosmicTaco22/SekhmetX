@@ -18,6 +18,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Ax / Cor / Sag buttons light up** for the plane on screen in 3D MPR. A series' own acquisition plane counts even with gantry tilt; any other plane must be within about 3° of a patient axis, otherwise it is treated as oblique and none lights up.
 - **Accent colour in Settings:** eight presets or a custom colour, plus an option to tint the toolbar and status bar with it. Remembered between sessions.
 
+### Documentation and licensing
+- **README rewritten** as the project's landing page: what SekhmetX is, that it is a port of IsiX DICOM Viewer by Thales Matheus M Santos (ThalesMMS) and how the port works, features, downloads, shortcuts (the `A` key is Axial, not Angle), building, and licence and credits. Screenshots from a synthetic phantom in `docs/screenshots/`, plus a social preview image.
+- **Licence files added:** `LICENSE` (GNU LGPL v3), `COPYING` (GNU GPL v3) and `NOTICE` (credits to IsiX, Horos, OsiriX and third-party libraries). They are now included in every release download.
+
 ## [0.5.3] - 2026-11-16
 
 ### Improved (Interface look — pass 2, second toolbar row / status bar / library details)

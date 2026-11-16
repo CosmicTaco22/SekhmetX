@@ -145,6 +145,12 @@ Not verified:
 
 ## Known gaps and loose ends
 
+- **Keep the credits.** `README.md` and `NOTICE` credit IsiX (Thales Matheus M
+  Santos / ThalesMMS), Horos and OsiriX; `LICENSE`, `COPYING` and `NOTICE` ship
+  in every release archive. Keep them when changing packaging. README
+  screenshots live in `docs/screenshots/` and must only show the synthetic
+  phantom (`tools/testdata/`), never patient data.
+
 - **Docs out of date.** `AGENTS.md`, `GEMINI.md` and `README.md` still mention a
   single `src/app.rs`, the `rdicom-viewer` binary and the `»` toolbar overflow
   (replaced by wrapping in v0.4.3). `ROADMAP.md` checkboxes are stale.
