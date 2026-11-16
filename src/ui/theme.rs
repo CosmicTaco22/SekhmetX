@@ -5,10 +5,64 @@
 
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Theme};
 
-/// Selection / active-tool accent.
-pub const ACCENT: Color32 = Color32::from_rgb(47, 125, 225);
-/// Brighter accent for borders and text on dark backgrounds.
-pub const ACCENT_BRIGHT: Color32 = Color32::from_rgb(110, 175, 255);
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
+/// Accent colours offered in Settings (English name, Spanish name, colour).
+pub const ACCENT_PRESETS: [(&str, &str, Color32); 8] = [
+    ("Blue", "Azul", Color32::from_rgb(47, 125, 225)),
+    ("Teal", "Verde azulado", Color32::from_rgb(20, 150, 150)),
+    ("Green", "Verde", Color32::from_rgb(52, 150, 80)),
+    ("Amber", "Ámbar", Color32::from_rgb(205, 135, 30)),
+    ("Red", "Rojo", Color32::from_rgb(200, 60, 60)),
+    ("Pink", "Rosa", Color32::from_rgb(200, 70, 140)),
+    ("Purple", "Morado", Color32::from_rgb(125, 85, 210)),
+    ("Graphite", "Grafito", Color32::from_rgb(105, 110, 122)),
+];
+pub const DEFAULT_ACCENT: Color32 = ACCENT_PRESETS[0].2;
+
+static ACCENT_RGB: AtomicU32 = AtomicU32::new(0x002F_7DE1); // DEFAULT_ACCENT
+static TINT_CHROME: AtomicBool = AtomicBool::new(false);
+
+/// Selection / active-tool accent (chosen in Settings).
+pub fn accent() -> Color32 {
+    let v = ACCENT_RGB.load(Ordering::Relaxed);
+    Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8)
+}
+
+/// Lighter accent for borders and text on dark backgrounds.
+pub fn accent_bright() -> Color32 {
+    let c = accent();
+    let lift = |x: u8| x.saturating_add(((255 - x) as f32 * 0.4) as u8);
+    Color32::from_rgb(lift(c.r()), lift(c.g()), lift(c.b()))
+}
+
+/// Changes the accent and whether the toolbars are tinted with it, then
+/// re-installs the looks so every widget picks it up on the next frame.
+pub fn set_accent(ctx: &egui::Context, color: Color32, tint_chrome: bool) {
+    let v = ((color.r() as u32) << 16) | ((color.g() as u32) << 8) | color.b() as u32;
+    ACCENT_RGB.store(v, Ordering::Relaxed);
+    TINT_CHROME.store(tint_chrome, Ordering::Relaxed);
+    install(ctx);
+}
+
+pub fn tint_chrome() -> bool {
+    TINT_CHROME.load(Ordering::Relaxed)
+}
+
+/// `#rrggbb` for storing in settings.
+pub fn to_hex(c: Color32) -> String {
+    format!("#{:02x}{:02x}{:02x}", c.r(), c.g(), c.b())
+}
+
+/// Parses `#rrggbb` (the `#` is optional).
+pub fn from_hex(s: &str) -> Option<Color32> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 || !h.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let v = u32::from_str_radix(h, 16).ok()?;
+    Some(Color32::from_rgb((v >> 16) as u8, (v >> 8) as u8, v as u8))
+}
 
 /// Background of ordinary panels (sidebar, library).
 pub const PANEL: Color32 = Color32::from_rgb(30, 31, 34);
@@ -45,9 +99,9 @@ pub fn install(ctx: &egui::Context) {
     dark.window_stroke = Stroke::new(1.0, Color32::from_rgb(70, 72, 78));
     dark.window_corner_radius = CornerRadius::same(8);
     dark.menu_corner_radius = CornerRadius::same(6);
-    dark.selection.bg_fill = ACCENT;
+    dark.selection.bg_fill = accent();
     dark.selection.stroke = Stroke::new(1.0, Color32::WHITE);
-    dark.hyperlink_color = ACCENT_BRIGHT;
+    dark.hyperlink_color = accent_bright();
 
     let r = CornerRadius::same(5);
     let w = &mut dark.widgets;
@@ -71,7 +125,7 @@ pub fn install(ctx: &egui::Context) {
 
     w.active.bg_fill = Color32::from_rgb(96, 100, 110);
     w.active.weak_bg_fill = Color32::from_rgb(96, 100, 110);
-    w.active.bg_stroke = Stroke::new(1.0, ACCENT_BRIGHT);
+    w.active.bg_stroke = Stroke::new(1.0, accent_bright());
     w.active.fg_stroke = Stroke::new(1.5, Color32::WHITE);
     w.active.corner_radius = r;
     w.active.expansion = 0.0;
@@ -83,7 +137,7 @@ pub fn install(ctx: &egui::Context) {
     ctx.set_visuals_of(Theme::Dark, dark);
 
     let mut light = egui::Visuals::light();
-    light.selection.bg_fill = ACCENT;
+    light.selection.bg_fill = accent();
     light.selection.stroke = Stroke::new(1.0, Color32::WHITE);
     light.window_corner_radius = CornerRadius::same(8);
     light.menu_corner_radius = CornerRadius::same(6);
@@ -133,11 +187,22 @@ pub fn is_dark(ui: &egui::Ui) -> bool {
 
 /// Toolbar / status-bar background for the current theme.
 pub fn chrome_fill(ctx: &egui::Context) -> Color32 {
-    if ctx.global_style().visuals.dark_mode {
+    let base = if ctx.global_style().visuals.dark_mode {
         CHROME
     } else {
         Color32::from_rgb(232, 233, 236)
+    };
+    if tint_chrome() {
+        mix(base, accent(), 0.16)
+    } else {
+        base
     }
+}
+
+/// `a` moved `t` of the way towards `b`.
+pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
 }
 
 /// Secondary text colour for the current theme.
@@ -146,5 +211,25 @@ pub fn dim_text(ui: &egui::Ui) -> Color32 {
         TEXT_DIM
     } else {
         Color32::from_rgb(95, 98, 106)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hex_round_trip_and_rejects_bad_input() {
+        for (_, _, c) in ACCENT_PRESETS {
+            assert_eq!(from_hex(&to_hex(c)), Some(c));
+        }
+        assert_eq!(from_hex("2f7de1"), Some(DEFAULT_ACCENT));
+        assert_eq!(from_hex("#12345"), None);
+        assert_eq!(from_hex("#gg0000"), None);
+    }
+
+    #[test]
+    fn default_accent_matches_initial_value() {
+        assert_eq!(accent(), DEFAULT_ACCENT);
     }
 }

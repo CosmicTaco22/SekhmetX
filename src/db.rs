@@ -575,6 +575,26 @@ impl Database {
             .ok()
     }
 
+    /// All settings whose key starts with `prefix`, as (key, value) pairs.
+    pub fn settings_with_prefix(&self, prefix: &str) -> Vec<(String, String)> {
+        let pattern = format!("{}%", prefix.replace('%', "\\%").replace('_', "\\_"));
+        let Ok(mut stmt) = self
+            .conn
+            .prepare("SELECT key, value FROM settings WHERE key LIKE ?1 ESCAPE '\\'")
+        else {
+            return Vec::new();
+        };
+        stmt.query_map(params![pattern], |r| Ok((r.get(0)?, r.get(1)?)))
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn delete_setting(&self, key: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        Ok(())
+    }
+
     pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
         self.conn.execute(
             "INSERT INTO settings (key, value) VALUES (?1, ?2)

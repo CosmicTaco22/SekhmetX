@@ -389,12 +389,8 @@ pub(crate) struct ViewerApp {
     crash_report_opt_in: bool,
     pub(crate) copy_policy: crate::db::CopyToLibraryPolicy,
     pending_copy_prompt: bool,
-    pub(crate) pacs_web: crate::pacs_web::PacsWebController,
-    pub(crate) show_pacs_modal: bool,
-    pub(crate) show_pacs_finder: bool,
     pub(crate) show_settings_modal: bool,
     study_storage_zip: bool,
-    show_add_portal_note: bool,
     pub(crate) previous_crash_pending: bool,
     show_crash_modal: bool,
     show_first_run_notice: bool,
@@ -459,6 +455,15 @@ impl ViewerApp {
         dicom_index::cleanup_stale_zip_caches();
         let viewports = (0..MAX_VIEWPORTS).map(ViewportCell::new).collect();
         let db = crate::db::Database::open_default().ok();
+        if let Some(ref d) = db {
+            crate::legacy_cleanup::remove_web_portal_data(d);
+            let accent = d
+                .get_setting("accent_color")
+                .and_then(|h| crate::ui::theme::from_hex(&h))
+                .unwrap_or(crate::ui::theme::DEFAULT_ACCENT);
+            let tint = d.get_setting("tint_chrome").as_deref() == Some("1");
+            crate::ui::theme::set_accent(&cc.egui_ctx, accent, tint);
+        }
         let (reg_tx, reg_rx) = std::sync::mpsc::channel();
         let settings = db.as_ref().map(crate::settings::AppSettings::new);
         let saved_lang = settings
@@ -482,14 +487,6 @@ impl ViewerApp {
             .as_ref()
             .map(|s| s.copy_to_library_policy())
             .unwrap_or(crate::db::CopyToLibraryPolicy::Ask);
-        let saved_pacs_inst = settings
-            .as_ref()
-            .map(|s| s.pacs_institution_name())
-            .unwrap_or_default();
-        let saved_pacs_url = settings
-            .as_ref()
-            .map(|s| s.pacs_login_url())
-            .unwrap_or_default();
         let saved_custom_studies = settings
             .as_ref()
             .and_then(|s| s.custom_studies_dir());
@@ -498,29 +495,6 @@ impl ViewerApp {
             .as_ref()
             .map(|s| s.study_storage_zip())
             .unwrap_or(false);
-        let saved_pacs_dir = settings
-            .as_ref()
-            .and_then(|s| s.pacs_watch_dir());
-        let mut pacs_web = crate::pacs_web::PacsWebController::new(
-            saved_pacs_inst,
-            saved_pacs_url,
-            saved_pacs_dir,
-        );
-        if let Some(ref d) = db {
-            let s = crate::settings::AppSettings::new(d);
-            pacs_web.remember_credentials = s.pacs_remember_creds();
-            if let Ok(origin) = crate::pacs_web::parse_https_origin(&pacs_web.login_url) {
-                crate::pacs_web::migrate_legacy_secret_if_any(d, &origin);
-                if pacs_web.remember_credentials {
-                    pacs_web.saved_username = s.pacs_cred_user();
-                    if let Ok(pw) = crate::pacs_web::load_pacs_password(&origin) {
-                        pacs_web.saved_password = pw;
-                    }
-                }
-            } else if pacs_web.remember_credentials {
-                pacs_web.saved_username = s.pacs_cred_user();
-            }
-        }
         let first_run_ack = settings
             .as_ref()
             .map(|s| s.first_run_notice_ack())
@@ -623,12 +597,8 @@ impl ViewerApp {
             crash_report_opt_in: saved_crash_opt_in,
             copy_policy: saved_copy_policy,
             pending_copy_prompt: false,
-            pacs_web,
-            show_pacs_modal: false,
-            show_pacs_finder: false,
             show_settings_modal: false,
             study_storage_zip: saved_storage_zip,
-            show_add_portal_note: false,
             previous_crash_pending: false,
             show_crash_modal: false,
             show_first_run_notice: !first_run_ack,
@@ -645,10 +615,6 @@ impl ViewerApp {
                     }
                 }
             }
-        app.pacs_web.lang = app.lang;
-        if app.db.as_ref().and_then(|d| d.get_setting("pacs_auto_connect")).as_deref() == Some("1") {
-            app.pacs_web.try_auto_reconnect();
-        }
         if app.check_updates_on_startup {
             app.start_update_check(false, &cc.egui_ctx);
         }
@@ -1293,40 +1259,6 @@ impl ViewerApp {
         }
 
         // Cine playback on the active viewport (and synchronized followers).
-        let now_secs = ctx.input(|i| i.time);
-        self.pacs_web.lang = self.lang;
-        let new_pacs_zips = self.pacs_web.poll(now_secs);
-        if let Some(profile) = self.pacs_web.newly_trained_profile.take()
-            && let Some(ref db) = self.db
-                && let Ok(json) = serde_json::to_string(&profile) {
-                    let key = format!("pacs_trained_{}", profile.origin);
-                    let _ = db.set_setting(&key, &json);
-                }
-        if self.pacs_web.just_hooked {
-            self.pacs_web.just_hooked = false;
-            self.show_pacs_modal = false;
-            if let Some(ref db) = self.db {
-                let _ = db.set_setting("pacs_auto_connect", "1");
-                if self.pacs_web.institution_name.to_lowercase().contains("maip")
-                    && !self.pacs_web.login_url.trim().is_empty()
-                {
-                    let _ = db.set_setting("pacs_known_maipu_url", self.pacs_web.login_url.trim());
-                }
-            }
-        }
-        if !self.show_pacs_finder {
-            self.pacs_web.close_on_demand_webview();
-        }
-        if !new_pacs_zips.is_empty() && self.scan.is_none() {
-            if self.pacs_web.pending_open_downloaded {
-                self.pacs_web.pending_open_downloaded = false;
-                self.show_pacs_finder = false;
-            }
-            self.start_scan(new_pacs_zips);
-        }
-        if self.pacs_web.watch_dir.is_some() {
-            ctx.request_repaint_after(std::time::Duration::from_secs(2));
-        }
 
         let active_count = self.viewport_slice_count(self.active_viewport);
         if self.playing && active_count > 1 {
@@ -1538,81 +1470,6 @@ impl ViewerApp {
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let tr = crate::i18n::tr(self.lang);
         ui.horizontal(|ui| {
-            // Bottom-left: Institution Login (turns green with institution name once hooked) + Search PACS
-            let is_hooked = matches!(
-                self.pacs_web.state,
-                crate::pacs_web::PacsHookState::Hooked { .. }
-            );
-            let inst_label = if is_hooked {
-                let name = self.pacs_web.institution_name.trim();
-                if name.is_empty() {
-                    tr.pacs_connected.to_string()
-                } else {
-                    name.to_string()
-                }
-            } else {
-                tr.pacs_login_btn.to_string()
-            };
-            let login_btn = if is_hooked {
-                egui::Button::new(egui::RichText::new(inst_label).small().color(Color32::WHITE))
-                    .fill(Color32::from_rgb(38, 132, 68))
-            } else {
-                egui::Button::new(egui::RichText::new(inst_label).small())
-            };
-            if ui
-                .add(login_btn)
-                .on_hover_text(tr.pacs_login_hover)
-                .clicked()
-            {
-                self.show_pacs_modal = !self.show_pacs_modal;
-            }
-            if ui
-                .add_enabled(
-                    is_hooked,
-                    egui::Button::new(egui::RichText::new(tr.pacs_search_btn).small()),
-                )
-                .on_hover_text(tr.pacs_search_hover)
-                .clicked()
-            {
-                self.show_pacs_finder = !self.show_pacs_finder;
-            }
-            if ui
-                .add_enabled(
-                    self.pacs_web.watch_dir.is_some() && self.scan.is_none(),
-                    egui::Button::new(egui::RichText::new(tr.pacs_refresh_watch_btn).small()),
-                )
-                .on_hover_text(tr.pacs_refresh_watch_hover)
-                .clicked()
-            {
-                let zips = self.pacs_web.scan_watch_folder_now();
-                if !zips.is_empty() {
-                    self.start_scan(zips);
-                } else if let Some(dir) = self.pacs_web.watch_dir.clone() {
-                    let has_entries = std::fs::read_dir(&dir)
-                        .ok()
-                        .into_iter()
-                        .flatten()
-                        .flatten()
-                        .any(|e| e.file_name() != ".sekhmetx_zips.json");
-                    if has_entries {
-                        self.start_scan(vec![dir]);
-                    } else {
-                        self.message = Some(tr.pacs_msg_watch_empty.into());
-                    }
-                }
-            }
-            ui.separator();
-
-        if let Some(ref dl) = self.pacs_web.downloading {
-                ui.add(
-                    egui::ProgressBar::new(0.0)
-                        .desired_width(220.0)
-                        .animate(true)
-                        .text(format!("{} {dl}…", tr.pacs_msg_starting_dl)),
-                );
-                ui.separator();
-                ui.ctx().request_repaint();
-            }
         if let Some(scan) = &self.scan {
                 let done = scan.done.load(Ordering::Relaxed);
                 let total = scan.total.load(Ordering::Relaxed);
@@ -1905,7 +1762,6 @@ impl eframe::App for ViewerApp {
         }
         self.draw_force_mpr_modal(&ctx);
         self.draw_update_modal(&ctx);
-        self.draw_pacs_modal(&ctx);
         self.draw_settings_modal(&ctx);
         self.draw_vr_tf_editor(&ctx);
         self.draw_crash_modal(&ctx);

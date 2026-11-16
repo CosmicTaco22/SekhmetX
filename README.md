@@ -12,7 +12,7 @@ A fast, native radiological DICOM viewer for Windows, macOS, and Linux, written 
   - Open folders recursively, individual DICOM files, or **`.zip` / ZIP64 patient archives** (streamed safely into a per-process `%TEMP%\sekhmetx-zip-<pid>` folder with path-traversal protection, size/entry caps, and automatic cleanup).
 - **Horos-Style Icon Toolbar & Bilingual UI (`EN` / `ES`):**
   - Toolbar ordered to match IsiX / Horos (`ViewerToolbarCatalog`), with drawn icons, captions under each group, and groups that wrap onto a second row on narrower windows so nothing is hidden.
-  - Dark (default), Light or System theme, and **English / Spanish** interface, both chosen in Settings and remembered.
+  - Dark (default), Light or System theme, a choice of accent colours (or your own) with an optional tinted toolbar, and **English / Spanish** interface, all chosen in Settings and remembered.
 - **Horos Study Browser with Search, Local SQLite Library & Live Mini-Thumbnails:**
   - Crash-safe local SQLite database (WAL mode, schema v2 migrations) storing study/series metadata, persistent ROIs, and preferences. *(Note: patient metadata in the local SQLite database is stored unencrypted on disk.)*
   - Managed library storage (`SekhmetX/Studies/<StudyUID>/`) with configurable **`Ask` / `Always` / `Never`** copy policy when opening `.zip` archives, live library disk-usage reporting (MB), **`⚠ [files missing]`** badges if source files move, per-study **`Remove from library`**, and one-click **`Clear`** library reset.
@@ -33,10 +33,6 @@ A fast, native radiological DICOM viewer for Windows, macOS, and Linux, written 
   - Hardware-accelerated WGSL shader pipeline (`wgpu`) with post-windowing **Bilinear Interpolation** (toggleable in View), CPU fallback (`RDICOM_CPU=1`), **31 Horos CLUTs**, and **22 Horos 2D Convolution Filters**.
 - **In-App Auto-Updater:**
   - Checks GitHub Releases (`CosmicTaco22/SekhmetX`), displays release notes, verifies `SHA256SUMS` before replacing the binary in-place, and supports a startup-check toggle. *(Note: release binaries are currently **unsigned**; `SHA256SUMS` protects against corrupted downloads, and Windows SmartScreen / macOS Gatekeeper may ask for confirmation on first launch.)*
-- **Virtual PACS Integration:**
-  - Connects to institution-authorized PACS portals (Orthanc, DICOMweb, VueMotion, or trained portals). **Note:** users must have their institution's permission to connect and download studies.
-  - Saved portal passwords and session cookies are stored in the operating system's secure keychain (`keyring`), never as plaintext in SQLite.
-  - **Platform packaging:** Windows and macOS ship as a single self-contained executable (statically linked `WebView2Loader` on Windows; system `WKWebView` on macOS). Linux requires `webkit2gtk-4.1` installed for the `--pacs-login` WebView subprocess.
 - **Export & DICOM De-Identification:**
   - Export individual slices or entire series to PNG (preserving active WL/WW, CLUT, invert, and convolution filter) or export anonymized DICOM series with private tags stripped, patient/institution identifiers scrubbed, and UIDs consistently remapped.
 

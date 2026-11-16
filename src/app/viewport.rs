@@ -640,7 +640,7 @@ impl ViewerApp {
         if self.tiling.cell_count() > 1 {
             let is_active = vp_idx == self.active_viewport;
             let color = if is_active {
-                Color32::from_rgb(70, 165, 255)
+                crate::ui::theme::accent_bright()
             } else {
                 Color32::from_gray(55)
             };

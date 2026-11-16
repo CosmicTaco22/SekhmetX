@@ -247,11 +247,11 @@ mod tests {
 
     #[test]
     fn public_report_handles_accented_text_over_3000_bytes() {
-        let long = "Diagnóstico Maipú — error de conexión\n".repeat(200);
+        let long = "Clínica Ejemplo Señal — error de conexión\n".repeat(200);
         assert!(long.len() > 3000);
         let report = prepared_public_report(&long);
         assert!(report.len() <= 3000);
-        assert!(report.contains("Diagnóstico Maipú"));
+        assert!(report.contains("Clínica Ejemplo Señal"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-# Handoff: where the project stands (v0.5.1, 16 Nov 2026)
+# Handoff: where the project stands (v0.5.4, 16 Nov 2026)
 
 Written for whoever continues this, human or agent. It records what exists,
 the owner's standing rules, what was verified, what is unfinished, and what
@@ -62,12 +62,15 @@ These were set over the course of the project and are not all in `AGENTS.md`.
   refresh is manual. No background polling.
 - Studies in the browser are grouped by patient and collapsed by default, with
   manual link/unlink for the same patient under different name spellings.
-- Virtual PACS: one institution at a time; downloads stay as `.zip` in the
-  chosen folder; no browser left running in the background; credentials and
-  cookies only in the OS keychain.
+- The web-portal PACS login was removed in v0.5.4 at the owner's request. Do
+  not bring it back, and never ship a real institution's name or address in
+  the app. The owner plans to re-add portal access later as a plugin: a
+  written guide people give their own AI, which records how a portal's search,
+  patient list, study list and download buttons work and produces a small
+  file SekhmetX reads. Wait for the owner's design before starting it.
 - Dark theme is the default.
 
-## What exists (v0.5.1)
+## What exists (v0.5.4)
 
 - **2D viewer:** scroll, zoom, pan, rotate/flip, invert, cine, Horos window
   presets, 31 CLUTs, 22 convolution filters, GPU window/level with bilinear
@@ -86,9 +89,6 @@ These were set over the course of the project and are not all in `AGENTS.md`.
 - **Comparison:** layouts up to 4×4, colour-coded link groups (zoom, WL, cut),
   two zoom-link modes, cross-study rigid registration on a worker thread,
   Compare popover.
-- **Virtual PACS:** login in a WebView subprocess (`--pacs-login`); backends for
-  Orthanc, DICOMweb, Vue Motion and a "trained" click-recording mode; two-stage
-  patient → study finder; optional anonymized download.
 - **Other:** PNG and anonymized DICOM export, anonymized `Ctrl+C` screenshot,
   right-click menu, drag-and-drop series, metadata inspector, EN/ES interface,
   Settings page, first-run notice, in-app updater with SHA-256 check, opt-in
@@ -98,21 +98,21 @@ These were set over the course of the project and are not all in `AGENTS.md`.
 
 | Path | Role |
 |---|---|
-| `src/main.rs` | Startup, command-line helpers, `--pacs-login` subprocess entry |
+| `src/main.rs` | Startup, command-line helpers |
 | `src/app/mod.rs` | App state, status bar, shortcuts, background polling |
 | `src/app/browser.rs` | Database view, study sidebar, compact thumbnail strip |
 | `src/app/viewport.rs` | Viewport grid, 2D/MPR/VR drawing, context menu, drops |
 | `src/app/overlays.rs` | HUD corners, rulers, orientation letters, ROI callouts |
 | `src/app/mpr_sync.rs` | MPR state, link groups, compare, registration |
-| `src/app/modals.rs` | Settings, PACS, first-run, crash-log and TF-editor windows |
+| `src/app/modals.rs` | Settings, first-run, crash-log and TF-editor windows |
 | `src/app/metadata.rs` | DICOM metadata inspector |
-| `src/ui/toolbar.rs` | Grouped wrapping toolbar and the scrubber/MPR/VR strip |
 | `src/gpu_view.rs` | wgpu shaders: 2D window/level, 3D MPR, volume ray-caster |
 | `src/volume.rs` | Volume assembly, reslicing, slab modes, rigid registration |
 | `src/imaging/`, `src/geometry/`, `src/roi/` | Logic ported from IsiX, with its tests |
 | `src/dicom_index.rs`, `src/frame.rs`, `src/loader.rs` | Scan and grouping, decoding, background loading |
 | `src/db.rs`, `src/settings.rs` | SQLite library and typed settings |
-| `src/pacs_web/` | PACS controller, backends, WebView subprocess, keychain, `scripts/*.js` |
+| `src/ui/` | Theme and accent colour, drawn icons, toolbar |
+| `src/legacy_cleanup.rs` | One-time removal of the old portal login's keychain entries and settings |
 | `src/export.rs`, `src/updater.rs`, `src/crash_log.rs`, `src/i18n.rs` | Export/anonymize, updater, crash log and data folder, strings |
 | `docs/UI_SPEC.md`, `docs/ui-reference/` | UI spec and 16 OsiriX reference screenshots from the owner |
 | `porting/map.toml` → `PORTING_MAP.md` | Every IsiX file assigned to an area with progress |
@@ -133,10 +133,12 @@ Verified on Linux, 16 Nov 2026, at v0.5.1 plus the lint fix:
   `--list`, `--check` and `--render` work.
 
 Verified by the owner on Windows: the interface, MPR, volume rendering, compare
-and the Vue Motion PACS flow, by hand, version by version.
+by hand, version by version (the PACS portal flow, since removed, too).
 
 Not verified:
-- No automated test covers the window, the GPU paths or the PACS WebView.
+- No automated test covers the window or the GPU paths. Screens can be
+  checked by eye in a cloud session (Xvfb + software Vulkan); see `CHANGELOG.md`
+  v0.5.2–v0.5.4 for what was looked at.
 - macOS builds in CI but the owner has not run it on a Mac.
 - No side-by-side comparison of measurements against Horos/IsiX on real studies
   (`--roi` exists for that purpose).
@@ -155,13 +157,11 @@ Not verified:
 - **Antivirus false positive** (Trend Micro flagged the unsigned exe). v0.5.1
   added Windows file metadata and stopped stripping symbols; code-signing or an
   installer is the lasting fix.
-- **Parked features:** "Add a Portal" submission to the owner; automatic
-  crash-report sending (currently a pre-filled GitHub issue the user must
+- **Parked features:** automatic crash-report sending (currently a pre-filled GitHub issue the user must
   submit); the "save library copies as `.zip`" setting is stored but copies are
   still written uncompressed.
-- **Local Windows builds** in the owner's Antigravity folder use the
-  `windows-gnu` toolchain, which needs `WebView2Loader.dll` beside the exe.
-  GitHub's MSVC builds link it statically.
+- **Local Windows builds** in the owner's Antigravity folder used the
+  `windows-gnu` toolchain; since v0.5.4 no `WebView2Loader.dll` is needed.
 - 12-bit lossy JPEG was unsupported at v0.1; not rechecked since.
 - `BUGS.md` has one open item: continued UI alignment with IsiX/Horos.
 
@@ -173,7 +173,7 @@ The owner was offered these after v0.5.1 and has not chosen yet. Ask him.
 2. PET-CT fusion with SUV (`fusion-pet`, P2, not started).
 3. Key images and report/snapshot export (`annotations-sr`, P2, not started).
 4. Native DICOM query/retrieve or DICOMweb client (`network-pacs`, `dicomweb`,
-   P2, not started) alongside the web-portal hook.
+   P2, not started).
 5. 3D scissors/sculpting in volume rendering.
 6. App icon, code-signing and an installer.
 

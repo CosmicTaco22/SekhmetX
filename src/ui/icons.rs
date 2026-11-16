@@ -367,7 +367,7 @@ fn button_colors(ui: &Ui, resp: &Response, selected: bool) -> (Color32, Color32)
         return (Color32::TRANSPARENT, v.widgets.noninteractive.fg_stroke.color.gamma_multiply(0.35));
     }
     if selected {
-        (theme::ACCENT, Color32::WHITE)
+        (theme::accent(), Color32::WHITE)
     } else if resp.is_pointer_button_down_on() {
         (v.widgets.active.bg_fill, v.widgets.active.fg_stroke.color)
     } else if resp.hovered() {
@@ -430,7 +430,7 @@ pub fn captioned_button(
         let (mut bg, mut fg) = button_colors(ui, &resp, false);
         if selected && ui.is_enabled() {
             bg = ui.visuals().widgets.active.bg_fill;
-            fg = if theme::is_dark(ui) { theme::ACCENT_BRIGHT } else { theme::ACCENT };
+            fg = if theme::is_dark(ui) { theme::accent_bright() } else { theme::accent() };
         }
         if let Some(t) = tint
             && ui.is_enabled()

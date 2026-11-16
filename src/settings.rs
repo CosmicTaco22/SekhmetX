@@ -98,49 +98,6 @@ impl<'a> AppSettings<'a> {
             .set_setting("crash_report_opt_in", if enabled { "1" } else { "0" });
     }
 
-    pub fn pacs_institution_name(&self) -> String {
-        self.db
-            .get_setting("pacs_institution_name")
-            .unwrap_or_default()
-    }
-
-    pub fn set_pacs_institution_name(&self, name: &str) {
-        let _ = self.db.set_setting("pacs_institution_name", name);
-    }
-
-    pub fn pacs_login_url(&self) -> String {
-        self.db.get_setting("pacs_login_url").unwrap_or_default()
-    }
-
-    pub fn set_pacs_login_url(&self, url: &str) {
-        let _ = self.db.set_setting("pacs_login_url", url);
-    }
-
-    pub fn pacs_remember_creds(&self) -> bool {
-        self.db.get_setting("pacs_remember_creds").as_deref() == Some("1")
-    }
-
-    pub fn set_pacs_remember_creds(&self, remember: bool) {
-        let _ = self
-            .db
-            .set_setting("pacs_remember_creds", if remember { "1" } else { "0" });
-    }
-
-    pub fn pacs_cred_user(&self) -> String {
-        self.db.get_setting("pacs_cred_user").unwrap_or_default()
-    }
-
-    pub fn set_pacs_cred_user(&self, user: &str) {
-        let _ = self.db.set_setting("pacs_cred_user", user);
-    }
-
-    pub fn pacs_watch_dir(&self) -> Option<PathBuf> {
-        self.db
-            .get_setting("pacs_watch_dir")
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-    }
-
     pub fn patient_links(&self) -> HashMap<String, String> {
         self.db
             .get_setting("patient_links")

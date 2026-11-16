@@ -225,493 +225,6 @@ impl ViewerApp {
             }
     }
 
-    pub(super) fn draw_pacs_modal(&mut self, ctx: &egui::Context) {
-        let tr = crate::i18n::tr(self.lang);
-        if self.show_pacs_modal {
-            let mut open = true;
-            egui::Window::new(tr.pacs_modal_title)
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(false)
-                .default_width(480.0)
-                .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(tr.pacs_known_portals);
-                        let selected_label = if self.pacs_web.institution_name.to_lowercase().contains("maip") {
-                            "Diagnóstico Maipú"
-                        } else {
-                            tr.pacs_select_portal
-                        };
-                        egui::ComboBox::from_id_salt("pacs_known_portals_cb")
-                            .selected_text(selected_label)
-                            .show_ui(ui, |ui| {
-                                if ui
-                                    .selectable_label(
-                                        self.pacs_web.institution_name.to_lowercase().contains("maip"),
-                                        "Diagnóstico Maipú",
-                                    )
-                                    .clicked()
-                                {
-                                    self.show_add_portal_note = false;
-                                    self.pacs_web.institution_name = "Diagnóstico Maipú".into();
-                                    if let Some(ref db) = self.db {
-                                        let _ = db.set_setting("pacs_institution_name", "Diagnóstico Maipú");
-                                        if let Some(url) = db.get_setting("pacs_known_maipu_url")
-                                            && !url.trim().is_empty() {
-                                                self.pacs_web.login_url = url.clone();
-                                                let _ = db.set_setting("pacs_login_url", &url);
-                                            }
-                                    }
-                                }
-                                if ui.selectable_label(false, tr.pacs_add_portal).clicked() {
-                                    self.show_add_portal_note = true;
-                                }
-                            });
-                    });
-                    if self.show_add_portal_note {
-                        ui.label(
-                            egui::RichText::new(tr.pacs_add_portal_note)
-                                .small()
-                                .color(Color32::from_rgb(175, 200, 235)),
-                        );
-                    }
-                    ui.add_space(4.0);
-                    ui.label(tr.pacs_inst_name);
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.pacs_web.institution_name)
-                                .desired_width(440.0)
-                                .hint_text(tr.pacs_inst_hint),
-                        )
-                        .changed()
-                        && let Some(ref db) = self.db {
-                            let _ = db.set_setting(
-                                "pacs_institution_name",
-                                &self.pacs_web.institution_name,
-                            );
-                        }
-
-                    ui.add_space(4.0);
-                    ui.label(tr.pacs_login_url);
-                    if ui
-                        .add(
-                            egui::TextEdit::singleline(&mut self.pacs_web.login_url)
-                                .desired_width(440.0)
-                                .hint_text("https://pacs.example.com/login"),
-                        )
-                        .changed()
-                        && let Some(ref db) = self.db {
-                            let _ =
-                                db.set_setting("pacs_login_url", &self.pacs_web.login_url);
-                        }
-
-                    ui.add_space(4.0);
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(tr.pacs_username);
-                            if ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut self.pacs_web.saved_username)
-                                        .desired_width(210.0),
-                                )
-                                .changed()
-                                && self.pacs_web.remember_credentials
-                                && let Some(ref db) = self.db {
-                                    let _ = db.set_setting(
-                                        "pacs_cred_user",
-                                        self.pacs_web.saved_username.trim(),
-                                    );
-                                }
-                        });
-                        ui.vertical(|ui| {
-                            ui.label(tr.pacs_password);
-                            if ui
-                                .add(
-                                    egui::TextEdit::singleline(&mut *self.pacs_web.saved_password)
-                                        .password(true)
-                                        .desired_width(210.0),
-                                )
-                                .changed()
-                                && self.pacs_web.remember_credentials
-                                && let Ok(origin) =
-                                    crate::pacs_web::parse_https_origin(&self.pacs_web.login_url)
-                                    && let Err(e) = crate::pacs_web::store_pacs_password(
-                                        &origin,
-                                        &self.pacs_web.saved_password,
-                                    ) {
-                                        self.pacs_web.status_msg = Some(e);
-                                    }
-                        });
-                    });
-                    if ui
-                        .checkbox(
-                            &mut self.pacs_web.remember_credentials,
-                            tr.pacs_remember_creds,
-                        )
-                        .changed()
-                        && let Some(ref db) = self.db {
-                            if self.pacs_web.remember_credentials {
-                                let _ = db.set_setting("pacs_remember_creds", "1");
-                                let _ = db.set_setting(
-                                    "pacs_cred_user",
-                                    self.pacs_web.saved_username.trim(),
-                                );
-                                match crate::pacs_web::parse_https_origin(&self.pacs_web.login_url)
-                                    .and_then(|origin| {
-                                        crate::pacs_web::store_pacs_password(
-                                            &origin,
-                                            &self.pacs_web.saved_password,
-                                        )
-                                    }) {
-                                    Ok(()) => {}
-                                    Err(e) => {
-                                        self.pacs_web.remember_credentials = false;
-                                        let _ = db.set_setting("pacs_remember_creds", "0");
-                                        self.pacs_web.status_msg = Some(e);
-                                    }
-                                }
-                            } else {
-                                let _ = db.set_setting("pacs_remember_creds", "0");
-                                let _ = db.set_setting("pacs_cred_user", "");
-                                let _ = db.set_setting("pacs_cred_pass", "");
-                                if let Ok(origin) =
-                                    crate::pacs_web::parse_https_origin(&self.pacs_web.login_url)
-                                {
-                                    let _ = crate::pacs_web::delete_pacs_password(&origin);
-                                    let _ = crate::pacs_web::delete_pacs_cookies(&origin);
-                                }
-                            }
-                        }
-
-                    ui.add_space(4.0);
-                    ui.label(tr.pacs_watch_folder);
-                    ui.horizontal(|ui| {
-                        let dir_text = self
-                            .pacs_web
-                            .watch_dir
-                            .as_ref()
-                            .map(|p| p.display().to_string())
-                            .unwrap_or_else(|| tr.pacs_none_selected.into());
-                        ui.monospace(dir_text);
-                        if ui.button(tr.pacs_choose_folder).clicked()
-                            && let Some(dir) = rfd::FileDialog::new().pick_folder() {
-                                if let Some(ref db) = self.db {
-                                    let _ = db.set_setting(
-                                        "pacs_watch_dir",
-                                        &dir.to_string_lossy(),
-                                    );
-                                }
-                                self.pacs_web.watch_dir = Some(dir);
-                                self.pacs_web.reload_watch_cache();
-                            }
-                    });
-
-                    ui.add_space(8.0);
-                    let is_hooked = matches!(
-                        self.pacs_web.state,
-                        crate::pacs_web::PacsHookState::Hooked { .. }
-                    );
-                    ui.horizontal(|ui| {
-                        if is_hooked {
-                            if ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new(tr.pacs_disconnect)
-                                            .color(Color32::WHITE),
-                                    )
-                                    .fill(Color32::from_rgb(165, 55, 55)),
-                                )
-                                .clicked()
-                            {
-                                self.pacs_web.disconnect();
-                                self.show_pacs_finder = false;
-                                if let Some(ref db) = self.db {
-                                    let _ = db.set_setting("pacs_auto_connect", "");
-                                }
-                            }
-                        } else {
-                            if ui.button(tr.pacs_open_login).clicked() {
-                                self.pacs_web.open_login_webview(ctx.clone());
-                            }
-                            let has_user = !self.pacs_web.saved_username.trim().is_empty();
-                            if ui
-                                .add_enabled(has_user, egui::Button::new(tr.pacs_do_login))
-                                .clicked()
-                            {
-                                self.pacs_web.trigger_auto_login(ctx.clone());
-                            }
-                        }
-                        if self.pacs_web.is_webview_open() {
-                            if ui.button(tr.pacs_hook_session).clicked() {
-                                self.pacs_web.trigger_hook_session();
-                            }
-                            if ui.button(tr.pacs_train_portal).clicked() {
-                                self.pacs_web.start_training();
-                            }
-                            if ui.button(tr.pacs_close_login).clicked() {
-                                self.pacs_web.close_webview();
-                            }
-                        }
-                    });
-
-                    if self.pacs_web.is_webview_open()
-                        && self.pacs_web.training_step != crate::pacs_web::TrainingStep::Idle
-                    {
-                        ui.add_space(6.0);
-                        ui.separator();
-                        ui.horizontal(|ui| {
-                            use crate::pacs_web::TrainingStep;
-                            match self.pacs_web.training_step {
-                                TrainingStep::PickSearchInput => {
-                                    if ui.button(tr.pacs_pick_search).clicked() {
-                                        self.pacs_web.trigger_pick_step(TrainingStep::PickSearchInput);
-                                    }
-                                }
-                                TrainingStep::PickResultsRow => {
-                                    if ui.button(tr.pacs_pick_row).clicked() {
-                                        self.pacs_web.trigger_pick_step(TrainingStep::PickResultsRow);
-                                    }
-                                }
-                                TrainingStep::PickDownloadBtn => {
-                                    if ui.button(tr.pacs_pick_dl).clicked() {
-                                        self.pacs_web.trigger_pick_step(TrainingStep::PickDownloadBtn);
-                                    }
-                                    if !self.pacs_web.training_draft.download_steps.is_empty()
-                                        && ui.button(tr.pacs_done_picking).clicked()
-                                    {
-                                        self.pacs_web.finish_download_picking();
-                                    }
-                                }
-                                TrainingStep::PickAnonBtn => {
-                                    if ui.button(tr.pacs_pick_anon).clicked() {
-                                        self.pacs_web.trigger_pick_step(TrainingStep::PickAnonBtn);
-                                    }
-                                    if !self.pacs_web.training_draft.anon_steps.is_empty()
-                                        && ui.button(tr.pacs_done_picking).clicked()
-                                    {
-                                        self.pacs_web.finish_training();
-                                    }
-                                    if ui.button(tr.pacs_skip_finish).clicked() {
-                                        self.pacs_web.finish_training();
-                                    }
-                                }
-                                TrainingStep::Idle => {}
-                            }
-                            if ui.button(tr.pacs_cancel).clicked() {
-                                self.pacs_web.training_step = TrainingStep::Idle;
-                            }
-                        });
-                        if matches!(
-                            self.pacs_web.training_step,
-                            crate::pacs_web::TrainingStep::PickDownloadBtn
-                                | crate::pacs_web::TrainingStep::PickAnonBtn
-                        ) {
-                            ui.label(
-                                egui::RichText::new(tr.pacs_ctrl_click_hint)
-                                    .small()
-                                    .color(Color32::from_gray(170)),
-                            );
-                        }
-                    }
-
-                    if let Some(ref msg) = self.pacs_web.status_msg {
-                        ui.add_space(6.0);
-                        let color = match self.pacs_web.state {
-                            crate::pacs_web::PacsHookState::Hooked { .. } => {
-                                Color32::from_rgb(130, 220, 140)
-                            }
-                            crate::pacs_web::PacsHookState::Incompatible(_) => {
-                                Color32::from_rgb(255, 130, 130)
-                            }
-                            _ => Color32::from_rgb(240, 200, 110),
-                        };
-                        ui.colored_label(color, msg);
-                    }
-                });
-            if !open {
-                self.show_pacs_modal = false;
-            }
-        }
-
-        if self.show_pacs_finder
-            && matches!(
-                self.pacs_web.state,
-                crate::pacs_web::PacsHookState::Hooked { .. }
-            )
-        {
-            let mut open = true;
-            let finder_title = {
-                let name = self.pacs_web.institution_name.trim();
-                if name.is_empty() {
-                    tr.pacs_finder_default_title.to_string()
-                } else {
-                    format!("{} {name}", tr.pacs_finder_prefix)
-                }
-            };
-            egui::Window::new(finder_title)
-                .open(&mut open)
-                .collapsible(false)
-                .resizable(true)
-                .default_width(540.0)
-                .anchor(egui::Align2::CENTER_CENTER, vec2(0.0, 0.0))
-                .show(ctx, |ui| {
-                    let busy_dl = self.pacs_web.downloading.is_some();
-                    ui.horizontal(|ui| {
-                        let enter = ui
-                            .add_enabled(
-                                !busy_dl,
-                                egui::TextEdit::singleline(&mut self.pacs_web.search_query)
-                                    .desired_width(360.0)
-                                    .hint_text(tr.pacs_search_input_hint),
-                            )
-                            .lost_focus()
-                            && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if (ui
-                            .add_enabled(!busy_dl && !self.pacs_web.searching, egui::Button::new(tr.pacs_search_action))
-                            .clicked()
-                            || enter)
-                            && !self.pacs_web.searching
-                            && !busy_dl
-                        {
-                            self.pacs_web.start_search(ctx.clone());
-                        }
-                        if self.pacs_web.searching {
-                            ui.spinner();
-                        }
-                    });
-
-                    ui.horizontal(|ui| {
-                        ui.add_enabled(
-                            !busy_dl,
-                            egui::Checkbox::new(
-                                &mut self.pacs_web.download_anonymized,
-                                tr.pacs_download_anon,
-                            ),
-                        );
-                        if let Some(ref dl) = self.pacs_web.downloading {
-                            ui.separator();
-                            ui.spinner();
-                            ui.colored_label(
-                                Color32::from_rgb(240, 200, 110),
-                                format!("{} {dl}…", tr.pacs_msg_starting_dl),
-                            );
-                        }
-                    });
-
-                    ui.separator();
-                    let selected_patient = self.pacs_web.selected_patient.clone();
-                    let patient_results = self.pacs_web.patient_results.clone();
-                    let results = self.pacs_web.results.clone();
-                    let mut open_patient_target: Option<crate::pacs_web::PacsPatientResult> = None;
-                    let mut go_back = false;
-                    let mut download_target: Option<crate::pacs_web::PacsStudyResult> = None;
-
-                    if let Some(ref pt) = selected_patient {
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(!busy_dl, egui::Button::new(tr.pacs_back_patients).small())
-                                .clicked()
-                            {
-                                go_back = true;
-                            }
-                            ui.strong(format!("{} {}", tr.pacs_studies_for, pt.name));
-                            if self.pacs_web.loading_studies {
-                                ui.spinner();
-                                ui.small(tr.pacs_loading_studies);
-                            }
-                        });
-                        ui.add_space(4.0);
-                    }
-
-                    egui::ScrollArea::vertical()
-                        .max_height(300.0)
-                        .show(ui, |ui| {
-                            if selected_patient.is_none() && !patient_results.is_empty() {
-                                for pt in patient_results.iter().take(50) {
-                                    let row_text = format!("👤 {}  ·  {}", pt.name, pt.summary);
-                                    if ui
-                                        .add_enabled(
-                                            !self.pacs_web.loading_studies,
-                                            egui::Button::new(row_text)
-                                                .wrap_mode(egui::TextWrapMode::Truncate),
-                                        )
-                                        .clicked()
-                                    {
-                                        open_patient_target = Some(pt.clone());
-                                    }
-                                }
-                            } else {
-                                if results.is_empty()
-                                    && !self.pacs_web.searching
-                                    && !self.pacs_web.loading_studies
-                                {
-                                    ui.label(
-                                        egui::RichText::new(tr.pacs_results_hint)
-                                            .small()
-                                            .color(Color32::from_gray(150)),
-                                    );
-                                }
-                                for st in results.iter().take(50) {
-                                    let mod_tag = if st.modality.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!("[{}] ", st.modality)
-                                    };
-                                    let row_text = if selected_patient.is_some() {
-                                        let rep = if st.has_report {
-                                            format!("📄 {}", tr.pacs_has_report)
-                                        } else {
-                                            format!("🖼 {}", tr.pacs_images_only)
-                                        };
-                                        format!(
-                                            "{mod_tag}{}  ·  {}  ·  {rep}",
-                                            st.description, st.study_date
-                                        )
-                                    } else {
-                                        let title = if st.patient_name.is_empty() {
-                                            st.study_uid.clone()
-                                        } else {
-                                            st.patient_name.clone()
-                                        };
-                                        format!(
-                                            "{title} {mod_tag} · ID: {} · {} · {}",
-                                            st.patient_id, st.study_date, st.description
-                                        )
-                                    };
-                                    if ui
-                                        .add_enabled(
-                                            self.pacs_web.downloading.is_none(),
-                                            egui::Button::new(row_text)
-                                                .wrap_mode(egui::TextWrapMode::Truncate),
-                                        )
-                                        .clicked()
-                                    {
-                                        download_target = Some(st.clone());
-                                    }
-                                }
-                            }
-                        });
-                    if go_back {
-                        self.pacs_web.back_to_patients();
-                    }
-                    if let Some(pt) = open_patient_target {
-                        self.pacs_web.open_patient(&pt, ctx.clone());
-                    }
-                    if let Some(st) = download_target {
-                        self.pacs_web.start_download(&st, ctx.clone());
-                    }
-                    if let Some(ref msg) = self.pacs_web.status_msg {
-                        ui.separator();
-                        ui.colored_label(Color32::from_rgb(240, 200, 110), msg);
-                    }
-                });
-            if !open {
-                self.show_pacs_finder = false;
-            }
-        }
-    }
-
     pub(super) fn draw_crash_modal(&mut self, ctx: &egui::Context) {
         if !self.show_crash_modal {
             return;
@@ -845,6 +358,7 @@ impl ViewerApp {
                         }
                     }
                 });
+                self.draw_accent_settings(ui, ctx);
 
                 ui.add_space(6.0);
                 ui.separator();
@@ -852,7 +366,7 @@ impl ViewerApp {
                 ui.horizontal(|ui| {
                     let cur = crate::db::managed_studies_dir();
                     ui.monospace(cur.display().to_string());
-                    if ui.button(tr.pacs_choose_folder).clicked()
+                    if ui.button(tr.choose_folder).clicked()
                         && let Some(dir) = rfd::FileDialog::new().pick_folder()
                     {
                         self.select_studies_folder(dir);
@@ -1009,8 +523,8 @@ impl ViewerApp {
                 ui.add_space(6.0);
                 ui.separator();
                 let data_lbl = match self.lang {
-                    crate::i18n::Lang::Es => "Carpeta de datos locales (BD, sesión WebView, registros):",
-                    crate::i18n::Lang::En => "Local data folder (database, WebView profile, logs):",
+                    crate::i18n::Lang::Es => "Carpeta de datos locales (base de datos y registros):",
+                    crate::i18n::Lang::En => "Local data folder (database and logs):",
                 };
                 ui.label(data_lbl);
                 let data_dir = crate::crash_log::app_data_dir();
@@ -1047,8 +561,8 @@ impl ViewerApp {
                 if self.confirm_delete_local_data {
                     ui.add_space(4.0);
                     let confirm_msg = match self.lang {
-                        crate::i18n::Lang::Es => "¿Eliminar base de datos, perfil WebView, estudios administrados y registros?",
-                        crate::i18n::Lang::En => "Delete database, WebView profile, managed studies, and logs?",
+                        crate::i18n::Lang::Es => "¿Eliminar la base de datos, los estudios administrados y los registros?",
+                        crate::i18n::Lang::En => "Delete the database, managed studies and logs?",
                     };
                     ui.colored_label(Color32::from_rgb(230, 90, 90), confirm_msg);
                     ui.horizontal(|ui| {
@@ -1078,6 +592,73 @@ impl ViewerApp {
         if !open {
             self.show_settings_modal = false;
             self.confirm_delete_local_data = false;
+        }
+    }
+
+    /// Settings → accent colour swatches, custom colour and optional toolbar tint.
+    fn draw_accent_settings(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
+        use crate::ui::theme;
+        let es = self.lang == crate::i18n::Lang::Es;
+        let current = theme::accent();
+        let mut chosen: Option<Color32> = None;
+        let mut tint = theme::tint_chrome();
+        ui.horizontal(|ui| {
+            ui.label(if es { "Color de acento:" } else { "Accent colour:" });
+            for (en, es_name, color) in theme::ACCENT_PRESETS {
+                let (rect, resp) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+                let selected = current == color;
+                ui.painter().circle_filled(rect.center(), 8.0, color);
+                if selected {
+                    ui.painter().circle_stroke(
+                        rect.center(),
+                        10.0,
+                        egui::Stroke::new(2.0, ui.visuals().strong_text_color()),
+                    );
+                } else if resp.hovered() {
+                    ui.painter().circle_stroke(
+                        rect.center(),
+                        10.0,
+                        egui::Stroke::new(1.0, ui.visuals().text_color()),
+                    );
+                }
+                if resp.on_hover_text(if es { es_name } else { en }).clicked() {
+                    chosen = Some(color);
+                }
+            }
+            ui.add_space(6.0);
+            let mut custom = current;
+            if ui
+                .color_edit_button_srgba(&mut custom)
+                .on_hover_text(if es { "Color personalizado" } else { "Custom colour" })
+                .changed()
+            {
+                chosen = Some(Color32::from_rgb(custom.r(), custom.g(), custom.b()));
+            }
+            if current != theme::DEFAULT_ACCENT
+                && ui
+                    .small_button(if es { "Restablecer" } else { "Reset" })
+                    .clicked()
+            {
+                chosen = Some(theme::DEFAULT_ACCENT);
+            }
+        });
+        let tint_changed = ui
+            .checkbox(
+                &mut tint,
+                if es {
+                    "Teñir la barra de herramientas y la barra de estado con el color de acento"
+                } else {
+                    "Tint the toolbar and status bar with the accent colour"
+                },
+            )
+            .changed();
+        if chosen.is_some() || tint_changed {
+            let color = chosen.unwrap_or(current);
+            theme::set_accent(ctx, color, tint);
+            if let Some(ref db) = self.db {
+                let _ = db.set_setting("accent_color", &theme::to_hex(color));
+                let _ = db.set_setting("tint_chrome", if tint { "1" } else { "0" });
+            }
         }
     }
 
@@ -1161,12 +742,10 @@ impl ViewerApp {
                 let bullets: &[&str] = match self.lang {
                     crate::i18n::Lang::Es => &[
                         "• SekhmetX NO es un dispositivo médico certificado ni sustituye la evaluación diagnóstica clínica.",
-                        "• Las contraseñas guardadas del portal PACS se almacenan en el llavero seguro del sistema operativo.",
                         "• Los reportes de fallos enviados a GitHub son públicos (revise la vista previa antes de enviar).",
                     ],
                     crate::i18n::Lang::En => &[
                         "• SekhmetX is NOT a certified medical device and is not intended for primary diagnostic use.",
-                        "• Saved PACS portal passwords are stored in your operating system's secure keychain.",
                         "• Crash reports submitted to GitHub are public (review the scrubbed preview before submitting).",
                     ],
                 };
@@ -1175,8 +754,8 @@ impl ViewerApp {
                     ui.add_space(4.0);
                 }
                 let loc_lbl = match self.lang {
-                    crate::i18n::Lang::Es => "• Los datos locales de pacientes y la sesión se guardan en:",
-                    crate::i18n::Lang::En => "• Local patient data and session files are stored at:",
+                    crate::i18n::Lang::Es => "• Los datos locales de pacientes se guardan en:",
+                    crate::i18n::Lang::En => "• Local patient data is stored at:",
                 };
                 ui.label(loc_lbl);
                 ui.monospace(data_dir.display().to_string());
@@ -1190,7 +769,7 @@ impl ViewerApp {
                 ui.horizontal(|ui| {
                     let cur_studies = crate::db::managed_studies_dir();
                     ui.monospace(cur_studies.display().to_string());
-                    if ui.button(tr.pacs_choose_folder).clicked()
+                    if ui.button(tr.choose_folder).clicked()
                         && let Some(dir) = rfd::FileDialog::new().pick_folder()
                     {
                         self.select_studies_folder(dir);

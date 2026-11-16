@@ -31,7 +31,7 @@ fn paint_series_drag_preview(ui: &egui::Ui, index: &crate::dicom_index::Index) {
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style())
                 .fill(Color32::from_rgb(24, 38, 56))
-                .stroke(Stroke::new(1.5, Color32::from_rgb(80, 175, 255)))
+                .stroke(Stroke::new(1.5, theme::accent_bright()))
                 .show(ui, |ui| {
                     ui.label(egui::RichText::new(label).strong().color(Color32::WHITE));
                 });
@@ -383,7 +383,7 @@ impl ViewerApp {
                                     let painter = ui.painter();
                                     let dark = ui.visuals().dark_mode;
                                     let bg = if is_active {
-                                        theme::ACCENT.gamma_multiply(if dark { 0.35 } else { 0.25 })
+                                        theme::accent().gamma_multiply(if dark { 0.35 } else { 0.25 })
                                     } else if resp.hovered() {
                                         ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.5)
                                     } else {
@@ -397,7 +397,7 @@ impl ViewerApp {
                                                 vec2(3.0, row_rect.height() - 12.0),
                                             ),
                                             2.0,
-                                            theme::ACCENT_BRIGHT,
+                                            theme::accent_bright(),
                                         );
                                     }
                                     let thumb_rect = Rect::from_min_size(
@@ -422,7 +422,7 @@ impl ViewerApp {
                                         Stroke::new(
                                             1.0,
                                             if is_active {
-                                                theme::ACCENT_BRIGHT
+                                                theme::accent_bright()
                                             } else {
                                                 Color32::from_gray(70)
                                             },
@@ -577,7 +577,7 @@ impl ViewerApp {
                                             .stroke(Stroke::new(
                                                 1.0,
                                                 if grp_active {
-                                                    theme::ACCENT.gamma_multiply(0.8)
+                                                    theme::accent().gamma_multiply(0.8)
                                                 } else {
                                                     ui.visuals().widgets.noninteractive.bg_stroke.color
                                                 },
@@ -595,7 +595,7 @@ impl ViewerApp {
                                                         egui::RichText::new(grp_text)
                                                             .strong()
                                                             .size(11.0)
-                                                            .color(theme::ACCENT_BRIGHT),
+                                                            .color(theme::accent_bright()),
                                                     )
                                                     .on_hover_text(
                                                         "Grouped Axial / Coronal / Sagittal reconstructions. Click to open in 3D MPR.",
@@ -874,7 +874,7 @@ impl ViewerApp {
                                 );
                             }
                             let border_col = if is_active {
-                                Color32::from_rgb(80, 175, 255)
+                                theme::accent_bright()
                             } else if thumb_resp.hovered() {
                                 Color32::from_gray(130)
                             } else {
@@ -1152,7 +1152,7 @@ impl ViewerApp {
                             let (rect, resp) =
                                 ui.allocate_exact_size(vec2(162.0, 24.0), Sense::click());
                             let fill = if selected {
-                                theme::ACCENT
+                                theme::accent()
                             } else if resp.hovered() {
                                 ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.5)
                             } else {
@@ -1268,7 +1268,7 @@ impl ViewerApp {
                                     Sense::click(),
                                 );
                                 let row_bg = if is_selected {
-                                    theme::ACCENT
+                                    theme::accent()
                                 } else if row_resp.hovered() {
                                     ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.45)
                                 } else if row_i % 2 == 1 {
@@ -1478,7 +1478,7 @@ impl ViewerApp {
                                     egui::Button::new(
                                         egui::RichText::new(l_open).color(Color32::WHITE),
                                     )
-                                    .fill(theme::ACCENT),
+                                    .fill(theme::accent()),
                                 )
                                 .clicked()
                                 && !st.series.is_empty()
@@ -1512,7 +1512,7 @@ impl ViewerApp {
                                 painter.rect_stroke(
                                     rect,
                                     6.0,
-                                    Stroke::new(1.0, theme::ACCENT_BRIGHT),
+                                    Stroke::new(1.0, theme::accent_bright()),
                                     egui::StrokeKind::Inside,
                                 );
                             }

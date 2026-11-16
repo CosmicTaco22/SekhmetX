@@ -13,7 +13,7 @@ mod i18n;
 mod imaging;
 mod loader;
 mod navigation;
-mod pacs_web;
+mod legacy_cleanup;
 mod roi;
 mod settings;
 mod ui;
@@ -66,14 +66,6 @@ fn main() -> eframe::Result {
             if let Err(e) = cli_roi(&args[1..]) {
                 eprintln!("error: {e:#}");
                 std::process::exit(1);
-            }
-            return Ok(());
-        }
-        Some("--pacs-login") => {
-            crash_log::init();
-            if args.len() >= 3 {
-                let hidden = args.iter().any(|a| a == "--hidden");
-                pacs_web::run_webview_subprocess(&args[1], PathBuf::from(&args[2]), hidden);
             }
             return Ok(());
         }

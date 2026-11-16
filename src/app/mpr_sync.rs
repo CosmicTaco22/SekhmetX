@@ -283,6 +283,40 @@ impl ViewerApp {
         Some((vol, geom, meta_frame))
     }
 
+    /// Which standard plane the viewport is showing right now, for lighting up the
+    /// Ax / Cor / Sag buttons. The series' own acquisition plane counts as its plane
+    /// even when the scanner tilted it (gantry tilt); any other plane must be within
+    /// about 3° of a patient axis, otherwise it is oblique and no button lights up.
+    pub(crate) fn viewport_display_plane(&self, vp_idx: usize) -> crate::dicom_index::DominantPlane {
+        use crate::dicom_index::DominantPlane;
+        let Some(vp) = self.viewports.get(vp_idx) else {
+            return DominantPlane::Unknown;
+        };
+        let native = self.viewport_series(vp_idx).map(|s| s.dominant_plane);
+        let Some(plane) = self.effective_mpr_plane(vp_idx).filter(|_| vp.mpr_enabled) else {
+            return native.unwrap_or(DominantPlane::Unknown);
+        };
+        let n = plane.normal;
+        if let Some(vol) = self.viewport_volume(vp_idx) {
+            let nat = MprPlane3D::from_volume_native(vol).normal;
+            let dot = (n[0] * nat[0] + n[1] * nat[1] + n[2] * nat[2]).abs();
+            if dot > 0.9998 {
+                return native.unwrap_or(DominantPlane::Unknown);
+            }
+        }
+        let (ax, ay, az) = (n[0].abs(), n[1].abs(), n[2].abs());
+        const ON_AXIS: f64 = 0.9986; // cos 3°
+        if az > ON_AXIS {
+            DominantPlane::Axial
+        } else if ay > ON_AXIS {
+            DominantPlane::Coronal
+        } else if ax > ON_AXIS {
+            DominantPlane::Sagittal
+        } else {
+            DominantPlane::Oblique
+        }
+    }
+
     pub(crate) fn effective_mpr_plane(&self, vp_idx: usize) -> Option<MprPlane3D> {
         let vp = self.viewports.get(vp_idx)?;
         if vp.mpr_enabled

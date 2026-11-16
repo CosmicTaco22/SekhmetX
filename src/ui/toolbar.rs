@@ -230,7 +230,7 @@ impl ViewerApp {
                         Icon::Library,
                         back_lbl,
                         false,
-                        Some(theme::ACCENT),
+                        Some(theme::accent()),
                         false,
                     )
                     .on_hover_text(back_hover)
@@ -801,12 +801,12 @@ impl ViewerApp {
 
                     let fill = if in_selection {
                         if hovered_rc.is_some() {
-                            Color32::from_rgb(70, 165, 255)
+                            theme::accent_bright()
                         } else {
-                            Color32::from_rgb(55, 130, 210)
+                            theme::accent()
                         }
                     } else if in_current {
-                        Color32::from_rgb(38, 62, 92)
+                        theme::accent().gamma_multiply(0.45)
                     } else {
                         Color32::from_gray(42)
                     };
@@ -921,22 +921,19 @@ impl ViewerApp {
 
             if self.active_cell().mpr_enabled {
                 ui.separator();
-                if ui.small_button("Ax").on_hover_text(tr.ax_hover).clicked() {
-                    self.switch_viewport_to_plane(vp_idx, crate::dicom_index::DominantPlane::Axial);
-                }
-                if ui
-                    .small_button("Cor")
-                    .on_hover_text(tr.cor_hover)
-                    .clicked()
-                {
-                    self.switch_viewport_to_plane(vp_idx, crate::dicom_index::DominantPlane::Coronal);
-                }
-                if ui
-                    .small_button("Sag")
-                    .on_hover_text(tr.sag_hover)
-                    .clicked()
-                {
-                    self.switch_viewport_to_plane(vp_idx, crate::dicom_index::DominantPlane::Sagittal);
+                let shown = self.viewport_display_plane(vp_idx);
+                for (plane, lbl, hover) in [
+                    (crate::dicom_index::DominantPlane::Axial, "Ax", tr.ax_hover),
+                    (crate::dicom_index::DominantPlane::Coronal, "Cor", tr.cor_hover),
+                    (crate::dicom_index::DominantPlane::Sagittal, "Sag", tr.sag_hover),
+                ] {
+                    if ui
+                        .add(egui::Button::new(lbl).small().selected(shown == plane))
+                        .on_hover_text(hover)
+                        .clicked()
+                    {
+                        self.switch_viewport_to_plane(vp_idx, plane);
+                    }
                 }
                 if ui
                     .small_button("Nat")
