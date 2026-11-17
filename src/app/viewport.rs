@@ -1139,15 +1139,17 @@ impl ViewerApp {
                     (Icon::Rotate, Tool::Rotate, tr.rot),
                     (Icon::Orbit, Tool::Orbit3D, tr.orbit_3d),
                 ];
-                let roi_tools: [(Icon, Tool, &str); 6] = [
+                let roi_tools: [(Icon, Tool, &str); 8] = [
                     (Icon::Length, Tool::Length, tr.roi_length),
                     (Icon::Angle, Tool::Angle, tr.roi_angle),
+                    (Icon::Angle, Tool::CobbAngle, tr.roi_cobb),
+                    (Icon::Length, Tool::Arrow, tr.roi_arrow),
                     (Icon::Oval, Tool::Oval, tr.roi_oval),
                     (Icon::Rectangle, Tool::Rect, tr.roi_rect),
                     (Icon::Polygon, Tool::Polygon, tr.roi_polygon),
                     (Icon::Point, Tool::Point, tr.roi_point),
                 ];
-                for row in [&nav_tools, &roi_tools] {
+                for row in [&nav_tools[..], &roi_tools[..]] {
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 3.0;
                         for &(icon, t, tip) in row {
@@ -1158,6 +1160,7 @@ impl ViewerApp {
                                 self.tool = t;
                                 self.drawing.clear();
                                 self.angle_pending = None;
+                                self.cobb_pending = None;
                                 ui.close();
                             }
                         }
@@ -1412,9 +1415,54 @@ impl ViewerApp {
                         ui.close();
                     }
                 }
+                if let Some(mk) = cur_mk.as_ref()
+                    && let Some((ref sp, sfr, idx)) = self.selected_roi.clone()
+                    && *sp == mk.0
+                    && sfr == mk.1
+                    && let Some(sel_m) = self.measures.get(mk).and_then(|v| v.get(idx))
+                {
+                    if let crate::app::Measure::Arrow { text, .. } = sel_m {
+                        let edit_lbl = match self.lang {
+                            crate::i18n::Lang::Es => "✏ Editar texto de flecha…",
+                            crate::i18n::Lang::En => "✏ Edit Arrow text…",
+                        };
+                        if ui.button(edit_lbl).clicked() {
+                            self.arrow_edit_target = Some((sp.clone(), sfr, idx));
+                            self.arrow_edit_text = text.clone();
+                            ui.close();
+                        }
+                    }
+                    let del_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "🗑 Eliminar ROI seleccionado",
+                        crate::i18n::Lang::En => "🗑 Delete selected ROI",
+                    };
+                    if ui.button(del_lbl).clicked() {
+                        self.delete_selected_or_last_roi(vp_idx);
+                        ui.close();
+                    }
+                }
+                if cur_mk
+                    .as_ref()
+                    .and_then(|mk| self.measures.get(mk))
+                    .is_some_and(|v| !v.is_empty())
+                {
+                    let hist_lbl = match (self.lang, self.show_roi_histogram) {
+                        (crate::i18n::Lang::Es, false) => "📊 Mostrar histograma / perfil ROI",
+                        (crate::i18n::Lang::Es, true) => "📊 Ocultar histograma / perfil ROI",
+                        (crate::i18n::Lang::En, false) => "📊 Show ROI Histogram / Profile",
+                        (crate::i18n::Lang::En, true) => "📊 Hide ROI Histogram / Profile",
+                    };
+                    if ui.button(hist_lbl).clicked() {
+                        self.show_roi_histogram = !self.show_roi_histogram;
+                        ui.close();
+                    }
+                }
                 if ui.button(tr.clear_rois).clicked() {
                     if let Some(mk) = cur_mk {
                         self.measures.remove(&mk);
+                        if self.selected_roi.as_ref().is_some_and(|(p, fr, _)| *p == mk.0 && *fr == mk.1) {
+                            self.selected_roi = None;
+                        }
                     }
                     ui.close();
                 }
@@ -1636,6 +1684,173 @@ impl ViewerApp {
         let is_click = response.clicked();
         if !is_drag && !is_click {
             return;
+        }
+
+        // 1) Continue dragging an existing ROI handle if active.
+        if let Some((ref sp, sfr, m_idx, h_idx)) = self.dragging_roi_handle.clone() {
+            if let Some(px) = pointer_px.or(self.hover_px)
+                && let Some(list) = self.measures.get_mut(&(sp.clone(), sfr))
+                && let Some(m) = list.get_mut(m_idx)
+            {
+                set_measure_handle(m, h_idx, px);
+            }
+            if response.drag_stopped() {
+                self.persist_measures_for(&(sp.clone(), sfr));
+                self.dragging_roi_handle = None;
+            }
+            return;
+        }
+
+        // 1b) Continue dragging an entire ROI body if active.
+        if let Some((ref sp, sfr, m_idx, last_px)) = self.dragging_roi_body.clone() {
+            if let Some(cur_px) = pointer_px.or(self.hover_px) {
+                let delta_px = cur_px - last_px;
+                if delta_px.length_sq() > 0.0
+                    && let Some(list) = self.measures.get_mut(&(sp.clone(), sfr))
+                    && let Some(m) = list.get_mut(m_idx)
+                {
+                    translate_measure(m, delta_px);
+                }
+                self.dragging_roi_body = Some((sp.clone(), sfr, m_idx, cur_px));
+            }
+            if response.drag_stopped() {
+                self.persist_measures_for(&(sp.clone(), sfr));
+                self.dragging_roi_body = None;
+            }
+            return;
+        }
+
+        // 2) Start dragging an ROI handle (or ROI body/interior) if primary drag starts on it.
+        if response.drag_started()
+            && self.drawing.is_empty()
+            && self.angle_pending.is_none()
+            && self.cobb_pending.is_none()
+            && let Some(k) = self.viewport_measure_key(vp_idx)
+            && let Some(press_scr) = response
+                .ctx
+                .input(|i| i.pointer.press_origin())
+                .or(response.interact_pointer_pos())
+            && let Some(list) = self.measures.get(&k)
+        {
+            let mut best: Option<(usize, usize, f32)> = None;
+            for (m_idx, m) in list.iter().enumerate() {
+                for (h_idx, h_px) in measure_handles(m).into_iter().enumerate() {
+                    let h_scr = self.pixel_to_screen(vp_idx, img, frame, h_px);
+                    let d = h_scr.distance(press_scr);
+                    if d <= 10.0 && best.is_none_or(|(_, _, bd)| d < bd) {
+                        best = Some((m_idx, h_idx, d));
+                    }
+                }
+            }
+            if let Some((m_idx, h_idx, _)) = best {
+                self.selected_roi = Some((k.0.clone(), k.1, m_idx));
+                self.dragging_roi_handle = Some((k.0, k.1, m_idx, h_idx));
+                return;
+            }
+
+            let press_px = self.screen_to_pixel(vp_idx, img, frame, press_scr);
+            if let Some(m_idx) = list.iter().enumerate().rev().find_map(|(m_idx, m)| {
+                let c_scr = self.pixel_to_screen(vp_idx, img, frame, measure_center(m));
+                (c_scr.distance(press_scr) <= 10.0).then_some(m_idx)
+            }) {
+                self.selected_roi = Some((k.0.clone(), k.1, m_idx));
+                self.dragging_roi_body = Some((k.0, k.1, m_idx, press_px));
+                return;
+            }
+            let is_nav = matches!(
+                self.tool,
+                Tool::WindowLevel
+                    | Tool::Scroll
+                    | Tool::Pan
+                    | Tool::Zoom
+                    | Tool::Rotate
+                    | Tool::Orbit3D
+            );
+            let hit_body = list.iter().enumerate().rev().find_map(|(m_idx, m)| {
+                let is_sel = self.selected_roi.as_ref().is_some_and(|(p, fr, idx)| {
+                    *p == k.0 && *fr == k.1 && *idx == m_idx
+                });
+                if (is_nav || is_sel)
+                    && hit_test_roi_interior(m, press_px, press_scr, |pt| {
+                        self.pixel_to_screen(vp_idx, img, frame, pt)
+                    })
+                {
+                    Some(m_idx)
+                } else {
+                    None
+                }
+            });
+            if let Some(m_idx) = hit_body {
+                self.selected_roi = Some((k.0.clone(), k.1, m_idx));
+                self.dragging_roi_body = Some((k.0, k.1, m_idx, press_px));
+                return;
+            }
+        }
+
+        // 3) Click to select an ROI (or double-click an Arrow to edit text).
+        if is_click
+            && self.drawing.is_empty()
+            && self.angle_pending.is_none()
+            && self.cobb_pending.is_none()
+            && let Some(k) = self.viewport_measure_key(vp_idx)
+            && let Some(scr) = response.interact_pointer_pos()
+        {
+            let hit_callout = self
+                .prev_callout_hit_rects
+                .iter()
+                .rev()
+                .find(|((p, fr, _), r)| *p == k.0 && *fr == k.1 && r.contains(scr))
+                .map(|((p, fr, idx), _)| (p.clone(), *fr, *idx));
+            if let Some((p, fr, idx)) = hit_callout {
+                self.selected_roi = Some((p.clone(), fr, idx));
+                if response.double_clicked()
+                    && let Some(Measure::Arrow { text, .. }) =
+                        self.measures.get(&k).and_then(|v| v.get(idx))
+                {
+                    self.arrow_edit_target = Some((p, fr, idx));
+                    self.arrow_edit_text = text.clone();
+                }
+                return;
+            }
+            let is_nav = matches!(
+                self.tool,
+                Tool::WindowLevel
+                    | Tool::Scroll
+                    | Tool::Pan
+                    | Tool::Zoom
+                    | Tool::Rotate
+                    | Tool::Orbit3D
+            );
+            if is_nav && let Some(list) = self.measures.get(&k) {
+                let click_px = self.screen_to_pixel(vp_idx, img, frame, scr);
+                let mut hit_idx: Option<(usize, f32)> = None;
+                for (m_idx, m) in list.iter().enumerate() {
+                    let d = measure_screen_distance(m, scr, |pt| {
+                        self.pixel_to_screen(vp_idx, img, frame, pt)
+                    });
+                    if d <= 9.0 && hit_idx.is_none_or(|(_, bd)| d < bd) {
+                        hit_idx = Some((m_idx, d));
+                    } else if hit_idx.is_none()
+                        && hit_test_roi_interior(m, click_px, scr, |pt| {
+                            self.pixel_to_screen(vp_idx, img, frame, pt)
+                        })
+                    {
+                        hit_idx = Some((m_idx, 9.0));
+                    }
+                }
+                if let Some((idx, _)) = hit_idx {
+                    self.selected_roi = Some((k.0.clone(), k.1, idx));
+                    if response.double_clicked()
+                        && let Some(Measure::Arrow { text, .. }) = list.get(idx)
+                    {
+                        self.arrow_edit_target = Some((k.0, k.1, idx));
+                        self.arrow_edit_text = text.clone();
+                    }
+                    return;
+                } else {
+                    self.selected_roi = None;
+                }
+            }
         }
 
         match self.tool {
@@ -1898,6 +2113,122 @@ impl ViewerApp {
                     }
                 }
             }
+            Tool::CobbAngle => {
+                let cur_px = pointer_px.or(self.hover_px);
+                if self.drawing.is_empty() {
+                    if response.drag_started() {
+                        let origin = response.ctx.input(|i| i.pointer.press_origin());
+                        if let Some(p) = origin.or(response.interact_pointer_pos()) {
+                            let px = self.screen_to_pixel(vp_idx, img, frame, p);
+                            self.drawing.push(px);
+                            self.drawing.push(px);
+                        }
+                    } else if is_click && let Some(px) = cur_px {
+                        self.drawing.push(px);
+                    }
+                } else if self.drawing.len() == 1 {
+                    if (is_click || response.drag_stopped()) && let Some(b) = cur_px {
+                        let a = self.drawing[0];
+                        if a.distance(b) > 2.0 {
+                            if let Some((a1, b1)) = self.cobb_pending.take() {
+                                if let Some(k) = self.viewport_measure_key(vp_idx) {
+                                    self.measures
+                                        .entry(k.clone())
+                                        .or_default()
+                                        .push(Measure::Cobb(a1, b1, a, b));
+                                    self.persist_measures_for(&k);
+                                }
+                            } else {
+                                self.cobb_pending = Some((a, b));
+                            }
+                            self.drawing.clear();
+                        }
+                    }
+                } else if self.drawing.len() == 2 {
+                    if let Some(p) = cur_px {
+                        self.drawing[1] = p;
+                    }
+                    if response.drag_stopped() {
+                        let (a, b) = (self.drawing[0], self.drawing[1]);
+                        if a.distance(b) > 3.0 {
+                            if let Some((a1, b1)) = self.cobb_pending.take() {
+                                if let Some(k) = self.viewport_measure_key(vp_idx) {
+                                    self.measures
+                                        .entry(k.clone())
+                                        .or_default()
+                                        .push(Measure::Cobb(a1, b1, a, b));
+                                    self.persist_measures_for(&k);
+                                }
+                            } else {
+                                self.cobb_pending = Some((a, b));
+                            }
+                            self.drawing.clear();
+                        } else {
+                            self.drawing.truncate(1);
+                        }
+                    }
+                }
+            }
+            Tool::Arrow => {
+                let cur_px = pointer_px.or(self.hover_px);
+                if self.drawing.is_empty() {
+                    if response.drag_started() {
+                        let origin = response.ctx.input(|i| i.pointer.press_origin());
+                        if let Some(p) = origin.or(response.interact_pointer_pos()) {
+                            let px = self.screen_to_pixel(vp_idx, img, frame, p);
+                            self.drawing.push(px);
+                            self.drawing.push(px);
+                        }
+                    } else if is_click && let Some(px) = cur_px {
+                        self.drawing.push(px);
+                    }
+                } else if self.drawing.len() == 1 {
+                    if (is_click || response.drag_stopped()) && let Some(tail) = cur_px {
+                        let tip = self.drawing[0];
+                        if tip.distance(tail) > 2.0 {
+                            if let Some(k) = self.viewport_measure_key(vp_idx) {
+                                let list = self.measures.entry(k.clone()).or_default();
+                                let idx = list.len();
+                                list.push(Measure::Arrow {
+                                    tip,
+                                    tail,
+                                    text: "Note".to_string(),
+                                });
+                                self.persist_measures_for(&k);
+                                self.selected_roi = Some((k.0.clone(), k.1, idx));
+                                self.arrow_edit_target = Some((k.0, k.1, idx));
+                                self.arrow_edit_text = "Note".to_string();
+                            }
+                            self.drawing.clear();
+                        }
+                    }
+                } else if self.drawing.len() == 2 {
+                    if let Some(p) = cur_px {
+                        self.drawing[1] = p;
+                    }
+                    if response.drag_stopped() {
+                        let (tip, tail) = (self.drawing[0], self.drawing[1]);
+                        if tip.distance(tail) > 3.0 {
+                            if let Some(k) = self.viewport_measure_key(vp_idx) {
+                                let list = self.measures.entry(k.clone()).or_default();
+                                let idx = list.len();
+                                list.push(Measure::Arrow {
+                                    tip,
+                                    tail,
+                                    text: "Note".to_string(),
+                                });
+                                self.persist_measures_for(&k);
+                                self.selected_roi = Some((k.0.clone(), k.1, idx));
+                                self.arrow_edit_target = Some((k.0, k.1, idx));
+                                self.arrow_edit_text = "Note".to_string();
+                            }
+                            self.drawing.clear();
+                        } else {
+                            self.drawing.truncate(1);
+                        }
+                    }
+                }
+            }
             Tool::Oval | Tool::Rect => {
                 let is_oval = self.tool == Tool::Oval;
                 let cur_px = pointer_px.or(self.hover_px);
@@ -2023,5 +2354,208 @@ impl ViewerApp {
                         }
             }
         }
+    }
+}
+
+fn measure_center(m: &Measure) -> Pos2 {
+    match m {
+        Measure::Length(a, b) | Measure::Oval(a, b) | Measure::Rect(a, b) => a.lerp(*b, 0.5),
+        Measure::Angle(a, v, b) => pos2((a.x + v.x + b.x) / 3.0, (a.y + v.y + b.y) / 3.0),
+        Measure::Cobb(a1, b1, a2, b2) => pos2(
+            (a1.x + b1.x + a2.x + b2.x) * 0.25,
+            (a1.y + b1.y + a2.y + b2.y) * 0.25,
+        ),
+        Measure::Arrow { tip, tail, .. } => tip.lerp(*tail, 0.5),
+        Measure::Polygon(pts) | Measure::Pencil(pts) => {
+            if pts.is_empty() {
+                Pos2::ZERO
+            } else {
+                let sum = pts.iter().fold(Vec2::ZERO, |acc, p| acc + p.to_vec2());
+                (sum / pts.len() as f32).to_pos2()
+            }
+        }
+        Measure::Point(p) => *p,
+    }
+}
+
+fn measure_handles(m: &Measure) -> Vec<Pos2> {
+    match m {
+        Measure::Length(a, b) | Measure::Oval(a, b) | Measure::Rect(a, b) => vec![*a, *b],
+        Measure::Angle(a, v, b) => vec![*a, *v, *b],
+        Measure::Cobb(a1, b1, a2, b2) => vec![*a1, *b1, *a2, *b2],
+        Measure::Arrow { tip, tail, .. } => vec![*tip, *tail],
+        Measure::Polygon(pts) => pts.clone(),
+        Measure::Pencil(_) => Vec::new(),
+        Measure::Point(p) => vec![*p],
+    }
+}
+
+fn set_measure_handle(m: &mut Measure, h_idx: usize, px: Pos2) {
+    match m {
+        Measure::Length(a, b) | Measure::Oval(a, b) | Measure::Rect(a, b) => {
+            if h_idx == 0 {
+                *a = px;
+            } else if h_idx == 1 {
+                *b = px;
+            }
+        }
+        Measure::Angle(a, v, b) => match h_idx {
+            0 => *a = px,
+            1 => *v = px,
+            2 => *b = px,
+            _ => {}
+        },
+        Measure::Cobb(a1, b1, a2, b2) => match h_idx {
+            0 => *a1 = px,
+            1 => *b1 = px,
+            2 => *a2 = px,
+            3 => *b2 = px,
+            _ => {}
+        },
+        Measure::Arrow { tip, tail, .. } => {
+            if h_idx == 0 {
+                *tip = px;
+            } else if h_idx == 1 {
+                *tail = px;
+            }
+        }
+        Measure::Polygon(pts) => {
+            if let Some(p) = pts.get_mut(h_idx) {
+                *p = px;
+            }
+        }
+        Measure::Pencil(_) => {}
+        Measure::Point(p) => {
+            if h_idx == 0 {
+                *p = px;
+            }
+        }
+    }
+}
+
+fn dist_point_to_seg(p: Pos2, a: Pos2, b: Pos2) -> f32 {
+    let ab = b - a;
+    let len2 = ab.length_sq();
+    if len2 < 1e-4 {
+        return p.distance(a);
+    }
+    let t = ((p - a).dot(ab) / len2).clamp(0.0, 1.0);
+    p.distance(a + ab * t)
+}
+
+fn measure_screen_distance(m: &Measure, scr: Pos2, to_scr: impl Fn(Pos2) -> Pos2) -> f32 {
+    match m {
+        Measure::Length(a, b) => dist_point_to_seg(scr, to_scr(*a), to_scr(*b)),
+        Measure::Angle(a, v, b) => {
+            let sv = to_scr(*v);
+            dist_point_to_seg(scr, to_scr(*a), sv).min(dist_point_to_seg(scr, sv, to_scr(*b)))
+        }
+        Measure::Cobb(a1, b1, a2, b2) => {
+            dist_point_to_seg(scr, to_scr(*a1), to_scr(*b1))
+                .min(dist_point_to_seg(scr, to_scr(*a2), to_scr(*b2)))
+        }
+        Measure::Arrow { tip, tail, .. } => dist_point_to_seg(scr, to_scr(*tip), to_scr(*tail)),
+        Measure::Oval(a, b) | Measure::Rect(a, b) => {
+            let sa = to_scr(*a);
+            let sb = to_scr(*b);
+            let r = Rect::from_two_pos(sa, sb);
+            let d_edges = [
+                dist_point_to_seg(scr, r.left_top(), r.right_top()),
+                dist_point_to_seg(scr, r.right_top(), r.right_bottom()),
+                dist_point_to_seg(scr, r.right_bottom(), r.left_bottom()),
+                dist_point_to_seg(scr, r.left_bottom(), r.left_top()),
+            ];
+            d_edges.into_iter().fold(f32::INFINITY, f32::min)
+        }
+        Measure::Polygon(pts) | Measure::Pencil(pts) => {
+            if pts.len() < 2 {
+                return f32::INFINITY;
+            }
+            let mut best = f32::INFINITY;
+            for i in 0..pts.len() {
+                let j = (i + 1) % pts.len();
+                best = best.min(dist_point_to_seg(scr, to_scr(pts[i]), to_scr(pts[j])));
+            }
+            best
+        }
+        Measure::Point(p) => scr.distance(to_scr(*p)),
+    }
+}
+
+fn translate_measure(m: &mut Measure, d: Vec2) {
+    match m {
+        Measure::Length(a, b) | Measure::Oval(a, b) | Measure::Rect(a, b) => {
+            *a += d;
+            *b += d;
+        }
+        Measure::Angle(a, v, b) => {
+            *a += d;
+            *v += d;
+            *b += d;
+        }
+        Measure::Cobb(a1, b1, a2, b2) => {
+            *a1 += d;
+            *b1 += d;
+            *a2 += d;
+            *b2 += d;
+        }
+        Measure::Arrow { tip, tail, .. } => {
+            *tip += d;
+            *tail += d;
+        }
+        Measure::Polygon(pts) | Measure::Pencil(pts) => {
+            for p in pts {
+                *p += d;
+            }
+        }
+        Measure::Point(p) => {
+            *p += d;
+        }
+    }
+}
+
+fn point_in_polygon(pt: Pos2, pts: &[Pos2]) -> bool {
+    if pts.len() < 3 {
+        return false;
+    }
+    let mut inside = false;
+    let mut j = pts.len() - 1;
+    for i in 0..pts.len() {
+        let pi = pts[i];
+        let pj = pts[j];
+        if ((pi.y > pt.y) != (pj.y > pt.y))
+            && (pt.x < (pj.x - pi.x) * (pt.y - pi.y) / (pj.y - pi.y + 1e-6) + pi.x)
+        {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+fn hit_test_roi_interior(
+    m: &Measure,
+    px: Pos2,
+    scr: Pos2,
+    to_scr: impl Fn(Pos2) -> Pos2,
+) -> bool {
+    match m {
+        Measure::Oval(a, b) => {
+            let cx = (a.x + b.x) * 0.5;
+            let cy = (a.y + b.y) * 0.5;
+            let rx = ((b.x - a.x) * 0.5).abs().max(1.0);
+            let ry = ((b.y - a.y) * 0.5).abs().max(1.0);
+            let nx = (px.x - cx) / rx;
+            let ny = (px.y - cy) / ry;
+            nx * nx + ny * ny <= 1.0 || measure_screen_distance(m, scr, to_scr) <= 9.0
+        }
+        Measure::Rect(a, b) => {
+            Rect::from_two_pos(*a, *b).contains(px)
+                || measure_screen_distance(m, scr, to_scr) <= 9.0
+        }
+        Measure::Polygon(pts) | Measure::Pencil(pts) => {
+            point_in_polygon(px, pts) || measure_screen_distance(m, scr, to_scr) <= 9.0
+        }
+        _ => measure_screen_distance(m, scr, to_scr) <= 9.0,
     }
 }

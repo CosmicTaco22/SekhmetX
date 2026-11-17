@@ -41,6 +41,12 @@ impl CopyToLibraryPolicy {
 pub enum PersistedMeasure {
     Length([f32; 2], [f32; 2]),
     Angle([f32; 2], [f32; 2], [f32; 2]),
+    Cobb([f32; 2], [f32; 2], [f32; 2], [f32; 2]),
+    Arrow {
+        tip: [f32; 2],
+        tail: [f32; 2],
+        text: String,
+    },
     Oval([f32; 2], [f32; 2]),
     Rect([f32; 2], [f32; 2]),
     Polygon(Vec<[f32; 2]>),
@@ -156,6 +162,7 @@ impl Database {
                 ("date_added", "ALTER TABLE studies ADD COLUMN date_added INTEGER NOT NULL DEFAULT 0;"),
                 ("last_opened", "ALTER TABLE studies ADD COLUMN last_opened INTEGER NOT NULL DEFAULT 0;"),
                 ("managed_dir", "ALTER TABLE studies ADD COLUMN managed_dir TEXT;"),
+                ("source_paths", "ALTER TABLE studies ADD COLUMN source_paths TEXT;"),
             ] {
                 if !has_col("studies", col)? {
                     conn.execute(ddl, [])?;
@@ -212,9 +219,31 @@ impl Database {
                     .then(|| candidate.to_string_lossy().into_owned())
             };
 
+            let managed_root = managed_studies_dir();
+            let mut src_set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+            for se in &study.series {
+                for sl in &se.slices {
+                    if let Some(zip_p) = crate::dicom_index::original_zip_for_extracted_path(&sl.path)
+                    {
+                        src_set.insert(zip_p.to_string_lossy().into_owned());
+                    } else if !sl.path.starts_with(&managed_root) {
+                        let p_str = sl.path.to_string_lossy();
+                        if !p_str.contains("sekhmetx-zip-") && !p_str.contains("rdicom-zip-cache") {
+                            src_set.insert(p_str.into_owned());
+                        }
+                    }
+                }
+            }
+            let source_paths_json = if src_set.is_empty() {
+                None
+            } else {
+                let vec: Vec<String> = src_set.into_iter().collect();
+                serde_json::to_string(&vec).ok()
+            };
+
             tx.execute(
-                "INSERT INTO studies (uid, patient_name, patient_id, birth_date, study_date, description, accession, modality, image_count, date_added, last_opened, managed_dir)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11)
+                "INSERT INTO studies (uid, patient_name, patient_id, birth_date, study_date, description, accession, modality, image_count, date_added, last_opened, managed_dir, source_paths)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10, ?11, ?12)
                  ON CONFLICT(uid) DO UPDATE SET
                    patient_name = excluded.patient_name,
                    patient_id = excluded.patient_id,
@@ -225,7 +254,8 @@ impl Database {
                    modality = excluded.modality,
                    image_count = excluded.image_count,
                    last_opened = excluded.last_opened,
-                   managed_dir = COALESCE(excluded.managed_dir, studies.managed_dir)",
+                   managed_dir = COALESCE(excluded.managed_dir, studies.managed_dir),
+                   source_paths = COALESCE(excluded.source_paths, studies.source_paths)",
                 params![
                     study.uid,
                     study.patient_name,
@@ -238,6 +268,7 @@ impl Database {
                     total_imgs,
                     now_secs,
                     managed_dir,
+                    source_paths_json,
                 ],
             )?;
 
@@ -519,6 +550,39 @@ impl Database {
             let _ = std::fs::remove_dir_all(fallback);
         }
         Ok(())
+    }
+
+    pub fn set_study_source_paths(&self, study_uid: &str, paths: &[PathBuf]) {
+        if paths.is_empty() {
+            return;
+        }
+        let vec: Vec<String> = paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        if let Ok(json) = serde_json::to_string(&vec) {
+            let _ = self.conn.execute(
+                "UPDATE studies SET source_paths = ?2 WHERE uid = ?1",
+                params![study_uid, json],
+            );
+        }
+    }
+
+    pub fn study_source_paths(&self, study_uid: &str) -> Vec<PathBuf> {
+        let json: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT source_paths FROM studies WHERE uid = ?1",
+                params![study_uid],
+                |r| r.get(0),
+            )
+            .ok()
+            .flatten();
+        json.and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(PathBuf::from)
+            .collect()
     }
 
     pub fn clear_all(&self) -> Result<()> {

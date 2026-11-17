@@ -67,6 +67,8 @@ pub(crate) enum Tool {
     Orbit3D,
     Length,
     Angle,
+    CobbAngle,
+    Arrow,
     Oval,
     Rect,
     Polygon,
@@ -80,6 +82,10 @@ pub(crate) enum Measure {
     Length(Pos2, Pos2),
     /// Vertex in the middle, in unrotated image pixel coordinates.
     Angle(Pos2, Pos2, Pos2),
+    /// Cobb angle between two line segments `(a1, b1)` and `(a2, b2)` in image pixel coordinates.
+    Cobb(Pos2, Pos2, Pos2, Pos2),
+    /// Arrow & text callout annotation (`tip` -> `tail`) in image pixel coordinates.
+    Arrow { tip: Pos2, tail: Pos2, text: String },
     /// Oval / Ellipse ROI defined by two opposite bounding corners in image pixel coordinates.
     Oval(Pos2, Pos2),
     /// Rectangle ROI defined by two opposite corners in image pixel coordinates.
@@ -99,6 +105,17 @@ impl Measure {
             Self::Angle(a, v, b) => {
                 crate::db::PersistedMeasure::Angle([a.x, a.y], [v.x, v.y], [b.x, b.y])
             }
+            Self::Cobb(a1, b1, a2, b2) => crate::db::PersistedMeasure::Cobb(
+                [a1.x, a1.y],
+                [b1.x, b1.y],
+                [a2.x, a2.y],
+                [b2.x, b2.y],
+            ),
+            Self::Arrow { tip, tail, text } => crate::db::PersistedMeasure::Arrow {
+                tip: [tip.x, tip.y],
+                tail: [tail.x, tail.y],
+                text: text.clone(),
+            },
             Self::Oval(a, b) => crate::db::PersistedMeasure::Oval([a.x, a.y], [b.x, b.y]),
             Self::Rect(a, b) => crate::db::PersistedMeasure::Rect([a.x, a.y], [b.x, b.y]),
             Self::Polygon(pts) => {
@@ -119,6 +136,17 @@ impl Measure {
             crate::db::PersistedMeasure::Angle(a, v, b) => {
                 Self::Angle(pos2(a[0], a[1]), pos2(v[0], v[1]), pos2(b[0], b[1]))
             }
+            crate::db::PersistedMeasure::Cobb(a1, b1, a2, b2) => Self::Cobb(
+                pos2(a1[0], a1[1]),
+                pos2(b1[0], b1[1]),
+                pos2(a2[0], a2[1]),
+                pos2(b2[0], b2[1]),
+            ),
+            crate::db::PersistedMeasure::Arrow { tip, tail, text } => Self::Arrow {
+                tip: pos2(tip[0], tip[1]),
+                tail: pos2(tail[0], tail[1]),
+                text,
+            },
             crate::db::PersistedMeasure::Oval(a, b) => {
                 Self::Oval(pos2(a[0], a[1]), pos2(b[0], b[1]))
             }
@@ -353,10 +381,18 @@ pub(crate) struct ViewerApp {
     pub(crate) key_images_only: bool,
     pub(crate) series_spacing_override: HashMap<(usize, usize), (f64, f64)>,
     pub(crate) show_calibrate_modal: bool,
+    pub(crate) pending_remove_study: Option<(String, String)>,
     pub(crate) calibrate_known_mm: String,
     pub(crate) calibrate_last_len_px: f64,
     pub(crate) drawing: Vec<Pos2>,
     pub(crate) angle_pending: Option<(Pos2, Pos2)>,
+    pub(crate) cobb_pending: Option<(Pos2, Pos2)>,
+    pub(crate) selected_roi: Option<(PathBuf, u32, usize)>,
+    pub(crate) dragging_roi_handle: Option<(PathBuf, u32, usize, usize)>,
+    pub(crate) dragging_roi_body: Option<(PathBuf, u32, usize, Pos2)>,
+    pub(crate) show_roi_histogram: bool,
+    pub(crate) arrow_edit_target: Option<(PathBuf, u32, usize)>,
+    pub(crate) arrow_edit_text: String,
     pub(crate) hover_px: Option<Pos2>,
     pub(crate) tiling_hover: Option<(usize, usize)>,
 
@@ -416,6 +452,7 @@ pub(crate) struct ViewerApp {
 pub(crate) enum ThemeMode {
     #[default]
     Dark,
+    Oled,
     Light,
     System,
 }
@@ -423,6 +460,7 @@ pub(crate) enum ThemeMode {
 impl ThemeMode {
     pub(crate) fn from_str(s: &str) -> Self {
         match s {
+            "oled" => Self::Oled,
             "light" => Self::Light,
             "system" => Self::System,
             _ => Self::Dark,
@@ -432,14 +470,16 @@ impl ThemeMode {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Dark => "dark",
+            Self::Oled => "oled",
             Self::Light => "light",
             Self::System => "system",
         }
     }
 
     pub(crate) fn apply(self, ctx: &egui::Context) {
+        crate::ui::theme::set_oled(ctx, self == Self::Oled);
         let pref = match self {
-            Self::Dark => egui::ThemePreference::Dark,
+            Self::Dark | Self::Oled => egui::ThemePreference::Dark,
             Self::Light => egui::ThemePreference::Light,
             Self::System => egui::ThemePreference::System,
         };
@@ -585,10 +625,18 @@ impl ViewerApp {
             key_images_only: false,
             series_spacing_override: HashMap::new(),
             show_calibrate_modal: false,
+            pending_remove_study: None,
             calibrate_known_mm: "100".to_string(),
             calibrate_last_len_px: 0.0,
             drawing: Vec::new(),
             angle_pending: None,
+            cobb_pending: None,
+            selected_roi: None,
+            dragging_roi_handle: None,
+            dragging_roi_body: None,
+            show_roi_histogram: false,
+            arrow_edit_target: None,
+            arrow_edit_text: String::new(),
             hover_px: None,
             tiling_hover: None,
             playing: false,
@@ -881,6 +929,7 @@ impl ViewerApp {
         let Some(ref mut index) = self.index else {
             return;
         };
+        let mut zip_sources: Vec<(String, Vec<PathBuf>)> = Vec::new();
         for st in &mut index.studies {
             let is_zip = st.series.iter().any(|se| {
                 se.slices.first().is_some_and(|sl| {
@@ -889,11 +938,23 @@ impl ViewerApp {
                 })
             });
             if is_zip {
+                let zips: Vec<PathBuf> = st
+                    .series
+                    .iter()
+                    .flat_map(|se| se.slices.iter())
+                    .filter_map(|sl| crate::dicom_index::original_zip_for_extracted_path(&sl.path))
+                    .collect();
+                if !zips.is_empty() {
+                    zip_sources.push((st.uid.clone(), zips));
+                }
                 let _ = crate::db::copy_study_into_library(st);
             }
         }
         if let Some(ref mut db) = self.db {
             let _ = db.save_index(index);
+            for (uid, zips) in zip_sources {
+                db.set_study_source_paths(&uid, &zips);
+            }
         }
     }
 
@@ -957,6 +1018,7 @@ impl ViewerApp {
                             })
                         })
                     });
+                    let mut zip_sources: Vec<(String, Vec<PathBuf>)> = Vec::new();
                     if self.copy_policy == crate::db::CopyToLibraryPolicy::Always {
                         for st in &mut index.studies {
                             let is_zip = st.series.iter().any(|se| {
@@ -966,6 +1028,17 @@ impl ViewerApp {
                                 })
                             });
                             if is_zip {
+                                let zips: Vec<PathBuf> = st
+                                    .series
+                                    .iter()
+                                    .flat_map(|se| se.slices.iter())
+                                    .filter_map(|sl| {
+                                        crate::dicom_index::original_zip_for_extracted_path(&sl.path)
+                                    })
+                                    .collect();
+                                if !zips.is_empty() {
+                                    zip_sources.push((st.uid.clone(), zips));
+                                }
                                 let _ = crate::db::copy_study_into_library(st);
                             }
                         }
@@ -980,6 +1053,9 @@ impl ViewerApp {
                     let first_uid = index.studies.first().map(|s| s.uid.clone());
                     let merged = if let Some(db) = &mut self.db {
                         let _ = db.save_index(&index);
+                        for (uid, zips) in zip_sources {
+                            db.set_study_source_paths(&uid, &zips);
+                        }
                         match db.load_index() {
                             Ok(saved) if !saved.studies.is_empty() => saved,
                             _ => index,
@@ -1374,6 +1450,7 @@ impl ViewerApp {
             Key::G,
             Key::F,
             Key::T,
+            Key::Y,
             Key::Z,
             Key::OpenBracket,
             Key::CloseBracket,
@@ -1410,16 +1487,15 @@ impl ViewerApp {
                 }
                 Key::P | Key::Space => self.playing = !self.playing,
                 Key::Delete | Key::Backspace => {
-                    if let Some(k) = self.viewport_measure_key(vp) {
-                        if let Some(list) = self.measures.get_mut(&k) {
-                            list.pop();
-                        }
-                        self.persist_measures_for(&k);
-                    }
+                    self.delete_selected_or_last_roi(vp);
                 }
                 Key::Escape => {
                     self.drawing.clear();
                     self.angle_pending = None;
+                    self.cobb_pending = None;
+                    self.selected_roi = None;
+                    self.dragging_roi_handle = None;
+                    self.dragging_roi_body = None;
                 }
                 Key::Enter => {
                     if self.tool == Tool::Polygon && self.drawing.len() >= 3 {
@@ -1484,6 +1560,13 @@ impl ViewerApp {
                     self.tool = Tool::Point;
                     self.drawing.clear();
                     self.angle_pending = None;
+                    self.cobb_pending = None;
+                }
+                Key::Y => {
+                    self.tool = Tool::Arrow;
+                    self.drawing.clear();
+                    self.angle_pending = None;
+                    self.cobb_pending = None;
                 }
                 Key::Z => {
                     self.tool = Tool::Zoom;
@@ -1741,6 +1824,56 @@ impl ViewerApp {
         self.set_viewport_slice(vp_idx, next as isize, true);
     }
 
+    pub(crate) fn delete_selected_or_last_roi(&mut self, vp_idx: usize) {
+        let Some(k) = self.viewport_measure_key(vp_idx) else {
+            return;
+        };
+        let removed_idx = if let Some((ref sp, sfr, idx)) = self.selected_roi
+            && *sp == k.0
+            && sfr == k.1
+        {
+            if let Some(list) = self.measures.get_mut(&k)
+                && idx < list.len()
+            {
+                list.remove(idx);
+                Some(idx)
+            } else {
+                None
+            }
+        } else if let Some(list) = self.measures.get_mut(&k)
+            && !list.is_empty()
+        {
+            let idx = list.len() - 1;
+            list.pop();
+            Some(idx)
+        } else {
+            None
+        };
+        if let Some(idx) = removed_idx {
+            // Reindex or clear callout offsets for this slice so remaining callouts stay aligned.
+            self.roi_callout_offsets.remove(&(k.0.clone(), k.1, idx));
+            let shifted: Vec<(usize, Vec2)> = self
+                .roi_callout_offsets
+                .iter()
+                .filter_map(|((p, fr, i), v)| {
+                    if *p == k.0 && *fr == k.1 && *i > idx {
+                        Some((*i, *v))
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            for (i, v) in shifted {
+                self.roi_callout_offsets.remove(&(k.0.clone(), k.1, i));
+                self.roi_callout_offsets.insert((k.0.clone(), k.1, i - 1), v);
+            }
+            self.selected_roi = None;
+            self.dragging_roi_handle = None;
+            self.dragging_roi_body = None;
+            self.persist_measures_for(&k);
+        }
+    }
+
     pub(crate) fn effective_spacing_for_viewport(
         &self,
         vp_idx: usize,
@@ -1895,6 +2028,12 @@ impl ViewerApp {
         self.show_database_view = true;
         self.key_images_only = false;
         self.show_calibrate_modal = false;
+        self.selected_roi = None;
+        self.dragging_roi_handle = None;
+        self.dragging_roi_body = None;
+        self.cobb_pending = None;
+        self.arrow_edit_target = None;
+        self.show_roi_histogram = false;
         self.maximized_viewport = None;
         self.message = None;
         self.playing = false;
@@ -1977,6 +2116,9 @@ impl eframe::App for ViewerApp {
         self.draw_update_modal(&ctx);
         self.draw_settings_modal(&ctx);
         self.draw_calibrate_modal(&ctx);
+        self.draw_remove_study_modal(&ctx);
+        self.draw_arrow_edit_modal(&ctx);
+        self.draw_roi_histogram_modal(&ctx);
         self.draw_vr_tf_editor(&ctx);
         self.draw_crash_modal(&ctx);
         self.draw_first_run_notice_modal(&ctx);

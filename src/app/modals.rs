@@ -344,6 +344,7 @@ impl ViewerApp {
                     ui.label(theme_lbl);
                     for (mode, lbl) in [
                         (super::ThemeMode::Dark, lbl_dark),
+                        (super::ThemeMode::Oled, "OLED"),
                         (super::ThemeMode::Light, lbl_light),
                         (super::ThemeMode::System, lbl_sys),
                     ] {
@@ -737,6 +738,7 @@ impl ViewerApp {
                     ui.label(theme_lbl);
                     for (mode, lbl) in [
                         (super::ThemeMode::Dark, lbl_dark),
+                        (super::ThemeMode::Oled, "OLED"),
                         (super::ThemeMode::Light, lbl_light),
                         (super::ThemeMode::System, lbl_sys),
                     ] {
@@ -1182,6 +1184,322 @@ impl ViewerApp {
                 });
             });
         self.show_calibrate_modal = open && !should_close;
+    }
+
+    pub(super) fn draw_arrow_edit_modal(&mut self, ctx: &egui::Context) {
+        let Some((sp, sfr, idx)) = self.arrow_edit_target.clone() else {
+            return;
+        };
+        let mut open = true;
+        let mut save = false;
+        let mut cancel = false;
+        let title = match self.lang {
+            crate::i18n::Lang::Es => "Texto de flecha",
+            crate::i18n::Lang::En => "Arrow Annotation Text",
+        };
+        egui::Window::new(title)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.arrow_edit_text).desired_width(220.0),
+                );
+                resp.request_focus();
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    save = true;
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let save_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "Guardar",
+                        crate::i18n::Lang::En => "Save",
+                    };
+                    let cancel_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "Cancelar",
+                        crate::i18n::Lang::En => "Cancel",
+                    };
+                    if ui.button(save_lbl).clicked() {
+                        save = true;
+                    }
+                    if ui.button(cancel_lbl).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if save {
+            let k = (sp, sfr);
+            if let Some(list) = self.measures.get_mut(&k)
+                && let Some(crate::app::Measure::Arrow { text, .. }) = list.get_mut(idx)
+            {
+                let trimmed = self.arrow_edit_text.trim();
+                *text = if trimmed.is_empty() {
+                    "Note".to_string()
+                } else {
+                    trimmed.to_string()
+                };
+            }
+            self.persist_measures_for(&k);
+            self.arrow_edit_target = None;
+        } else if !open || cancel {
+            self.arrow_edit_target = None;
+        }
+    }
+
+    pub(super) fn draw_roi_histogram_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_roi_histogram || self.show_database_view {
+            return;
+        }
+        let vp_idx = self.active_viewport;
+        let mut open = self.show_roi_histogram;
+        let title = match self.lang {
+            crate::i18n::Lang::Es => "Histograma / Perfil ROI",
+            crate::i18n::Lang::En => "ROI Histogram / Profile",
+        };
+        egui::Window::new(title)
+            .open(&mut open)
+            .collapsible(true)
+            .resizable(true)
+            .default_size(egui::vec2(300.0, 170.0))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, -34.0))
+            .show(ctx, |ui| {
+                let Some(k) = self.viewport_measure_key(vp_idx) else {
+                    ui.small("No active slice.");
+                    return;
+                };
+                let Some(frame) = self.viewport_frame(vp_idx) else {
+                    ui.small("Frame not loaded.");
+                    return;
+                };
+                let list = self.measures.get(&k);
+                let target = list.and_then(|v| {
+                    if let Some((ref sp, sfr, idx)) = self.selected_roi
+                        && *sp == k.0
+                        && sfr == k.1
+                        && let Some(m) = v.get(idx)
+                    {
+                        return Some(m);
+                    }
+                    v.iter().rev().find(|m| {
+                        matches!(
+                            m,
+                            crate::app::Measure::Length(_, _)
+                                | crate::app::Measure::Oval(_, _)
+                                | crate::app::Measure::Rect(_, _)
+                                | crate::app::Measure::Polygon(_)
+                                | crate::app::Measure::Pencil(_)
+                        )
+                    })
+                });
+                let Some(m) = target else {
+                    let hint = match self.lang {
+                        crate::i18n::Lang::Es => "Selecciona o dibuja un ROI de longitud o área.",
+                        crate::i18n::Lang::En => "Select or draw a Length or Area ROI.",
+                    };
+                    ui.small(hint);
+                    return;
+                };
+
+                let unit = frame.value_unit;
+                match m {
+                    crate::app::Measure::Length(a, b) => {
+                        let samples = crate::roi::sample_line_profile(
+                            frame,
+                            crate::roi::RoiPoint::new(a.x as f64, a.y as f64),
+                            crate::roi::RoiPoint::new(b.x as f64, b.y as f64),
+                            96,
+                        );
+                        if samples.len() < 2 {
+                            ui.small("No samples.");
+                            return;
+                        }
+                        let (min_v, max_v, mean_v) = summarize_samples(&samples);
+                        ui.small(format!(
+                            "Line Profile  Min: {min_v:.1}  Mean: {mean_v:.1}  Max: {max_v:.1} {unit}"
+                        ));
+                        let desired = egui::vec2(ui.available_width().max(180.0), 92.0);
+                        let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+                        let p = ui.painter_at(rect);
+                        p.rect_filled(rect, 4.0, Color32::from_gray(22));
+                        let span = (max_v - min_v).max(1e-3);
+                        let pts: Vec<Pos2> = samples
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &v)| {
+                                let tx = i as f32 / (samples.len() - 1) as f32;
+                                let ty = (v - min_v) / span;
+                                egui::pos2(
+                                    rect.left() + 4.0 + tx * (rect.width() - 8.0),
+                                    rect.bottom() - 4.0 - ty * (rect.height() - 8.0),
+                                )
+                            })
+                            .collect();
+                        p.add(egui::Shape::line(
+                            pts,
+                            Stroke::new(1.5, Color32::from_rgb(80, 220, 140)),
+                        ));
+                    }
+                    crate::app::Measure::Oval(a, b)
+                    | crate::app::Measure::Rect(a, b) => {
+                        let is_oval = matches!(m, crate::app::Measure::Oval(_, _));
+                        let r = crate::roi::RoiBoundingBox::rect(
+                            crate::roi::RoiPoint::new(a.x as f64, a.y as f64),
+                            crate::roi::RoiPoint::new(b.x as f64, b.y as f64),
+                            is_oval,
+                        );
+                        let outline = if is_oval {
+                            crate::roi::RoiPlanarGeometry::outline_of_oval(r, 64)
+                        } else {
+                            crate::roi::RoiPlanarGeometry::outline_of_rectangle(r).to_vec()
+                        };
+                        draw_histogram_bars(ui, frame, &outline, unit);
+                    }
+                    crate::app::Measure::Polygon(pts) => {
+                        let outline: Vec<crate::roi::RoiPoint> = pts
+                            .iter()
+                            .map(|p| crate::roi::RoiPoint::new(p.x as f64, p.y as f64))
+                            .collect();
+                        draw_histogram_bars(ui, frame, &outline, unit);
+                    }
+                    crate::app::Measure::Pencil(pts) => {
+                        let raw: Vec<crate::roi::RoiPoint> = pts
+                            .iter()
+                            .map(|p| crate::roi::RoiPoint::new(p.x as f64, p.y as f64))
+                            .collect();
+                        let (smoothed, _) = crate::roi::RoiSpline::smooth(&raw, 1.5);
+                        let outline = if smoothed.len() >= 3 { &smoothed } else { &raw };
+                        draw_histogram_bars(ui, frame, outline, unit);
+                    }
+                    _ => {
+                        ui.small("Histogram available for Length / Area ROIs.");
+                    }
+                }
+            });
+        self.show_roi_histogram = open;
+    }
+
+    pub(super) fn draw_remove_study_modal(&mut self, ctx: &egui::Context) {
+        let Some((uid, label)) = self.pending_remove_study.clone() else {
+            return;
+        };
+        let file_count = self.study_file_count(&uid);
+        let mut open = true;
+        let mut action: Option<bool> = None; // Some(false) = library only, Some(true) = also delete files
+        let mut cancel = false;
+        let title = match self.lang {
+            crate::i18n::Lang::Es => "Eliminar estudio",
+            crate::i18n::Lang::En => "Remove Study",
+        };
+        egui::Window::new(title)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(&label).strong());
+                ui.add_space(4.0);
+                let msg = match self.lang {
+                    crate::i18n::Lang::Es => format!(
+                        "¿Deseas eliminar este estudio solo de la biblioteca o también borrar sus {file_count} archivo(s) del equipo?"
+                    ),
+                    crate::i18n::Lang::En => format!(
+                        "Do you want to remove this study from the library only, or also delete its {file_count} file(s) from your computer?"
+                    ),
+                };
+                ui.label(msg);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let lib_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "Solo de la biblioteca",
+                        crate::i18n::Lang::En => "Library Only",
+                    };
+                    let disk_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "Eliminar también del equipo",
+                        crate::i18n::Lang::En => "Also Delete Files",
+                    };
+                    let cancel_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "Cancelar",
+                        crate::i18n::Lang::En => "Cancel",
+                    };
+                    if ui.button(lib_lbl).clicked() {
+                        action = Some(false);
+                    }
+                    if ui
+                        .button(
+                            egui::RichText::new(disk_lbl)
+                                .color(Color32::from_rgb(245, 110, 110)),
+                        )
+                        .clicked()
+                    {
+                        action = Some(true);
+                    }
+                    if ui.button(cancel_lbl).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if let Some(delete_files) = action {
+            self.pending_remove_study = None;
+            self.execute_remove_study(&uid, delete_files);
+        } else if !open || cancel {
+            self.pending_remove_study = None;
+        }
+    }
+}
+
+fn summarize_samples(samples: &[f32]) -> (f32, f32, f32) {
+    let mut min_v = f32::INFINITY;
+    let mut max_v = f32::NEG_INFINITY;
+    let mut sum = 0.0_f64;
+    for &v in samples {
+        min_v = min_v.min(v);
+        max_v = max_v.max(v);
+        sum += v as f64;
+    }
+    let mean_v = (sum / samples.len().max(1) as f64) as f32;
+    (min_v, max_v, mean_v)
+}
+
+fn draw_histogram_bars(
+    ui: &mut egui::Ui,
+    frame: &crate::frame::Frame,
+    outline: &[crate::roi::RoiPoint],
+    unit: &str,
+) {
+    let samples = crate::roi::sample_region_values(frame, outline);
+    if samples.is_empty() {
+        ui.small("No interior pixels.");
+        return;
+    }
+    let (min_v, max_v, mean_v) = summarize_samples(&samples);
+    ui.small(format!(
+        "N: {}  Min: {min_v:.1}  Mean: {mean_v:.1}  Max: {max_v:.1} {unit}",
+        samples.len()
+    ));
+    const BINS: usize = 28;
+    let mut counts = [0_u32; BINS];
+    let span = (max_v - min_v).max(1e-3);
+    for &v in &samples {
+        let norm = ((v - min_v) / span).clamp(0.0, 0.9999);
+        let b = (norm * BINS as f32) as usize;
+        counts[b.min(BINS - 1)] += 1;
+    }
+    let max_c = counts.iter().copied().max().unwrap_or(1).max(1) as f32;
+    let desired = egui::vec2(ui.available_width().max(180.0), 92.0);
+    let (rect, _) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, 4.0, Color32::from_gray(22));
+    let inner = rect.shrink(4.0);
+    let bw = inner.width() / BINS as f32;
+    for (i, &c) in counts.iter().enumerate() {
+        let h = (c as f32 / max_c) * inner.height();
+        let x0 = inner.left() + i as f32 * bw;
+        let bar = Rect::from_min_max(
+            egui::pos2(x0 + 0.5, inner.bottom() - h),
+            egui::pos2(x0 + bw - 0.5, inner.bottom()),
+        );
+        p.rect_filled(bar, 1.0, Color32::from_rgb(90, 175, 255));
     }
 }
 

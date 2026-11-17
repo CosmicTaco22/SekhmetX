@@ -310,12 +310,14 @@ impl ViewerApp {
                 if self.tool != prev_tool {
                     self.drawing.clear();
                     self.angle_pending = None;
+                    self.cobb_pending = None;
                 }
             }
             ToolbarGroup::RoiTools => {
                 let prev_tool = self.tool;
                 let menu_icon = match self.tool {
-                    Tool::Angle => Icon::Angle,
+                    Tool::Angle | Tool::CobbAngle => Icon::Angle,
+                    Tool::Arrow => Icon::Length,
                     Tool::Polygon => Icon::Polygon,
                     Tool::Pencil => Icon::Pencil,
                     Tool::Point => Icon::Point,
@@ -338,9 +340,11 @@ impl ViewerApp {
                     icons::tool_button(ui, menu_icon, menu_active).on_hover_text(tr.roi_menu_hover)
                 });
                 egui::Popup::menu(&roi_resp).show(|ui| {
-                    let items: [(Tool, &str, &str); 7] = [
+                    let items: [(Tool, &str, &str); 9] = [
                         (Tool::Length, tr.roi_length, "L"),
                         (Tool::Angle, tr.roi_angle, "—"),
+                        (Tool::CobbAngle, tr.roi_cobb, "—"),
+                        (Tool::Arrow, tr.roi_arrow, "Y"),
                         (Tool::Oval, tr.roi_oval, "E"),
                         (Tool::Rect, tr.roi_rect, "B"),
                         (Tool::Polygon, tr.roi_polygon, "G"),

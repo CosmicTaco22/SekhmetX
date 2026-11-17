@@ -341,6 +341,7 @@ impl ViewerApp {
                             // Helper closure to render a single series row (with 38x38 thumbnail & click/context menu).
                             let draw_series_row = |ui: &mut egui::Ui,
                                                    ri: usize,
+                                                   highlight_3d: bool,
                                                    clicked: &mut Option<(usize, (usize, usize), bool)>,
                                                    thumb_jobs: &mut Vec<Job>| {
                                 let series = &study.series[ri];
@@ -386,18 +387,24 @@ impl ViewerApp {
                                         theme::accent().gamma_multiply(if dark { 0.35 } else { 0.25 })
                                     } else if resp.hovered() {
                                         ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.5)
+                                    } else if highlight_3d {
+                                        theme::accent().gamma_multiply(if dark { 0.08 } else { 0.06 })
                                     } else {
                                         Color32::TRANSPARENT
                                     };
                                     painter.rect_filled(row_rect, 6.0, bg);
-                                    if is_active {
+                                    if is_active || highlight_3d {
                                         painter.rect_filled(
                                             Rect::from_min_size(
                                                 row_rect.min + vec2(0.0, 6.0),
-                                                vec2(3.0, row_rect.height() - 12.0),
+                                                vec2(if is_active { 3.0 } else { 2.0 }, row_rect.height() - 12.0),
                                             ),
                                             2.0,
-                                            theme::accent_bright(),
+                                            if is_active {
+                                                theme::accent_bright()
+                                            } else {
+                                                theme::accent().gamma_multiply(0.6)
+                                            },
                                         );
                                     }
                                     let thumb_rect = Rect::from_min_size(
@@ -528,6 +535,7 @@ impl ViewerApp {
                             // Render series in list order, grouping multi-plane AX/COR/SAG reconstructions
                             // into a compact Horos-style block (no duplicate rows outside the block).
                             let mut rendered_series = std::collections::HashSet::new();
+                            let mut single_image_series: Vec<usize> = Vec::new();
                             for &ri in matching_series {
                                 if rendered_series.contains(&ri) {
                                     continue;
@@ -542,6 +550,12 @@ impl ViewerApp {
                                             .count()
                                             >= 2
                                     });
+
+                                if grp.is_none() && study.series[ri].slices.len() == 1 {
+                                    rendered_series.insert(ri);
+                                    single_image_series.push(ri);
+                                    continue;
+                                }
 
                                 if let Some(group) = grp {
                                     let grp_active = active_sel.is_some_and(|(s_i, r_i)| {
@@ -618,6 +632,7 @@ impl ViewerApp {
                                                     draw_series_row(
                                                         ui,
                                                         pri,
+                                                        false,
                                                         &mut clicked,
                                                         &mut thumb_jobs,
                                                     );
@@ -626,8 +641,45 @@ impl ViewerApp {
                                     });
                                 } else {
                                     rendered_series.insert(ri);
-                                    draw_series_row(ui, ri, &mut clicked, &mut thumb_jobs);
+                                    let is_3d_standalone = study.series[ri].is_mpr_capable();
+                                    draw_series_row(
+                                        ui,
+                                        ri,
+                                        is_3d_standalone,
+                                        &mut clicked,
+                                        &mut thumb_jobs,
+                                    );
                                 }
+                            }
+                            if !single_image_series.is_empty() {
+                                let single_lbl = match self.lang {
+                                    crate::i18n::Lang::Es => format!(
+                                        "Imágenes únicas / Scouts ({})",
+                                        single_image_series.len()
+                                    ),
+                                    crate::i18n::Lang::En => format!(
+                                        "Single images / Scouts ({})",
+                                        single_image_series.len()
+                                    ),
+                                };
+                                egui::CollapsingHeader::new(
+                                    egui::RichText::new(single_lbl)
+                                        .size(11.5)
+                                        .color(theme::dim_text(ui)),
+                                )
+                                .id_salt(format!("single_imgs_{}", study.uid))
+                                .default_open(false)
+                                .show(ui, |ui| {
+                                    for s_ri in single_image_series {
+                                        draw_series_row(
+                                            ui,
+                                            s_ri,
+                                            false,
+                                            &mut clicked,
+                                            &mut thumb_jobs,
+                                        );
+                                    }
+                                });
                             }
                         });
                                     hdr_resp.header_response.context_menu(|ui| {
@@ -735,21 +787,7 @@ impl ViewerApp {
             return;
         }
         if let Some(uid) = remove_study_uid {
-            if let Some(db) = &self.db {
-                let _ = db.remove_study(&uid);
-            }
-            if let Some(idx) = &mut self.index {
-                idx.studies.retain(|s| s.uid != uid);
-                if idx.studies.is_empty() {
-                    self.index = None;
-                }
-            }
-            for vp in &mut self.viewports {
-                vp.reset_series_state(None);
-            }
-            if self.index.is_some() {
-                self.assign_series_to_viewport(0, Some((0, 0)));
-            }
+            self.queue_remove_study(&uid);
             return;
         }
 
@@ -1243,7 +1281,15 @@ impl ViewerApp {
                     ui.painter().rect_filled(
                         hdr_rect,
                         egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 },
-                        if dark { theme::RAISED } else { Color32::from_rgb(220, 222, 227) },
+                        if dark {
+                            if theme::oled_mode() {
+                                Color32::from_rgb(12, 12, 15)
+                            } else {
+                                theme::RAISED
+                            }
+                        } else {
+                            Color32::from_rgb(220, 222, 227)
+                        },
                     );
                     // Click a header to sort by it; click again to reverse.
                     let mut x = hdr_rect.min.x + pad;
@@ -1634,19 +1680,7 @@ impl ViewerApp {
         self.flush_thumb_jobs(thumb_jobs);
 
         if let Some(uid) = remove_uid {
-            if let Some(db) = &self.db {
-                let _ = db.remove_study(&uid);
-            }
-            if let Some(idx) = &mut self.index {
-                idx.studies.retain(|s| s.uid != uid);
-                if idx.studies.is_empty() {
-                    self.index = None;
-                    self.selected_db_study = None;
-                }
-            }
-            for vp in &mut self.viewports {
-                vp.reset_series_state(None);
-            }
+            self.queue_remove_study(&uid);
         } else if let Some(si) = tile_study {
             self.tile_study_series(si);
             self.show_database_view = false;
@@ -1655,6 +1689,146 @@ impl ViewerApp {
             self.assign_series_to_viewport(0, Some((si, ri)));
             self.populate_unassigned_viewports();
             self.show_database_view = false;
+        }
+    }
+
+    pub(crate) fn queue_remove_study(&mut self, uid: &str) {
+        let label = self
+            .index
+            .as_ref()
+            .and_then(|idx| idx.studies.iter().find(|s| s.uid == uid))
+            .map(|s| {
+                let name = if s.patient_name.trim().is_empty() {
+                    "Unknown"
+                } else {
+                    s.patient_name.trim()
+                };
+                if s.description.trim().is_empty() {
+                    name.to_string()
+                } else {
+                    format!("{name} — {}", s.description.trim())
+                }
+            })
+            .unwrap_or_else(|| uid.to_string());
+        self.pending_remove_study = Some((uid.to_string(), label));
+    }
+
+    pub(crate) fn study_disk_paths(&self, uid: &str) -> Vec<std::path::PathBuf> {
+        let mut set: std::collections::HashSet<std::path::PathBuf> =
+            std::collections::HashSet::new();
+        if let Some(db) = &self.db {
+            for p in db.study_source_paths(uid) {
+                if p.exists() {
+                    set.insert(p);
+                }
+            }
+        }
+        let managed_root = crate::db::managed_studies_dir();
+        if let Some(idx) = &self.index
+            && let Some(study) = idx.studies.iter().find(|s| s.uid == uid)
+        {
+            for ser in &study.series {
+                for sl in &ser.slices {
+                    if let Some(zip_p) =
+                        crate::dicom_index::original_zip_for_extracted_path(&sl.path)
+                    {
+                        if zip_p.exists() {
+                            set.insert(zip_p);
+                        }
+                    } else if !sl.path.starts_with(&managed_root) {
+                        let p_str = sl.path.to_string_lossy();
+                        if !p_str.contains("sekhmetx-zip-")
+                            && !p_str.contains("rdicom-zip-cache")
+                            && sl.path.exists()
+                        {
+                            set.insert(sl.path.clone());
+                        }
+                    }
+                }
+            }
+        }
+        set.into_iter().collect()
+    }
+
+    pub(crate) fn study_file_count(&self, uid: &str) -> usize {
+        let disk = self.study_disk_paths(uid);
+        if !disk.is_empty() {
+            return disk.len();
+        }
+        let Some(idx) = &self.index else {
+            return 0;
+        };
+        let Some(study) = idx.studies.iter().find(|s| s.uid == uid) else {
+            return 0;
+        };
+        let paths: std::collections::HashSet<&std::path::PathBuf> = study
+            .series
+            .iter()
+            .flat_map(|ser| ser.slices.iter().map(|sl| &sl.path))
+            .collect();
+        paths.len()
+    }
+
+    pub(crate) fn execute_remove_study(&mut self, uid: &str, delete_files: bool) {
+        let mut deleted = 0usize;
+        let mut failed = 0usize;
+        let mut had_source_paths = false;
+        if delete_files {
+            let paths = self.study_disk_paths(uid);
+            had_source_paths = !paths.is_empty();
+            for p in paths {
+                match std::fs::remove_file(&p) {
+                    Ok(()) => deleted += 1,
+                    Err(_) => failed += 1,
+                }
+            }
+        }
+        if let Some(db) = &self.db {
+            let _ = db.remove_study(uid);
+        }
+        if let Some(idx) = &mut self.index {
+            idx.studies.retain(|s| s.uid != uid);
+            if idx.studies.is_empty() {
+                self.index = None;
+                self.selected_db_study = None;
+            } else if let Some(sel) = self.selected_db_study
+                && sel >= idx.studies.len()
+            {
+                self.selected_db_study = Some(idx.studies.len() - 1);
+            }
+        }
+        self.scan_gen = self.scan_gen.wrapping_add(1);
+        self.thumbnails.clear();
+        self.thumbnails_queued.clear();
+        self.volumes.clear();
+        self.series_spacing_override.clear();
+        for vp in &mut self.viewports {
+            vp.reset_series_state(None);
+        }
+        if !self.show_database_view && self.index.is_some() {
+            self.assign_series_to_viewport(0, Some((0, 0)));
+        }
+        if delete_files {
+            self.message = Some(match self.lang {
+                crate::i18n::Lang::Es => {
+                    if !had_source_paths {
+                        "Estudio eliminado de la biblioteca (no había ruta original en disco registrada para esta importación previa).".to_string()
+                    } else if failed == 0 {
+                        format!("Estudio eliminado y {deleted} archivo(s) borrado(s) del equipo.")
+                    } else {
+                        format!("Estudio eliminado: {deleted} archivo(s) borrado(s), {failed} con error.")
+                    }
+                }
+                crate::i18n::Lang::En => {
+                    if !had_source_paths {
+                        "Study removed from library (original disk path was not recorded for this older import).".to_string()
+                    } else if failed == 0 {
+                        format!("Study removed and {deleted} file(s) deleted from computer.")
+                    } else {
+                        format!("Study removed: {deleted} file(s) deleted, {failed} failed.")
+                    }
+                }
+            });
         }
     }
 }

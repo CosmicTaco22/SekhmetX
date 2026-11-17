@@ -487,6 +487,25 @@ impl ViewerApp {
 
         if vp_idx == self.active_viewport {
             match self.tool {
+                Tool::Arrow => {
+                    if self.drawing.len() == 2 {
+                        items.push(Measure::Arrow {
+                            tip: self.drawing[0],
+                            tail: self.drawing[1],
+                            text: "Note".to_string(),
+                        });
+                    } else if self.drawing.len() == 1 {
+                        if let Some(b) = self.hover_px {
+                            items.push(Measure::Arrow {
+                                tip: self.drawing[0],
+                                tail: b,
+                                text: "Note".to_string(),
+                            });
+                        } else {
+                            painter.circle_filled(s(self.drawing[0]), 3.0, color);
+                        }
+                    }
+                }
                 Tool::Length => {
                     if self.drawing.len() == 2 {
                         items.push(Measure::Length(self.drawing[0], self.drawing[1]));
@@ -536,11 +555,45 @@ impl ViewerApp {
             } else {
                 None
             };
+            let is_selected = ckey.is_some() && ckey == self.selected_roi;
+            let sel_col = Color32::from_rgb(255, 224, 96);
+            let draw_handle = |pt: Pos2| {
+                if is_selected {
+                    painter.circle_filled(pt, 4.5, sel_col);
+                    painter.circle_stroke(pt, 4.5, Stroke::new(1.0, Color32::BLACK));
+                }
+            };
+            let draw_move_dot = |pt: Pos2| {
+                if ckey.is_some() {
+                    let r = if is_selected { 4.8 } else { 3.5 };
+                    let fill = if is_selected {
+                        sel_col
+                    } else {
+                        Color32::from_rgba_unmultiplied(255, 224, 96, 200)
+                    };
+                    painter.circle_filled(pt, r, fill);
+                    painter.circle_stroke(pt, r, Stroke::new(1.0, Color32::BLACK));
+                }
+            };
+            let active_stroke = if is_selected {
+                Stroke::new(2.2, sel_col)
+            } else {
+                stroke
+            };
+            let active_roi_stroke = if is_selected {
+                Stroke::new(2.2, sel_col)
+            } else {
+                roi_stroke
+            };
             match m {
                 &Measure::Length(a, b) => {
-                    painter.line_segment([s(a), s(b)], stroke);
+                    painter.line_segment([s(a), s(b)], active_stroke);
                     painter.circle_filled(s(a), 2.5, color);
                     painter.circle_filled(s(b), 2.5, color);
+                    draw_handle(s(a));
+                    draw_handle(s(b));
+                    draw_move_dot(s(a.lerp(b, 0.5)));
+                    draw_move_dot(s(a.lerp(b, 0.5)));
                     let lines = if unverified_geom {
                         vec!["Measurements disabled (unverified 3D geometry)".to_string()]
                     } else {
@@ -575,11 +628,15 @@ impl ViewerApp {
                     draw_callout(s(b), &lines, color, ckey);
                 }
                 &Measure::Angle(a, v, b) => {
-                    painter.line_segment([s(a), s(v)], stroke);
-                    painter.line_segment([s(v), s(b)], stroke);
+                    painter.line_segment([s(a), s(v)], active_stroke);
+                    painter.line_segment([s(v), s(b)], active_stroke);
                     painter.circle_filled(s(a), 2.5, color);
                     painter.circle_filled(s(v), 3.0, color);
                     painter.circle_filled(s(b), 2.5, color);
+                    draw_handle(s(a));
+                    draw_handle(s(v));
+                    draw_handle(s(b));
+                    draw_move_dot(s(pos2((a.x + v.x + b.x) / 3.0, (a.y + v.y + b.y) / 3.0)));
                     let lines = if unverified_geom {
                         vec!["Measurements disabled (unverified 3D geometry)".to_string()]
                     } else {
@@ -594,6 +651,73 @@ impl ViewerApp {
                     };
                     draw_callout(s(v), &lines, color, ckey);
                 }
+                &Measure::Cobb(a1, b1, a2, b2) => {
+                    let sa1 = s(a1);
+                    let sb1 = s(b1);
+                    let sa2 = s(a2);
+                    let sb2 = s(b2);
+                    painter.line_segment([sa1, sb1], active_stroke);
+                    painter.line_segment([sa2, sb2], active_stroke);
+                    let mid1 = sa1.lerp(sb1, 0.5);
+                    let mid2 = sa2.lerp(sb2, 0.5);
+                    painter.line_segment(
+                        [mid1, mid2],
+                        Stroke::new(1.0, active_stroke.color.linear_multiply(0.55)),
+                    );
+                    for pt in [sa1, sb1, sa2, sb2] {
+                        painter.circle_filled(pt, 2.5, color);
+                        draw_handle(pt);
+                    }
+                    draw_move_dot(s(pos2(
+                        (a1.x + b1.x + a2.x + b2.x) * 0.25,
+                        (a1.y + b1.y + a2.y + b2.y) * 0.25,
+                    )));
+                    let lines = if unverified_geom {
+                        vec!["Measurements disabled (unverified 3D geometry)".to_string()]
+                    } else {
+                        let eval = roi::evaluate_cobb_angle_with_spacing(
+                            f,
+                            RoiPoint::new(a1.x as f64, a1.y as f64),
+                            RoiPoint::new(b1.x as f64, b1.y as f64),
+                            RoiPoint::new(a2.x as f64, a2.y as f64),
+                            RoiPoint::new(b2.x as f64, b2.y as f64),
+                            eff_spacing,
+                        );
+                        let deg = eval.angle_deg.unwrap_or(0.0);
+                        vec![format!("Cobb: {deg:.1}°")]
+                    };
+                    draw_callout(sb2, &lines, color, ckey);
+                }
+                Measure::Arrow { tip, tail, text } => {
+                    let stip = s(*tip);
+                    let stail = s(*tail);
+                    let arrow_col = if is_selected { sel_col } else { color };
+                    painter.line_segment([stail, stip], Stroke::new(1.8, arrow_col));
+                    let dir = stip - stail;
+                    let len = dir.length();
+                    if len > 1.0 {
+                        let u = dir / len;
+                        let perp = vec2(-u.y, u.x);
+                        let head_len = 11.0_f32.min(len * 0.45);
+                        let head_w = 5.0;
+                        let p1 = stip - u * head_len + perp * head_w;
+                        let p2 = stip - u * head_len - perp * head_w;
+                        painter.add(egui::Shape::convex_polygon(
+                            vec![stip, p1, p2],
+                            arrow_col,
+                            Stroke::NONE,
+                        ));
+                    }
+                    draw_handle(stip);
+                    draw_handle(stail);
+                    draw_move_dot(s(tip.lerp(*tail, 0.5)));
+                    let label = if text.trim().is_empty() {
+                        "Note".to_string()
+                    } else {
+                        text.clone()
+                    };
+                    draw_callout(stail, &[label], arrow_col, ckey);
+                }
                 &Measure::Oval(a, b) => {
                     let roi_rect = RoiBoundingBox::rect(
                         RoiPoint::new(a.x as f64, a.y as f64),
@@ -606,10 +730,13 @@ impl ViewerApp {
                         .map(|p| s(pos2(p.x as f32, p.y as f32)))
                         .collect();
                     if scr_pts.len() >= 3 {
-                        painter.add(egui::Shape::closed_line(scr_pts, roi_stroke));
+                        painter.add(egui::Shape::closed_line(scr_pts, active_roi_stroke));
                     }
                     painter.circle_filled(s(a), 2.5, roi_color);
                     painter.circle_filled(s(b), 2.5, roi_color);
+                    draw_handle(s(a));
+                    draw_handle(s(b));
+                    draw_move_dot(s(a.lerp(b, 0.5)));
                     let lines = if roi_stats_disabled {
                         vec!["ROI stats disabled (blended)".to_string()]
                     } else {
@@ -639,7 +766,7 @@ impl ViewerApp {
                         .iter()
                         .map(|p| s(pos2(p.x as f32, p.y as f32)))
                         .collect();
-                    painter.add(egui::Shape::closed_line(scr_pts, roi_stroke));
+                    painter.add(egui::Shape::closed_line(scr_pts, active_roi_stroke));
                     for corner in &outline {
                         painter.circle_filled(
                             s(pos2(corner.x as f32, corner.y as f32)),
@@ -647,6 +774,9 @@ impl ViewerApp {
                             roi_color,
                         );
                     }
+                    draw_handle(s(a));
+                    draw_handle(s(b));
+                    draw_move_dot(s(a.lerp(b, 0.5)));
                     let lines = if roi_stats_disabled {
                         vec!["ROI stats disabled (blended)".to_string()]
                     } else {
@@ -669,10 +799,13 @@ impl ViewerApp {
                             .map(|p| RoiPoint::new(p.x as f64, p.y as f64))
                             .collect();
                         let scr_pts: Vec<Pos2> = pts.iter().copied().map(&s).collect();
-                        painter.add(egui::Shape::closed_line(scr_pts, roi_stroke));
+                        painter.add(egui::Shape::closed_line(scr_pts, active_roi_stroke));
                         for &pt in pts {
                             painter.circle_filled(s(pt), 2.5, roi_color);
+                            draw_handle(s(pt));
                         }
+                        let sum = pts.iter().fold(Vec2::ZERO, |acc, p| acc + p.to_vec2());
+                        draw_move_dot(s((sum / pts.len() as f32).to_pos2()));
                         let lines = if roi_stats_disabled {
                             vec!["ROI stats disabled (blended)".to_string()]
                         } else {
@@ -704,7 +837,9 @@ impl ViewerApp {
                             .iter()
                             .map(|p| s(pos2(p.x as f32, p.y as f32)))
                             .collect();
-                        painter.add(egui::Shape::closed_line(scr_pts, roi_stroke));
+                        painter.add(egui::Shape::closed_line(scr_pts, active_roi_stroke));
+                        let sum = pts.iter().fold(Vec2::ZERO, |acc, p| acc + p.to_vec2());
+                        draw_move_dot(s((sum / pts.len() as f32).to_pos2()));
                         if active_outline.len() >= 3 {
                             let lines = if roi_stats_disabled {
                                 vec!["ROI stats disabled (blended)".to_string()]
@@ -725,9 +860,10 @@ impl ViewerApp {
                 &Measure::Point(pt) => {
                     let sp = s(pt);
                     let r = 6.0;
-                    painter.line_segment([sp - vec2(r, 0.0), sp + vec2(r, 0.0)], stroke);
-                    painter.line_segment([sp - vec2(0.0, r), sp + vec2(0.0, r)], stroke);
-                    painter.circle_stroke(sp, 3.0, stroke);
+                    painter.line_segment([sp - vec2(r, 0.0), sp + vec2(r, 0.0)], active_stroke);
+                    painter.line_segment([sp - vec2(0.0, r), sp + vec2(0.0, r)], active_stroke);
+                    painter.circle_stroke(sp, 3.0, active_stroke);
+                    draw_handle(sp);
                     let lines = if roi_stats_disabled {
                         vec!["ROI stats disabled (blended)".to_string()]
                     } else {
@@ -783,6 +919,60 @@ impl ViewerApp {
                 if let Some(v) = self.hover_px {
                     painter.line_segment([s(a), s(v)], stroke);
                     painter.circle_filled(s(v), 3.0, color);
+                }
+            }
+        }
+        if vp_idx == self.active_viewport && self.tool == Tool::CobbAngle {
+            if let Some((a1, b1)) = self.cobb_pending {
+                painter.line_segment([s(a1), s(b1)], stroke);
+                painter.circle_filled(s(a1), 2.5, color);
+                painter.circle_filled(s(b1), 2.5, color);
+                if self.drawing.len() == 2 {
+                    let (a2, b2) = (self.drawing[0], self.drawing[1]);
+                    painter.line_segment([s(a2), s(b2)], stroke);
+                    painter.circle_filled(s(a2), 2.5, color);
+                    painter.circle_filled(s(b2), 2.5, color);
+                    let eval = roi::evaluate_cobb_angle_with_spacing(
+                        f,
+                        RoiPoint::new(a1.x as f64, a1.y as f64),
+                        RoiPoint::new(b1.x as f64, b1.y as f64),
+                        RoiPoint::new(a2.x as f64, a2.y as f64),
+                        RoiPoint::new(b2.x as f64, b2.y as f64),
+                        eff_spacing,
+                    );
+                    let deg = eval.angle_deg.unwrap_or(0.0);
+                    draw_callout(s(b2), &[format!("Cobb: {deg:.1}°")], color, None);
+                } else if self.drawing.len() == 1 {
+                    let a2 = self.drawing[0];
+                    painter.circle_filled(s(a2), 3.0, color);
+                    if let Some(b2) = self.hover_px {
+                        painter.line_segment([s(a2), s(b2)], stroke);
+                        painter.circle_filled(s(b2), 2.5, color);
+                        if a2.distance(b2) > 1.0 {
+                            let eval = roi::evaluate_cobb_angle_with_spacing(
+                                f,
+                                RoiPoint::new(a1.x as f64, a1.y as f64),
+                                RoiPoint::new(b1.x as f64, b1.y as f64),
+                                RoiPoint::new(a2.x as f64, a2.y as f64),
+                                RoiPoint::new(b2.x as f64, b2.y as f64),
+                                eff_spacing,
+                            );
+                            let deg = eval.angle_deg.unwrap_or(0.0);
+                            draw_callout(s(b2), &[format!("Cobb: {deg:.1}°")], color, None);
+                        }
+                    }
+                }
+            } else if self.drawing.len() == 2 {
+                let (a1, b1) = (self.drawing[0], self.drawing[1]);
+                painter.line_segment([s(a1), s(b1)], stroke);
+                painter.circle_filled(s(a1), 2.5, color);
+                painter.circle_filled(s(b1), 2.5, color);
+            } else if self.drawing.len() == 1 {
+                let a1 = self.drawing[0];
+                painter.circle_filled(s(a1), 3.0, color);
+                if let Some(b1) = self.hover_px {
+                    painter.line_segment([s(a1), s(b1)], stroke);
+                    painter.circle_filled(s(b1), 2.5, color);
                 }
             }
         }

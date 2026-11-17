@@ -367,7 +367,20 @@ pub fn evaluate_cobb_angle(
     b1: RoiPoint,
     b2: RoiPoint,
 ) -> RoiEvaluation {
-    let (sp_y, sp_x) = match frame.spacing {
+    evaluate_cobb_angle_with_spacing(frame, a1, a2, b1, b2, frame.spacing)
+}
+
+/// Evaluates a 4-point Dynamic / Cobb Angle ROI between lines `a1-a2` and `b1-b2` on `frame`
+/// using an explicit pixel spacing.
+pub fn evaluate_cobb_angle_with_spacing(
+    frame: &Frame,
+    a1: RoiPoint,
+    a2: RoiPoint,
+    b1: RoiPoint,
+    b2: RoiPoint,
+    spacing: Option<(f64, f64)>,
+) -> RoiEvaluation {
+    let (sp_y, sp_x) = match spacing {
         Some((rs, cs)) if rs > 0.0 && cs > 0.0 => (rs, cs),
         _ => (0.0, 0.0),
     };
@@ -386,6 +399,66 @@ pub fn evaluate_cobb_angle(
         point_value: None,
         patient_mm: frame.patient_coords_at(mid.x, mid.y),
     }
+}
+
+/// Samples all interior pixel values inside a closed `outline` on `frame` (for HU histograms).
+pub fn sample_region_values(frame: &Frame, outline: &[RoiPoint]) -> Vec<f32> {
+    if outline.len() < 3 || frame.width == 0 || frame.height == 0 {
+        return Vec::new();
+    }
+    let px_pts: Vec<RoiPixelPoint> = outline
+        .iter()
+        .copied()
+        .map(RoiPixelPoint::from_point)
+        .collect();
+    let clipped = RoiPolygonClip::clip(
+        &px_pts,
+        RoiPoint::ZERO,
+        RoiPoint::new(frame.width as f64, frame.height as f64),
+    );
+    match &frame.pixels {
+        Pixels::Gray(gray) => {
+            RoiPolygonFill::sample_gray(&clipped, gray, frame.width as usize, frame.height as usize)
+        }
+        Pixels::Rgba(rgba) => {
+            RoiPolygonFill::sample_rgba(&clipped, rgba, frame.width as usize, frame.height as usize)
+        }
+    }
+}
+
+/// Samples `steps` evenly spaced intensity values along line segment `a -> b` on `frame`.
+pub fn sample_line_profile(frame: &Frame, a: RoiPoint, b: RoiPoint, steps: usize) -> Vec<f32> {
+    if steps < 2 || frame.width == 0 || frame.height == 0 {
+        return Vec::new();
+    }
+    let w = frame.width as isize;
+    let h = frame.height as isize;
+    let mut out = Vec::with_capacity(steps);
+    for i in 0..steps {
+        let t = i as f64 / (steps - 1) as f64;
+        let x = (a.x + (b.x - a.x) * t).round() as isize;
+        let y = (a.y + (b.y - a.y) * t).round() as isize;
+        if x >= 0 && x < w && y >= 0 && y < h {
+            let idx = (y as usize) * (frame.width as usize) + (x as usize);
+            let val = match &frame.pixels {
+                Pixels::Gray(gray) => gray.get(idx).copied().unwrap_or(0.0),
+                Pixels::Rgba(rgba) => {
+                    let b_idx = idx * 4;
+                    if b_idx + 2 < rgba.len() {
+                        0.299 * rgba[b_idx] as f32
+                            + 0.587 * rgba[b_idx + 1] as f32
+                            + 0.114 * rgba[b_idx + 2] as f32
+                    } else {
+                        0.0
+                    }
+                }
+            };
+            if val.is_finite() {
+                out.push(val);
+            }
+        }
+    }
+    out
 }
 
 /// Evaluates a single Point / 2D Probe ROI on `frame`.

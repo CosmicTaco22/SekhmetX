@@ -22,6 +22,16 @@ pub const DEFAULT_ACCENT: Color32 = ACCENT_PRESETS[0].2;
 
 static ACCENT_RGB: AtomicU32 = AtomicU32::new(0x002F_7DE1); // DEFAULT_ACCENT
 static TINT_CHROME: AtomicBool = AtomicBool::new(false);
+static OLED_MODE: AtomicBool = AtomicBool::new(false);
+
+pub fn oled_mode() -> bool {
+    OLED_MODE.load(Ordering::Relaxed)
+}
+
+pub fn set_oled(ctx: &egui::Context, oled: bool) {
+    OLED_MODE.store(oled, Ordering::Relaxed);
+    install(ctx);
+}
 
 /// Selection / active-tool accent (chosen in Settings).
 pub fn accent() -> Color32 {
@@ -90,13 +100,29 @@ pub fn plane_color(badge: &str) -> Color32 {
 
 /// Installs the dark and light looks and the shared spacing. Call once at startup.
 pub fn install(ctx: &egui::Context) {
+    let oled = oled_mode();
     let mut dark = egui::Visuals::dark();
-    dark.panel_fill = PANEL;
-    dark.window_fill = Color32::from_rgb(38, 39, 43);
-    dark.extreme_bg_color = INSET;
-    dark.faint_bg_color = ROW_ALT;
+    dark.panel_fill = if oled { Color32::BLACK } else { PANEL };
+    dark.window_fill = if oled {
+        Color32::from_rgb(8, 8, 10)
+    } else {
+        Color32::from_rgb(38, 39, 43)
+    };
+    dark.extreme_bg_color = if oled { Color32::BLACK } else { INSET };
+    dark.faint_bg_color = if oled {
+        Color32::from_rgb(10, 10, 12)
+    } else {
+        ROW_ALT
+    };
     dark.override_text_color = None;
-    dark.window_stroke = Stroke::new(1.0, Color32::from_rgb(70, 72, 78));
+    dark.window_stroke = Stroke::new(
+        1.0,
+        if oled {
+            Color32::from_rgb(38, 40, 46)
+        } else {
+            Color32::from_rgb(70, 72, 78)
+        },
+    );
     dark.window_corner_radius = CornerRadius::same(8);
     dark.menu_corner_radius = CornerRadius::same(6);
     dark.selection.bg_fill = accent();
@@ -105,33 +131,60 @@ pub fn install(ctx: &egui::Context) {
 
     let r = CornerRadius::same(5);
     let w = &mut dark.widgets;
-    w.noninteractive.bg_fill = PANEL;
-    w.noninteractive.bg_stroke = Stroke::new(1.0, Color32::from_rgb(58, 60, 66));
+    w.noninteractive.bg_fill = if oled { Color32::BLACK } else { PANEL };
+    w.noninteractive.bg_stroke = Stroke::new(
+        1.0,
+        if oled {
+            Color32::from_rgb(32, 34, 40)
+        } else {
+            Color32::from_rgb(58, 60, 66)
+        },
+    );
     w.noninteractive.fg_stroke = Stroke::new(1.0, TEXT);
     w.noninteractive.corner_radius = r;
 
-    w.inactive.bg_fill = Color32::from_rgb(62, 64, 70);
-    w.inactive.weak_bg_fill = Color32::from_rgb(62, 64, 70);
+    let inactive_fill = if oled {
+        Color32::from_rgb(20, 21, 24)
+    } else {
+        Color32::from_rgb(62, 64, 70)
+    };
+    w.inactive.bg_fill = inactive_fill;
+    w.inactive.weak_bg_fill = inactive_fill;
     w.inactive.bg_stroke = Stroke::NONE;
     w.inactive.fg_stroke = Stroke::new(1.0, TEXT);
     w.inactive.corner_radius = r;
 
-    w.hovered.bg_fill = Color32::from_rgb(80, 83, 91);
-    w.hovered.weak_bg_fill = Color32::from_rgb(80, 83, 91);
+    let hovered_fill = if oled {
+        Color32::from_rgb(36, 38, 44)
+    } else {
+        Color32::from_rgb(80, 83, 91)
+    };
+    w.hovered.bg_fill = hovered_fill;
+    w.hovered.weak_bg_fill = hovered_fill;
     w.hovered.bg_stroke = Stroke::new(1.0, Color32::from_rgb(110, 114, 124));
     w.hovered.fg_stroke = Stroke::new(1.5, Color32::WHITE);
     w.hovered.corner_radius = r;
     w.hovered.expansion = 0.0;
 
-    w.active.bg_fill = Color32::from_rgb(96, 100, 110);
-    w.active.weak_bg_fill = Color32::from_rgb(96, 100, 110);
+    let active_fill = if oled {
+        Color32::from_rgb(52, 55, 64)
+    } else {
+        Color32::from_rgb(96, 100, 110)
+    };
+    w.active.bg_fill = active_fill;
+    w.active.weak_bg_fill = active_fill;
     w.active.bg_stroke = Stroke::new(1.0, accent_bright());
     w.active.fg_stroke = Stroke::new(1.5, Color32::WHITE);
     w.active.corner_radius = r;
     w.active.expansion = 0.0;
 
-    w.open.bg_fill = Color32::from_rgb(72, 75, 82);
-    w.open.weak_bg_fill = Color32::from_rgb(72, 75, 82);
+    let open_fill = if oled {
+        Color32::from_rgb(28, 30, 35)
+    } else {
+        Color32::from_rgb(72, 75, 82)
+    };
+    w.open.bg_fill = open_fill;
+    w.open.weak_bg_fill = open_fill;
     w.open.bg_stroke = Stroke::new(1.0, Color32::from_rgb(110, 114, 124));
     w.open.corner_radius = r;
     ctx.set_visuals_of(Theme::Dark, dark);
@@ -188,7 +241,11 @@ pub fn is_dark(ui: &egui::Ui) -> bool {
 /// Toolbar / status-bar background for the current theme.
 pub fn chrome_fill(ctx: &egui::Context) -> Color32 {
     let base = if ctx.global_style().visuals.dark_mode {
-        CHROME
+        if oled_mode() {
+            Color32::BLACK
+        } else {
+            CHROME
+        }
     } else {
         Color32::from_rgb(232, 233, 236)
     };

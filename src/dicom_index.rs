@@ -417,6 +417,29 @@ pub fn cleanup_stale_zip_caches() {
     }
 }
 
+fn zip_origins() -> &'static std::sync::Mutex<HashMap<PathBuf, PathBuf>> {
+    static MAP: std::sync::OnceLock<std::sync::Mutex<HashMap<PathBuf, PathBuf>>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+fn record_zip_origin(dest_dir: &Path, zip_path: &Path) {
+    if let Ok(mut guard) = zip_origins().lock() {
+        guard.insert(dest_dir.to_path_buf(), zip_path.to_path_buf());
+    }
+}
+
+/// If `path` was extracted from a `.zip` archive during this session, returns the original `.zip` path.
+pub fn original_zip_for_extracted_path(path: &Path) -> Option<PathBuf> {
+    let guard = zip_origins().lock().ok()?;
+    for (dir, zip_path) in guard.iter() {
+        if path.starts_with(dir) {
+            return Some(zip_path.clone());
+        }
+    }
+    None
+}
+
 /// Extracts a `.zip` archive into a per-process temporary directory under `std::env::temp_dir()`
 /// using streaming `zip::ZipArchive` with path-traversal and size/entry caps.
 fn extract_zip_to_temp(zip_path: &Path) -> Option<PathBuf> {
@@ -434,6 +457,7 @@ fn extract_zip_to_temp(zip_path: &Path) -> Option<PathBuf> {
     let dest_dir = process_zip_cache_dir().join(format!("zip-{hash:016x}"));
     let marker = dest_dir.join(".extracted_ok");
     if marker.exists() {
+        record_zip_origin(&dest_dir, zip_path);
         return Some(dest_dir);
     }
     std::fs::create_dir_all(&dest_dir).ok()?;
@@ -448,6 +472,7 @@ fn extract_zip_to_temp(zip_path: &Path) -> Option<PathBuf> {
     .is_ok()
     {
         let _ = std::fs::write(&marker, b"ok");
+        record_zip_origin(&dest_dir, zip_path);
         Some(dest_dir)
     } else {
         let _ = std::fs::remove_dir_all(&dest_dir);
@@ -863,17 +888,29 @@ pub fn build_mpr_groups(series: &mut [Series], study_desc: &str) -> Vec<MprGroup
             if !same_for {
                 continue;
             }
-            // Match by acquisition time (within 180 seconds) or acquisition number,
-            // or if times are absent/identical, group orthogonal planes in the same FOR.
-            let time_match = match (series[i].acquisition_time_secs, series[j].acquisition_time_secs) {
-                (Some(ta), Some(tb)) => (ta - tb).abs() <= 180.0,
-                _ => true,
+            // Match by acquisition time (within 15 seconds) and acquisition number,
+            // never merging separate contrast phases (e.g. arterial vs. venous) or same-plane
+            // acquisitions taken more than 2 seconds apart.
+            let time_delta = match (series[i].acquisition_time_secs, series[j].acquisition_time_secs) {
+                (Some(ta), Some(tb)) => Some((ta - tb).abs()),
+                _ => None,
             };
-            let acq_num_match = match (series[i].acquisition_number, series[j].acquisition_number) {
+            let same_acq_num = match (series[i].acquisition_number, series[j].acquisition_number) {
                 (Some(na), Some(nb)) if na > 0 && nb > 0 => na == nb,
                 _ => false,
             };
-            if time_match || acq_num_match {
+            let diff_acq_num = match (series[i].acquisition_number, series[j].acquisition_number) {
+                (Some(na), Some(nb)) if na > 0 && nb > 0 => na != nb,
+                _ => false,
+            };
+            let same_plane = series[i].dominant_plane != DominantPlane::Unknown
+                && series[i].dominant_plane == series[j].dominant_plane;
+            let separate_phase = (diff_acq_num && time_delta.is_some_and(|dt| dt > 5.0))
+                || (same_plane && time_delta.is_some_and(|dt| dt > 2.0));
+            let should_merge = !separate_phase
+                && ((same_acq_num && time_delta.is_none_or(|dt| dt <= 15.0))
+                    || (!diff_acq_num && time_delta.is_none_or(|dt| dt <= 15.0)));
+            if should_merge {
                 cluster.push(j);
                 visited[j] = true;
             }
