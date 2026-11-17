@@ -351,6 +351,10 @@ pub(crate) struct ViewerApp {
     pub(crate) prev_callout_hit_rects: Vec<((PathBuf, u32, usize), Rect)>,
     pub(crate) key_images: std::collections::HashSet<(PathBuf, u32)>,
     pub(crate) key_images_only: bool,
+    pub(crate) series_spacing_override: HashMap<(usize, usize), (f64, f64)>,
+    pub(crate) show_calibrate_modal: bool,
+    pub(crate) calibrate_known_mm: String,
+    pub(crate) calibrate_last_len_px: f64,
     pub(crate) drawing: Vec<Pos2>,
     pub(crate) angle_pending: Option<(Pos2, Pos2)>,
     pub(crate) hover_px: Option<Pos2>,
@@ -579,6 +583,10 @@ impl ViewerApp {
             prev_callout_hit_rects: Vec::new(),
             key_images: std::collections::HashSet::new(),
             key_images_only: false,
+            series_spacing_override: HashMap::new(),
+            show_calibrate_modal: false,
+            calibrate_known_mm: "100".to_string(),
+            calibrate_last_len_px: 0.0,
             drawing: Vec::new(),
             angle_pending: None,
             hover_px: None,
@@ -1733,6 +1741,18 @@ impl ViewerApp {
         self.set_viewport_slice(vp_idx, next as isize, true);
     }
 
+    pub(crate) fn effective_spacing_for_viewport(
+        &self,
+        vp_idx: usize,
+        f: &Frame,
+    ) -> Option<(f64, f64)> {
+        self.viewports
+            .get(vp_idx)
+            .and_then(|v| v.selected)
+            .and_then(|sel| self.series_spacing_override.get(&sel).copied())
+            .or(f.spacing)
+    }
+
     pub(crate) fn export_key_images_png(&mut self) {
         let vp_idx = self.active_viewport;
         let Some((si, _)) = self.viewports[vp_idx].selected else {
@@ -1741,30 +1761,58 @@ impl ViewerApp {
         let Some(st) = self.study_at(si) else {
             return;
         };
-        let key_slices: Vec<SliceRef> = st
-            .series
-            .iter()
-            .flat_map(|se| se.slices.iter())
-            .filter(|s| self.key_images.contains(&(s.path.clone(), s.frame)))
-            .cloned()
-            .collect();
+        let mut key_slices: Vec<(SliceRef, String, usize)> = Vec::new();
+        for se in &st.series {
+            for (slice_idx, s) in se.slices.iter().enumerate() {
+                if self.key_images.contains(&(s.path.clone(), s.frame)) {
+                    let se_label = if se.description.is_empty() {
+                        format!("{} Se {}", se.modality, se.number)
+                    } else {
+                        format!("{} Se {} ({})", se.modality, se.number, se.description)
+                    };
+                    key_slices.push((s.clone(), se_label, slice_idx + 1));
+                }
+            }
+        }
         if key_slices.is_empty() {
             return;
         }
         let vp = &self.viewports[vp_idx];
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
             let count = key_slices.len();
+            let refs: Vec<SliceRef> = key_slices.iter().map(|(s, _, _)| s.clone()).collect();
             let _ = crate::export::export_series_png(
-                &key_slices,
+                &refs,
                 vp.window,
                 vp.effective_invert(),
                 &vp.clut_name,
                 vp.convolution_idx,
                 &dir,
             );
+            // Write anonymized clinical summary (no patient PHI)
+            let mut summary = String::from("SekhmetX — Anonymized Key Images Summary\n");
+            summary.push_str("========================================\n\n");
+            for (idx, (sref, se_label, slice_1based)) in key_slices.iter().enumerate() {
+                summary.push_str(&format!(
+                    "Key Image #{:02} | {} | Slice {}\n",
+                    idx + 1,
+                    se_label,
+                    slice_1based
+                ));
+                if let Some(ms) = self.measures.get(&(sref.path.clone(), sref.frame))
+                    && !ms.is_empty()
+                {
+                    summary.push_str(&format!("  Measurements/ROIs: {}\n", ms.len()));
+                }
+            }
+            let _ = std::fs::write(dir.join("case_summary.txt"), summary);
             self.message = Some(match self.lang {
-                crate::i18n::Lang::Es => format!("Exportadas {count} imágenes clave (PNG)"),
-                crate::i18n::Lang::En => format!("Exported {count} Key Images (PNG)"),
+                crate::i18n::Lang::Es => {
+                    format!("Exportadas {count} imágenes clave + resumen anonimizado")
+                }
+                crate::i18n::Lang::En => {
+                    format!("Exported {count} Key Images + anonymized summary")
+                }
             });
         }
     }
@@ -1845,6 +1893,8 @@ impl ViewerApp {
     /// Return to the full Database Library view and unload decoded frames/volumes for the active study.
     pub(crate) fn return_to_library(&mut self) {
         self.show_database_view = true;
+        self.key_images_only = false;
+        self.show_calibrate_modal = false;
         self.maximized_viewport = None;
         self.message = None;
         self.playing = false;
@@ -1926,6 +1976,7 @@ impl eframe::App for ViewerApp {
         self.draw_force_mpr_modal(&ctx);
         self.draw_update_modal(&ctx);
         self.draw_settings_modal(&ctx);
+        self.draw_calibrate_modal(&ctx);
         self.draw_vr_tf_editor(&ctx);
         self.draw_crash_modal(&ctx);
         self.draw_first_run_notice_modal(&ctx);

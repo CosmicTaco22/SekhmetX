@@ -1367,24 +1367,57 @@ impl ViewerApp {
                 ui.toggle_value(&mut self.viewports[vp_idx].invert, tr.invert);
             });
 
-            if !self.viewports[vp_idx].vr_enabled
-                && ui.button(tr.clear_rois).clicked()
-            {
+            if !self.viewports[vp_idx].vr_enabled {
                 let cur_slice = self.viewports[vp_idx].slice;
-                if let Some(key) = self.viewport_slice_key(vp_idx, cur_slice)
-                    && let Some(sref) = self.index.as_ref().and_then(|idx| {
-                        idx.studies
-                            .get(key.study)?
-                            .series
-                            .get(key.series)?
-                            .slices
-                            .get(key.slice)
+                let cur_mk = self.viewport_slice_key(vp_idx, cur_slice).and_then(|key| {
+                    let sref = self
+                        .index
+                        .as_ref()?
+                        .studies
+                        .get(key.study)?
+                        .series
+                        .get(key.series)?
+                        .slices
+                        .get(key.slice)?;
+                    Some((sref.path.clone(), sref.frame))
+                });
+                if let Some(mk) = cur_mk.as_ref()
+                    && let Some(len_px) = self.measures.get(mk).and_then(|v| {
+                        v.iter().rev().find_map(|m| match m {
+                            crate::app::Measure::Length(a, b) => Some(a.distance(*b) as f64),
+                            _ => None,
+                        })
                     })
+                    && len_px > 0.0
                 {
-                    let mk = (sref.path.clone(), sref.frame);
-                    self.measures.remove(&mk);
+                    let cal_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "📏 Calibrar desde última longitud…",
+                        crate::i18n::Lang::En => "📏 Calibrate from last length…",
+                    };
+                    if ui.button(cal_lbl).clicked() {
+                        self.calibrate_last_len_px = len_px;
+                        self.show_calibrate_modal = true;
+                        ui.close();
+                    }
                 }
-                ui.close();
+                if let Some(sel) = self.viewports[vp_idx].selected
+                    && self.series_spacing_override.contains_key(&sel)
+                {
+                    let rst_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "↺ Restablecer calibración",
+                        crate::i18n::Lang::En => "↺ Reset calibration",
+                    };
+                    if ui.button(rst_lbl).clicked() {
+                        self.series_spacing_override.remove(&sel);
+                        ui.close();
+                    }
+                }
+                if ui.button(tr.clear_rois).clicked() {
+                    if let Some(mk) = cur_mk {
+                        self.measures.remove(&mk);
+                    }
+                    ui.close();
+                }
             }
 
             ui.separator();

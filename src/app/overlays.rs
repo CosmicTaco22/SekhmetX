@@ -278,7 +278,7 @@ impl ViewerApp {
         img: Rect,
         frame: &Frame,
     ) {
-        let Some((rs, cs)) = frame.spacing else {
+        let Some((rs, cs)) = self.effective_spacing_for_viewport(vp_idx, frame) else {
             return;
         };
         if rs <= 0.0 || cs <= 0.0 || view.height() < 160.0 {
@@ -528,6 +528,8 @@ impl ViewerApp {
             }
         }
 
+        let eff_spacing = self.effective_spacing_for_viewport(vp_idx, f);
+        let mut length_values: Vec<(f64, bool)> = Vec::new();
         for (m_idx, m) in items.iter().enumerate() {
             let ckey = if m_idx < saved_count {
                 measure_key.as_ref().map(|(p, fr)| (p.clone(), *fr, m_idx))
@@ -542,12 +544,33 @@ impl ViewerApp {
                     let lines = if unverified_geom {
                         vec!["Measurements disabled (unverified 3D geometry)".to_string()]
                     } else {
-                        let eval = roi::evaluate_length(
+                        let eval = roi::evaluate_length_with_spacing(
                             f,
                             RoiPoint::new(a.x as f64, a.y as f64),
                             RoiPoint::new(b.x as f64, b.y as f64),
+                            eff_spacing,
                         );
-                        eval.format_callout(RoiKind::Length, unit, "")
+                        let mut out = eval.format_callout(RoiKind::Length, unit, "");
+                        if let Some(len) = eval.length_cm_or_px {
+                            let cal = eval.length_mm.is_some();
+                            let len_f64 = len as f64;
+                            if let Some(&(first_len, first_cal)) = length_values.first() {
+                                let ratio = crate::roi::RoiLengthRatio::value(
+                                    len_f64,
+                                    cal,
+                                    first_len,
+                                    first_cal,
+                                );
+                                let idx = length_values.len() + 1;
+                                out.push(format!(
+                                    "Ratio (L{}/L1): {}",
+                                    idx,
+                                    crate::roi::RoiLengthRatio::text(ratio)
+                                ));
+                            }
+                            length_values.push((len_f64, cal));
+                        }
+                        out
                     };
                     draw_callout(s(b), &lines, color, ckey);
                 }
@@ -560,11 +583,12 @@ impl ViewerApp {
                     let lines = if unverified_geom {
                         vec!["Measurements disabled (unverified 3D geometry)".to_string()]
                     } else {
-                        let eval = roi::evaluate_angle(
+                        let eval = roi::evaluate_angle_with_spacing(
                             f,
                             RoiPoint::new(a.x as f64, a.y as f64),
                             RoiPoint::new(v.x as f64, v.y as f64),
                             RoiPoint::new(b.x as f64, b.y as f64),
+                            eff_spacing,
                         );
                         eval.format_callout(RoiKind::Angle, unit, "")
                     };
@@ -589,11 +613,12 @@ impl ViewerApp {
                     let lines = if roi_stats_disabled {
                         vec!["ROI stats disabled (blended)".to_string()]
                     } else {
-                        let eval = roi::evaluate_region(
+                        let eval = roi::evaluate_region_with_spacing(
                             f,
                             RoiKind::Oval,
                             &outline,
                             Some(RoiSize::new(roi_rect.size.width, roi_rect.size.height)),
+                            eff_spacing,
                         );
                         eval.format_callout(RoiKind::Oval, unit, "")
                     };
@@ -625,7 +650,13 @@ impl ViewerApp {
                     let lines = if roi_stats_disabled {
                         vec!["ROI stats disabled (blended)".to_string()]
                     } else {
-                        let eval = roi::evaluate_region(f, RoiKind::Rectangle, &outline, None);
+                        let eval = roi::evaluate_region_with_spacing(
+                            f,
+                            RoiKind::Rectangle,
+                            &outline,
+                            None,
+                            eff_spacing,
+                        );
                         eval.format_callout(RoiKind::Rectangle, unit, "")
                     };
                     let anchor = pos2(roi_rect.max_x() as f32, roi_rect.min_y() as f32);
@@ -645,7 +676,13 @@ impl ViewerApp {
                         let lines = if roi_stats_disabled {
                             vec!["ROI stats disabled (blended)".to_string()]
                         } else {
-                            let eval = roi::evaluate_region(f, RoiKind::ClosedPolygon, &outline, None);
+                            let eval = roi::evaluate_region_with_spacing(
+                                f,
+                                RoiKind::ClosedPolygon,
+                                &outline,
+                                None,
+                                eff_spacing,
+                            );
                             eval.format_callout(RoiKind::ClosedPolygon, unit, "")
                         };
                         draw_callout(s(pts[0]), &lines, roi_color, ckey);
@@ -672,8 +709,13 @@ impl ViewerApp {
                             let lines = if roi_stats_disabled {
                                 vec!["ROI stats disabled (blended)".to_string()]
                             } else {
-                                let eval =
-                                    roi::evaluate_region(f, RoiKind::Pencil, active_outline, None);
+                                let eval = roi::evaluate_region_with_spacing(
+                                    f,
+                                    RoiKind::Pencil,
+                                    active_outline,
+                                    None,
+                                    eff_spacing,
+                                );
                                 eval.format_callout(RoiKind::Pencil, unit, "")
                             };
                             draw_callout(s(pts[0]), &lines, roi_color, ckey);

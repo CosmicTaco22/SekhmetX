@@ -914,6 +914,10 @@ impl ViewerApp {
     }
 
     pub(crate) fn step_viewport_slice(&mut self, vp_idx: usize, delta: isize) {
+        if self.key_images_only && !self.series_key_image_indices(vp_idx).is_empty() {
+            self.step_key_image(vp_idx, delta);
+            return;
+        }
         let cur = self.viewports[vp_idx].slice as isize;
         self.set_viewport_slice(vp_idx, cur + delta, true);
     }

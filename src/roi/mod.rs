@@ -205,7 +205,19 @@ pub fn evaluate_region(
     outline: &[RoiPoint],
     oval_half_size: Option<RoiSize>,
 ) -> RoiEvaluation {
-    let (sp_y, sp_x) = match frame.spacing {
+    evaluate_region_with_spacing(frame, kind, outline, oval_half_size, frame.spacing)
+}
+
+/// Evaluates planar geometry and interior pixel statistics of a polygon/oval/rectangle
+/// outline against `frame` using an explicit pixel spacing `(row_mm, col_mm)`.
+pub fn evaluate_region_with_spacing(
+    frame: &Frame,
+    kind: RoiKind,
+    outline: &[RoiPoint],
+    oval_half_size: Option<RoiSize>,
+    spacing: Option<(f64, f64)>,
+) -> RoiEvaluation {
+    let (sp_y, sp_x) = match spacing {
         Some((rs, cs)) if rs > 0.0 && cs > 0.0 => (rs, cs),
         _ => (0.0, 0.0),
     };
@@ -278,7 +290,17 @@ pub fn evaluate_region(
 
 /// Evaluates a 2-point Length ROI on `frame`.
 pub fn evaluate_length(frame: &Frame, a: RoiPoint, b: RoiPoint) -> RoiEvaluation {
-    let (sp_y, sp_x) = match frame.spacing {
+    evaluate_length_with_spacing(frame, a, b, frame.spacing)
+}
+
+/// Evaluates a 2-point Length ROI on `frame` using an explicit pixel spacing.
+pub fn evaluate_length_with_spacing(
+    frame: &Frame,
+    a: RoiPoint,
+    b: RoiPoint,
+    spacing: Option<(f64, f64)>,
+) -> RoiEvaluation {
+    let (sp_y, sp_x) = match spacing {
         Some((rs, cs)) if rs > 0.0 && cs > 0.0 => (rs, cs),
         _ => (0.0, 0.0),
     };
@@ -306,7 +328,18 @@ pub fn evaluate_length(frame: &Frame, a: RoiPoint, b: RoiPoint) -> RoiEvaluation
 
 /// Evaluates a 3-point Angle ROI on `frame`.
 pub fn evaluate_angle(frame: &Frame, a: RoiPoint, vertex: RoiPoint, b: RoiPoint) -> RoiEvaluation {
-    let (sp_y, sp_x) = match frame.spacing {
+    evaluate_angle_with_spacing(frame, a, vertex, b, frame.spacing)
+}
+
+/// Evaluates a 3-point Angle ROI on `frame` using an explicit pixel spacing.
+pub fn evaluate_angle_with_spacing(
+    frame: &Frame,
+    a: RoiPoint,
+    vertex: RoiPoint,
+    b: RoiPoint,
+    spacing: Option<(f64, f64)>,
+) -> RoiEvaluation {
+    let (sp_y, sp_x) = match spacing {
         Some((rs, cs)) if rs > 0.0 && cs > 0.0 => (rs, cs),
         _ => (0.0, 0.0),
     };

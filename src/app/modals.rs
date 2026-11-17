@@ -1101,5 +1101,87 @@ impl ViewerApp {
             });
         self.show_vr_tf_editor = open;
     }
+
+    pub(super) fn draw_calibrate_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_calibrate_modal {
+            return;
+        }
+        let mut open = self.show_calibrate_modal;
+        let mut should_close = false;
+        let title = match self.lang {
+            crate::i18n::Lang::Es => "Calibrar espaciado de píxeles",
+            crate::i18n::Lang::En => "Calibrate Pixel Spacing",
+        };
+        egui::Window::new(title)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                let measured_lbl = match self.lang {
+                    crate::i18n::Lang::Es => {
+                        format!("Longitud medida: {:.1} px", self.calibrate_last_len_px)
+                    }
+                    crate::i18n::Lang::En => {
+                        format!("Measured length: {:.1} px", self.calibrate_last_len_px)
+                    }
+                };
+                ui.label(measured_lbl);
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let known_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "Longitud conocida (mm):",
+                        crate::i18n::Lang::En => "Known length (mm):",
+                    };
+                    ui.label(known_lbl);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.calibrate_known_mm).desired_width(90.0),
+                    );
+                });
+                let parsed_mm = self
+                    .calibrate_known_mm
+                    .trim()
+                    .replace(',', ".")
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|&v| v > 0.0 && v.is_finite());
+                if let Some(mm) = parsed_mm
+                    && self.calibrate_last_len_px > 0.0
+                {
+                    let sp = mm / self.calibrate_last_len_px;
+                    ui.small(
+                        egui::RichText::new(format!("-> {:.4} mm/px", sp))
+                            .color(Color32::from_gray(165)),
+                    );
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    let apply_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "Aplicar",
+                        crate::i18n::Lang::En => "Apply",
+                    };
+                    let cancel_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "Cancelar",
+                        crate::i18n::Lang::En => "Cancel",
+                    };
+                    let valid = parsed_mm.is_some() && self.calibrate_last_len_px > 0.0;
+                    if ui
+                        .add_enabled(valid, egui::Button::new(apply_lbl))
+                        .clicked()
+                        && let Some(mm) = parsed_mm
+                    {
+                        let sp = mm / self.calibrate_last_len_px;
+                        if let Some(sel) = self.active_cell().selected {
+                            self.series_spacing_override.insert(sel, (sp, sp));
+                        }
+                        should_close = true;
+                    }
+                    if ui.button(cancel_lbl).clicked() {
+                        should_close = true;
+                    }
+                });
+            });
+        self.show_calibrate_modal = open && !should_close;
+    }
 }
 

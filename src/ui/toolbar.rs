@@ -957,6 +957,25 @@ impl ViewerApp {
                     {
                         self.step_key_image(vp_idx, 1);
                     }
+                    let (only_lbl, only_tip) = match self.lang {
+                        crate::i18n::Lang::Es => (
+                            "★ Solo",
+                            "Al desplazarse, recorrer solo las imágenes clave de esta serie",
+                        ),
+                        crate::i18n::Lang::En => (
+                            "★ Only",
+                            "When scrolling/stepping, scrub through Key Images only",
+                        ),
+                    };
+                    if ui
+                        .toggle_value(&mut self.key_images_only, only_lbl)
+                        .on_hover_text(only_tip)
+                        .changed()
+                        && self.key_images_only
+                        && !self.is_viewport_key_image(vp_idx)
+                    {
+                        self.step_key_image(vp_idx, 1);
+                    }
                 }
             }
 
