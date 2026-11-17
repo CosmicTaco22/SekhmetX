@@ -559,40 +559,42 @@ impl ViewerApp {
             let sel_col = Color32::from_rgb(255, 224, 96);
             let draw_handle = |pt: Pos2| {
                 if is_selected {
-                    painter.circle_filled(pt, 4.5, sel_col);
-                    painter.circle_stroke(pt, 4.5, Stroke::new(1.0, Color32::BLACK));
+                    painter.circle_filled(pt, 2.6, sel_col);
+                    painter.circle_stroke(pt, 2.6, Stroke::new(0.8, Color32::BLACK));
                 }
             };
             let draw_move_dot = |pt: Pos2| {
                 if ckey.is_some() {
-                    let r = if is_selected { 4.8 } else { 3.5 };
+                    let r = if is_selected { 2.2 } else { 1.8 };
                     let fill = if is_selected {
                         sel_col
                     } else {
-                        Color32::from_rgba_unmultiplied(255, 224, 96, 200)
+                        Color32::from_rgba_unmultiplied(255, 224, 96, 175)
                     };
                     painter.circle_filled(pt, r, fill);
-                    painter.circle_stroke(pt, r, Stroke::new(1.0, Color32::BLACK));
+                    painter.circle_stroke(pt, r, Stroke::new(0.8, Color32::BLACK));
                 }
             };
             let active_stroke = if is_selected {
-                Stroke::new(2.2, sel_col)
+                Stroke::new(1.6, sel_col)
             } else {
                 stroke
             };
             let active_roi_stroke = if is_selected {
-                Stroke::new(2.2, sel_col)
+                Stroke::new(1.6, sel_col)
             } else {
                 roi_stroke
             };
             match m {
                 &Measure::Length(a, b) => {
                     painter.line_segment([s(a), s(b)], active_stroke);
-                    painter.circle_filled(s(a), 2.5, color);
-                    painter.circle_filled(s(b), 2.5, color);
+                    painter.circle_filled(s(a), 2.0, color);
+                    painter.circle_filled(s(b), 2.0, color);
                     draw_handle(s(a));
                     draw_handle(s(b));
-                    draw_move_dot(s(a.lerp(b, 0.5)));
+                    if s(a).distance(s(b)) >= 20.0 {
+                        draw_move_dot(s(a.lerp(b, 0.5)));
+                    }
                     draw_move_dot(s(a.lerp(b, 0.5)));
                     let lines = if unverified_geom {
                         vec!["Measurements disabled (unverified 3D geometry)".to_string()]

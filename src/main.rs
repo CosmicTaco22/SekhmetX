@@ -75,7 +75,7 @@ fn main() -> eframe::Result {
     let prev_crash = crash_log::previous_run_crashed();
     crash_log::init();
     let initial: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
-    let options = eframe::NativeOptions {
+    let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("SekhmetX")
             .with_inner_size([1440.0, 900.0])
@@ -83,6 +83,14 @@ fn main() -> eframe::Result {
             .with_drag_and_drop(true),
         ..Default::default()
     };
+    #[cfg(target_os = "windows")]
+    if std::env::var_os("WGPU_BACKEND").is_none()
+        && let eframe::egui_wgpu::WgpuSetup::CreateNew(ref mut create_new) =
+            options.wgpu_options.wgpu_setup
+    {
+        // Prefer Vulkan on Windows for lower staging-memory overhead on large 3D MPR volumes.
+        create_new.instance_descriptor.backends = eframe::egui_wgpu::wgpu::Backends::VULKAN;
+    }
     let res = eframe::run_native(
         "SekhmetX",
         options,

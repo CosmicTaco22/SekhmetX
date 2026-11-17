@@ -1720,7 +1720,7 @@ impl ViewerApp {
             return;
         }
 
-        // 2) Start dragging an ROI handle (or ROI body/interior) if primary drag starts on it.
+        // 2) Start dragging an ROI handle (or center move dot / interior) if primary drag starts on it.
         if response.drag_started()
             && self.drawing.is_empty()
             && self.angle_pending.is_none()
@@ -1732,31 +1732,44 @@ impl ViewerApp {
                 .or(response.interact_pointer_pos())
             && let Some(list) = self.measures.get(&k)
         {
-            let mut best: Option<(usize, usize, f32)> = None;
+            let press_px = self.screen_to_pixel(vp_idx, img, frame, press_scr);
+            let mut best_handle: Option<(usize, usize, f32)> = None;
             for (m_idx, m) in list.iter().enumerate() {
                 for (h_idx, h_px) in measure_handles(m).into_iter().enumerate() {
                     let h_scr = self.pixel_to_screen(vp_idx, img, frame, h_px);
                     let d = h_scr.distance(press_scr);
-                    if d <= 10.0 && best.is_none_or(|(_, _, bd)| d < bd) {
-                        best = Some((m_idx, h_idx, d));
+                    if d <= 7.0 && best_handle.is_none_or(|(_, _, bd)| d < bd) {
+                        best_handle = Some((m_idx, h_idx, d));
                     }
                 }
             }
-            if let Some((m_idx, h_idx, _)) = best {
-                self.selected_roi = Some((k.0.clone(), k.1, m_idx));
-                self.dragging_roi_handle = Some((k.0, k.1, m_idx, h_idx));
-                return;
+            let mut best_center: Option<(usize, f32)> = None;
+            for (m_idx, m) in list.iter().enumerate() {
+                let c_scr = self.pixel_to_screen(vp_idx, img, frame, measure_center(m));
+                let d = c_scr.distance(press_scr);
+                if d <= 7.0 && best_center.is_none_or(|(_, bd)| d < bd) {
+                    best_center = Some((m_idx, d));
+                }
+            }
+            match (best_handle, best_center) {
+                (Some((_hm, _hh, hd)), Some((cm, cd))) if cd <= hd => {
+                    self.selected_roi = Some((k.0.clone(), k.1, cm));
+                    self.dragging_roi_body = Some((k.0, k.1, cm, press_px));
+                    return;
+                }
+                (Some((hm, hh, _)), _) => {
+                    self.selected_roi = Some((k.0.clone(), k.1, hm));
+                    self.dragging_roi_handle = Some((k.0, k.1, hm, hh));
+                    return;
+                }
+                (None, Some((cm, _))) => {
+                    self.selected_roi = Some((k.0.clone(), k.1, cm));
+                    self.dragging_roi_body = Some((k.0, k.1, cm, press_px));
+                    return;
+                }
+                (None, None) => {}
             }
 
-            let press_px = self.screen_to_pixel(vp_idx, img, frame, press_scr);
-            if let Some(m_idx) = list.iter().enumerate().rev().find_map(|(m_idx, m)| {
-                let c_scr = self.pixel_to_screen(vp_idx, img, frame, measure_center(m));
-                (c_scr.distance(press_scr) <= 10.0).then_some(m_idx)
-            }) {
-                self.selected_roi = Some((k.0.clone(), k.1, m_idx));
-                self.dragging_roi_body = Some((k.0, k.1, m_idx, press_px));
-                return;
-            }
             let is_nav = matches!(
                 self.tool,
                 Tool::WindowLevel

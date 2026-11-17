@@ -357,15 +357,28 @@ impl ViewerApp {
         plane: MprPlane3D,
         synchronize_others: bool,
     ) {
+        let delta_mm = self.viewports[vp_idx]
+            .mpr_plane
+            .as_ref()
+            .map(|p| plane.offset_mm - p.offset_mm)
+            .unwrap_or(0.0);
         self.viewports[vp_idx].mpr_enabled = true;
         self.viewports[vp_idx].mpr_plane = Some(plane);
         self.sync_slice_index_from_mpr_plane(vp_idx);
         if synchronize_others && self.sync_mode != SliceSynchronization::Off {
-            self.synchronize_mpr_followers(vp_idx);
+            self.synchronize_mpr_followers_with_delta(vp_idx, delta_mm);
         }
     }
 
     pub(super) fn synchronize_mpr_followers(&mut self, leader_idx: usize) -> bool {
+        self.synchronize_mpr_followers_with_delta(leader_idx, 0.0)
+    }
+
+    pub(super) fn synchronize_mpr_followers_with_delta(
+        &mut self,
+        leader_idx: usize,
+        delta_mm: f64,
+    ) -> bool {
         if !self.ortho_mpr_active && (!self.link_cut || self.sync_mode == SliceSynchronization::Off) {
             return false;
         }
@@ -405,13 +418,11 @@ impl ViewerApp {
                 }
                 continue;
             }
-            if let Some(reg) = self.registrations.get(&(leader_sel, other_sel)) {
-                let leader_lps = leader_plane.slice_center_lps();
-                let target_lps = if reg.is_reliable() {
-                    reg.transform_point(leader_lps)
-                } else {
-                    leader_lps
-                };
+            let leader_lps = leader_plane.slice_center_lps();
+            let reg_opt = self.registrations.get(&(leader_sel, other_sel)).cloned();
+            let reliable_reg = reg_opt.as_ref().filter(|r| r.is_reliable());
+            if let Some(reg) = reliable_reg {
+                let target_lps = reg.transform_point(leader_lps);
                 if other_mpr && let Some(mut other_plane) = self.effective_mpr_plane(other_idx) {
                     // Never force-change the follower's plane orientation (Ax/Cor/Sag);
                     // only project the cut position onto the follower's own normal.
@@ -424,6 +435,28 @@ impl ViewerApp {
                     let vox = vol.lps_to_voxel(target_lps);
                     let mapped = (vox[2].round() as isize).clamp(0, vol.depth as isize - 1) as usize;
                     slice_2d_updates.push((other_idx, mapped));
+                }
+            } else if other_mpr
+                && let Some(mut other_plane) = self.effective_mpr_plane(other_idx)
+                && let Some(other_vol) = self.volumes.get(&other_sel)
+            {
+                let same_for = matches!(
+                    (
+                        self.volumes.get(&leader_sel).and_then(|v| v.frame_of_reference_uid.as_deref()),
+                        other_vol.frame_of_reference_uid.as_deref(),
+                    ),
+                    (Some(a), Some(b)) if !a.is_empty() && a == b
+                );
+                let proj_offset =
+                    dot3(sub3(leader_lps, other_plane.center_lps), other_plane.normal);
+                let other_half = other_vol.projected_half_span_mm(other_plane.normal).max(1.0);
+                if same_for || proj_offset.abs() <= other_half + 20.0 {
+                    other_plane.offset_mm = proj_offset;
+                    updates.push((other_idx, other_plane));
+                } else if delta_mm.abs() > 1e-6 {
+                    other_plane.offset_mm =
+                        (other_plane.offset_mm + delta_mm).clamp(-other_half, other_half);
+                    updates.push((other_idx, other_plane));
                 }
             }
         }
@@ -878,6 +911,7 @@ impl ViewerApp {
             return;
         }
         self.viewports[vp_idx].slice = new_slice;
+        let mut delta_mm = 0.0;
         if self.viewports[vp_idx].mpr_enabled
             && let (Some(vol), Some(mut plane)) = (
                 self.viewport_volume(vp_idx).cloned(),
@@ -890,6 +924,7 @@ impl ViewerApp {
                     0.5
                 };
                 let delta_off = (t * 2.0 - 1.0) * half - plane.offset_mm;
+                delta_mm = delta_off;
                 plane.offset_mm = (t * 2.0 - 1.0) * half;
                 let normal = plane.normal;
                 self.viewports[vp_idx].mpr_plane = Some(plane);
@@ -908,7 +943,7 @@ impl ViewerApp {
             && self.sync_mode != SliceSynchronization::Off
             && !self.ortho_mpr_active
         {
-            self.synchronize_mpr_followers(vp_idx);
+            self.synchronize_mpr_followers_with_delta(vp_idx, delta_mm);
             self.synchronize_from_leader(vp_idx, prev_slice, new_slice);
         }
     }
@@ -1018,8 +1053,9 @@ impl ViewerApp {
                 updates.push((other_idx, leader_new_slice));
                 continue;
             }
-            // If 3D registration is active on `other_idx`, `synchronize_mpr_followers` already updated its plane or 2D slice.
-            if self.registrations.contains_key(&(leader_sel, other_sel))
+            // If 3D MPR is active on `other_idx` (or 3D registration exists), `synchronize_mpr_followers` already updated its plane or 2D slice.
+            if (self.registrations.contains_key(&(leader_sel, other_sel))
+                || self.viewports[other_idx].mpr_enabled)
                 && (self.viewports[other_idx].mpr_enabled || self.volumes.contains_key(&other_sel))
             {
                 continue;

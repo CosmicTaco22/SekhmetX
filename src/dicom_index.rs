@@ -905,11 +905,15 @@ pub fn build_mpr_groups(series: &mut [Series], study_desc: &str) -> Vec<MprGroup
             };
             let same_plane = series[i].dominant_plane != DominantPlane::Unknown
                 && series[i].dominant_plane == series[j].dominant_plane;
-            let separate_phase = (diff_acq_num && time_delta.is_some_and(|dt| dt > 5.0))
-                || (same_plane && time_delta.is_some_and(|dt| dt > 2.0));
+            let separate_phase = (same_plane
+                && (diff_acq_num || time_delta.is_some_and(|dt| dt > 2.0)))
+                || (diff_acq_num && time_delta.is_some_and(|dt| dt > 15.0));
             let should_merge = !separate_phase
-                && ((same_acq_num && time_delta.is_none_or(|dt| dt <= 15.0))
-                    || (!diff_acq_num && time_delta.is_none_or(|dt| dt <= 15.0)));
+                && if same_acq_num {
+                    time_delta.is_none_or(|dt| dt <= 180.0)
+                } else {
+                    !diff_acq_num && time_delta.is_none_or(|dt| dt <= 90.0)
+                };
             if should_merge {
                 cluster.push(j);
                 visited[j] = true;
