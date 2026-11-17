@@ -22,6 +22,8 @@ pub enum Icon {
     Orbit,
     Length,
     Angle,
+    Cobb,
+    Arrow,
     Oval,
     Rectangle,
     Polygon,
@@ -173,6 +175,18 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
         Icon::Angle => {
             line(vec![c.p(0.8, 0.12), c.p(0.12, 0.86), c.p(0.92, 0.86)]);
             line(c.ellipse(0.12, 0.86, 0.36, 0.36, -PI * 0.265, 0.0));
+        }
+        Icon::Cobb => {
+            // Two endplate lines and their perpendiculars meeting below.
+            seg(c.p(0.08, 0.22), c.p(0.5, 0.08));
+            seg(c.p(0.5, 0.92), c.p(0.92, 0.78));
+            let thin = Stroke::new(s.width * 0.8, color.gamma_multiply(0.75));
+            painter.line_segment([c.p(0.29, 0.15), c.p(0.42, 0.55)], thin);
+            painter.line_segment([c.p(0.71, 0.85), c.p(0.42, 0.55)], thin);
+        }
+        Icon::Arrow => {
+            seg(c.p(0.14, 0.86), c.p(0.8, 0.2));
+            head((0.9, 0.1), (1.0, -1.0), 0.32);
         }
         Icon::Oval => closed(c.ellipse(0.5, 0.5, 0.42, 0.3, 0.0, TAU)),
         Icon::Rectangle => {

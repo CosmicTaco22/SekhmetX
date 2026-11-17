@@ -1,4 +1,4 @@
-# Handoff: where the project stands (v0.5.5, 16 Nov 2026)
+# Handoff: where the project stands (v0.5.18, 17 Nov 2026)
 
 Written for whoever continues this, human or agent. It records what exists,
 the owner's standing rules, what was verified, what is unfinished, and what
@@ -70,13 +70,18 @@ These were set over the course of the project and are not all in `AGENTS.md`.
   file SekhmetX reads. Wait for the owner's design before starting it.
 - Dark theme is the default.
 
-## What exists (v0.5.5)
+## What exists (v0.5.18)
 
 - **2D viewer:** scroll, zoom, pan, rotate/flip, invert, cine, Horos window
   presets, 31 CLUTs, 22 convolution filters, GPU window/level with bilinear
   interpolation and a CPU fallback (`RDICOM_CPU=1`).
-- **ROIs:** length, angle, oval, rectangle, polygon, pencil, point; area, mean,
-  SD, min, max from unfiltered pixels; saved per slice in SQLite.
+- **ROIs:** length, angle, Cobb angle, arrow with text, oval, rectangle,
+  polygon, pencil, point; area, mean, SD, min, max from unfiltered pixels (also
+  on GPU-reconstructed planes); saved per slice in SQLite. Editing by handles
+  and centre dot, delete, draggable callouts, live length ratios, calibration
+  from a known length, ROI histogram and line profile.
+- **Key images:** `K` / ★, stored in the `key_images` table, filter and export
+  with an anonymized case summary.
 - **Library:** SQLite (WAL, schema v2), full-window Database view, patient
   grouping, search, modality filters, thumbnails, managed study folder, opening
   of folders, files and `.zip` archives (streamed, with size caps).
@@ -90,7 +95,9 @@ These were set over the course of the project and are not all in `AGENTS.md`.
   two zoom-link modes, cross-study rigid registration on a worker thread,
   Compare popover.
 - **Other:** PNG and anonymized DICOM export, anonymized `Ctrl+C` screenshot,
-  right-click menu, drag-and-drop series, metadata inspector, EN/ES interface,
+  right-click menu with a tool palette, maximise a viewport by double-click,
+  drag-and-drop series, metadata inspector, EN/ES interface, OLED theme,
+  study files to the Recycle Bin (`trash` crate),
   Settings page, first-run notice, in-app updater with SHA-256 check, opt-in
   scrubbed crash log.
 
@@ -122,11 +129,17 @@ Local data lives in `%LOCALAPPDATA%\SekhmetX` (or beside the exe when a
 
 ## What was verified, and what was not
 
-Verified on Windows, 16 Nov 2026, at v0.5.6:
-- `cargo clippy --release -- -D warnings`: clean (`0` warnings; `5f7fd63` is merged on `master`).
-- `cargo test --release`: 113 passed, 0 failed.
-- `cargo build --release` succeeds (`target/release/sekhmetx.exe`).
-- `python3 tools/test_map.py` and synthetic CT/CR series (`tools/testdata/`, 161 images) were verified at v0.5.1–v0.5.5.
+Verified on Linux, 17 Nov 2026, at v0.5.18:
+- `cargo clippy --release -- -D warnings` (Rust 1.97): clean. GitHub's CI used
+  an older Rust and passed v0.5.17 even though Rust 1.97 rejected it; expect
+  newer lints to appear when CI updates.
+- `cargo test --release`: 115 passed, 0 failed. `cargo build --release` succeeds.
+- Screens checked by eye (Xvfb + software Vulkan): viewer, right-click menu
+  and palette in English and Spanish, library, Settings with OLED, ROI drawing,
+  handle editing, histogram.
+- Windows-only code (the Vulkan probe in `src/main.rs`) is compiled and run in
+  a test on every system; the Direct3D 12 fallback itself has not been seen on
+  a PC without Vulkan.
 
 Verified by the owner on Windows: the interface, MPR, volume rendering, compare
 by hand, version by version (the PACS portal flow, since removed, too).

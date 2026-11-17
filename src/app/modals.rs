@@ -852,8 +852,8 @@ impl ViewerApp {
 
         let mut open = self.show_vr_tf_editor;
         let title = match self.lang {
-            crate::i18n::Lang::Es => "📈 Función de Transferencia 3D (LUT 1D)",
-            crate::i18n::Lang::En => "📈 3D Transfer Function Editor (1D LUT)",
+            crate::i18n::Lang::Es => "Función de transferencia 3D (LUT 1D)",
+            crate::i18n::Lang::En => "3D transfer function editor (1D LUT)",
         };
         egui::Window::new(title)
             .open(&mut open)
@@ -1086,7 +1086,9 @@ impl ViewerApp {
                     ui.monospace(format!("HU: {hu:.0}  α: {alpha_pct:.0}%"));
                     if sel_idx > 0
                         && sel_idx + 1 < stops.len()
-                        && ui.small_button("🗑").on_hover_text("Remove stop").clicked()
+                        && crate::ui::icons::small_tool_button(ui, crate::ui::icons::Icon::Trash, false)
+                            .on_hover_text(if self.lang == crate::i18n::Lang::Es { "Quitar punto" } else { "Remove stop" })
+                            .clicked()
                     {
                         stops.remove(sel_idx);
                         self.vr_tf_selected_stop = sel_idx.saturating_sub(1);

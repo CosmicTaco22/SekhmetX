@@ -86,10 +86,14 @@ fn main() -> eframe::Result {
     };
     #[cfg(target_os = "windows")]
     if std::env::var_os("WGPU_BACKEND").is_none()
+        && windows_has_vulkan_adapter()
         && let eframe::egui_wgpu::WgpuSetup::CreateNew(ref mut create_new) =
             options.wgpu_options.wgpu_setup
     {
-        // Prefer Vulkan on Windows for lower staging-memory overhead on large 3D MPR volumes.
+        // Prefer Vulkan on Windows for lower staging-memory overhead on large 3D MPR
+        // volumes, but only when a Vulkan driver is present: many Intel GPUs, virtual
+        // machines and Windows-on-ARM laptops have none, and forcing Vulkan there would
+        // stop the app from starting. Without one, wgpu's default (Direct3D 12) is used.
         create_new.instance_descriptor.backends = eframe::egui_wgpu::wgpu::Backends::VULKAN;
     }
     let res = eframe::run_native(
@@ -105,6 +109,32 @@ fn main() -> eframe::Result {
         crash_log::log_line("ERROR", &format!("eframe::run_native failed: {e}"));
     }
     res
+}
+
+/// True when Windows has at least one Vulkan graphics adapter.
+/// (Also built in tests, so this Windows-only path compiles and runs in CI on every system.)
+#[cfg(any(target_os = "windows", test))]
+fn windows_has_vulkan_adapter() -> bool {
+    use eframe::egui_wgpu::wgpu;
+    use std::future::Future;
+    let mut desc = wgpu::InstanceDescriptor::new_without_display_handle();
+    desc.backends = wgpu::Backends::VULKAN;
+    let instance = wgpu::Instance::new(desc);
+    let mut fut = std::pin::pin!(instance.enumerate_adapters(wgpu::Backends::VULKAN));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    // Native adapter enumeration completes immediately; if it ever did not,
+    // treat Vulkan as unavailable and keep the safe default.
+    match fut.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(adapters) => {
+            let found = !adapters.is_empty();
+            crash_log::log_line(
+                "INFO",
+                if found { "Vulkan adapter found; using Vulkan" } else { "No Vulkan adapter; using Direct3D 12" },
+            );
+            found
+        }
+        std::task::Poll::Pending => false,
+    }
 }
 
 fn scan(folder: &str) -> dicom_index::Index {
@@ -349,5 +379,14 @@ mod cli_tests {
 
         let len_out = evaluate_cli_roi(&f, "length", 0.0, 0.0, 10.0, 0.0).unwrap();
         assert!(len_out.contains("length_mm=5.000"), "{len_out}");
+    }
+}
+
+#[cfg(test)]
+mod vulkan_probe_tests {
+    #[test]
+    fn vulkan_probe_answers_without_panicking() {
+        // The answer depends on the machine; it must simply return.
+        let _ = super::windows_has_vulkan_adapter();
     }
 }

@@ -99,6 +99,32 @@ pub(crate) enum Measure {
 }
 
 impl Measure {
+    /// True when the shape has collapsed to nothing measurable: an oval or rectangle
+    /// less than one pixel wide or high, a line shorter than one pixel, or a
+    /// polygon with no area. Such a shape is never kept.
+    pub(crate) fn is_degenerate(&self) -> bool {
+        let tiny = |a: Pos2, b: Pos2| a.distance(b) < 1.0;
+        match self {
+            Measure::Length(a, b) => tiny(*a, *b),
+            Measure::Arrow { tip, tail, .. } => tiny(*tip, *tail),
+            Measure::Oval(a, b) | Measure::Rect(a, b) => (a.x - b.x).abs() < 1.0 || (a.y - b.y).abs() < 1.0,
+            Measure::Angle(a, v, b) => tiny(*a, *v) || tiny(*v, *b),
+            Measure::Cobb(a1, b1, a2, b2) => tiny(*a1, *b1) || tiny(*a2, *b2),
+            Measure::Polygon(p) | Measure::Pencil(p) => {
+                p.len() < 3 || {
+                    let twice_area: f32 = (0..p.len())
+                        .map(|i| {
+                            let (u, v) = (p[i], p[(i + 1) % p.len()]);
+                            u.x * v.y - v.x * u.y
+                        })
+                        .sum();
+                    twice_area.abs() < 2.0
+                }
+            }
+            Measure::Point(_) => false,
+        }
+    }
+
     pub(crate) fn to_persisted(&self) -> crate::db::PersistedMeasure {
         match self {
             Self::Length(a, b) => crate::db::PersistedMeasure::Length([a.x, a.y], [b.x, b.y]),
@@ -390,6 +416,8 @@ pub(crate) struct ViewerApp {
     pub(crate) cobb_pending: Option<(Pos2, Pos2)>,
     pub(crate) selected_roi: Option<(PathBuf, u32, usize)>,
     pub(crate) dragging_roi_handle: Option<(PathBuf, u32, usize, usize)>,
+    /// The ROI as it was when a handle drag began, restored if the drag would leave it empty.
+    pub(crate) roi_handle_original: Option<Measure>,
     pub(crate) dragging_roi_body: Option<(PathBuf, u32, usize, Pos2)>,
     pub(crate) show_roi_histogram: bool,
     pub(crate) arrow_edit_target: Option<(PathBuf, u32, usize)>,
@@ -636,6 +664,7 @@ impl ViewerApp {
             cobb_pending: None,
             selected_roi: None,
             dragging_roi_handle: None,
+            roi_handle_original: None,
             dragging_roi_body: None,
             show_roi_histogram: false,
             arrow_edit_target: None,
@@ -1645,28 +1674,40 @@ impl ViewerApp {
                 );
                 match &self.update_status {
                     crate::updater::UpdateStatus::Available(info) => {
-                        let lbl = format!("⬆ {}", info.tag_name);
+                        let lbl = match self.lang {
+                            crate::i18n::Lang::Es => format!("Actualizar a {}", info.tag_name),
+                            crate::i18n::Lang::En => format!("Update to {}", info.tag_name),
+                        };
                         if ui
                             .small_button(
                                 egui::RichText::new(lbl)
                                     .strong()
                                     .color(Color32::from_rgb(120, 225, 150)),
                             )
-                            .on_hover_text(format!("Update {} available — click to install", info.tag_name))
+                            .on_hover_text(match self.lang {
+                                crate::i18n::Lang::Es => format!("Hay una actualización ({}): clic para instalar", info.tag_name),
+                                crate::i18n::Lang::En => format!("Update {} available: click to install", info.tag_name),
+                            })
                             .clicked()
                         {
                             self.show_update_modal = true;
                         }
                     }
                     crate::updater::UpdateStatus::Installed(tag) => {
-                        let lbl = format!("✅ {tag}");
+                        let lbl = match self.lang {
+                            crate::i18n::Lang::Es => format!("{tag} instalada: reiniciar"),
+                            crate::i18n::Lang::En => format!("{tag} installed: restart"),
+                        };
                         if ui
                             .small_button(
                                 egui::RichText::new(lbl)
                                     .strong()
                                     .color(Color32::from_rgb(120, 225, 150)),
                             )
-                            .on_hover_text("Update installed — click to restart SekhmetX")
+                            .on_hover_text(match self.lang {
+                                crate::i18n::Lang::Es => "Actualización instalada: clic para reiniciar SekhmetX",
+                                crate::i18n::Lang::En => "Update installed: click to restart SekhmetX",
+                            })
                             .clicked()
                         {
                             self.show_update_modal = true;
@@ -1691,7 +1732,7 @@ impl ViewerApp {
                         self.show_crash_modal = true;
                     }
                 }
-                if let Some(info) = &self.cursor_info {
+                if let Some(info) = self.cursor_info.as_ref().filter(|_| !self.show_database_view) {
                     ui.separator();
                     ui.monospace(info);
                 }
@@ -2135,5 +2176,24 @@ impl Drop for ViewerApp {
     fn drop(&mut self) {
         dicom_index::cleanup_zip_cache();
         crate::crash_log::cleanup_on_clean_exit(self.previous_crash_pending);
+    }
+}
+
+#[cfg(test)]
+mod measure_tests {
+    use super::Measure;
+    use eframe::egui::pos2;
+
+    #[test]
+    fn collapsed_shapes_are_degenerate_and_normal_ones_are_not() {
+        assert!(Measure::Oval(pos2(10.0, 10.0), pos2(10.4, 30.0)).is_degenerate());
+        assert!(Measure::Rect(pos2(5.0, 5.0), pos2(5.0, 5.0)).is_degenerate());
+        assert!(!Measure::Oval(pos2(10.0, 10.0), pos2(20.0, 30.0)).is_degenerate());
+        assert!(Measure::Length(pos2(1.0, 1.0), pos2(1.5, 1.0)).is_degenerate());
+        assert!(!Measure::Length(pos2(1.0, 1.0), pos2(9.0, 1.0)).is_degenerate());
+        // Three points on one line enclose nothing.
+        assert!(Measure::Polygon(vec![pos2(0.0, 0.0), pos2(5.0, 0.0), pos2(10.0, 0.0)]).is_degenerate());
+        assert!(!Measure::Polygon(vec![pos2(0.0, 0.0), pos2(10.0, 0.0), pos2(0.0, 10.0)]).is_degenerate());
+        assert!(!Measure::Point(pos2(3.0, 3.0)).is_degenerate());
     }
 }

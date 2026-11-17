@@ -978,7 +978,6 @@ impl ViewerApp {
                 }
             }
         }
-        drop(draw_callout);
         self.callout_hit_rects.extend(new_hit_rects);
     }
 

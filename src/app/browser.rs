@@ -300,7 +300,10 @@ impl ViewerApp {
                                     study.description.trim()
                                 };
                                 let title = if study.files_missing {
-                                    format!("⚠ [files missing] {desc} — {}", study.date)
+                                    match self.lang {
+                                        crate::i18n::Lang::Es => format!("⚠ [faltan archivos] {desc} — {}", study.date),
+                                        crate::i18n::Lang::En => format!("⚠ [files missing] {desc} — {}", study.date),
+                                    }
                                 } else {
                                     format!("{desc} — {}", study.date)
                                 };

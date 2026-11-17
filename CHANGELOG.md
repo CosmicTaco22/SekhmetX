@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.18] - 2026-11-17
+
+### Fixed
+- **Windows with no Vulkan driver could not start the app (since 0.5.13).** Vulkan is now used only when the PC has a Vulkan graphics driver; otherwise Direct3D 12 is used as before. This matters for many Intel graphics, virtual machines and Windows-on-ARM laptops. The check is also exercised in the tests.
+- **Dragging an ROI's corner onto its opposite corner left an empty "0 px" ROI** that was saved. The ROI now snaps back to its shape before the drag.
+- **Double-clicking a viewport in a multi-viewport layout reset its zoom and pan** as well as enlarging it. It now only enlarges it; double-click still resets the view in a single viewport.
+- **Wrong shortcut letters:** the Angle and Cobb angle tools were labelled `A` and `C`, but those keys switch to axial and coronal.
+- Lint error (`clippy::drop_non_drop`) that newer Rust reports in `src/app/overlays.rs`, which would fail CI once GitHub's Rust is updated.
+
+### Improved (interface)
+- Right-click tool palette: drawn icons for Arrow and Cobb angle (they reused the Length and Angle icons), Pencil added, full tool descriptions as tooltips.
+- Menu items no longer carry decorative emoji (★ kept for key images); the 3D item reads "3D MPR" as in the toolbar.
+- The cursor readout no longer stays in the status bar while the library is shown.
+- Spanish for the remaining English text: "files missing" note, update badge and tooltips, transfer-function stop removal.
+
+### Documentation
+- `CHANGELOG.md` entries for 0.5.6–0.5.17 (they were not recorded at the time), README features and shortcuts brought up to date.
+
+## [0.5.17] - 2026-11-16
+- Patient age next to the date of birth; double-click a viewport to enlarge it; 2D/3D orbit rotation kept in sync; scrubber direction fix; Ax/Cor/Sag buttons recentre the image.
+
+## [0.5.15] - 2026-11-16
+- Fixed an `unused_mut` lint on macOS/Linux.
+
+## [0.5.14] - 2026-11-16
+- **Clear Library** asks for confirmation and only empties the library list, never folders on disk. Removing a study can move its image files to the Recycle Bin / Trash (new `trash` dependency) instead of deleting them.
+
+## [0.5.13] - 2026-11-16
+- Vulkan preferred on Windows (see the 0.5.18 fix); long/short MPR sync fallback; sharper ROI handles; phases of one orthogonal MPR acquisition grouped.
+
+## [0.5.12] - 2026-11-16
+- ROI editing: move by the centre dot, reshape by handles, delete the selected ROI. Cobb angle and Arrow (with text) tools. ROI histogram and line profile. OLED (pure black) theme. Removing a study's files from disk. Separation of acquisition phases.
+
+## [0.5.11] - 2026-11-16
+- Key-image filter and anonymized case-summary export; live ratio between two lengths; calibration of pixel spacing from a known length.
+
+## [0.5.10] - 2026-11-16
+- Key images (stored in the library database; `K` key and ★ button; export). ROI mean/SD on GPU-reconstructed MPR planes. ROI callouts can be dragged.
+
+## [0.5.6] - 2026-11-16
+- Right-click quick-tool palette, maximise a viewport, "images only" toggle that hides the annotations. CI security audit switched to `cargo audit`.
+
 ## [0.5.5] - 2026-11-16
 
 ### Ported from IsiX 6.0.4 (review in `porting/reports/2026-11-16-isix-6.0.4-review.md`)

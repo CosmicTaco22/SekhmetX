@@ -73,7 +73,10 @@ or Pixmeo. It does not use their names or icons in the application.
   convolution filters.
 - Corner annotations, orientation letters, rulers and reference lines.
 - Layouts from 1×1 to 4×4, drag-and-drop of series onto any viewport, and
-  colour-coded link groups for zoom, window/level and slice position.
+  colour-coded link groups for zoom, window/level and slice position;
+  double-click a viewport to enlarge it and again to go back.
+- Right-click menu with a palette of every mouse and measurement tool.
+- Patient age shown beside the date of birth.
 
 **MPR and 3D**
 - In-place 3D MPR and a three-pane Ax·Cor·Sag view with linked crosshairs.
@@ -87,9 +90,16 @@ or Pixmeo. It does not use their names or icons in the application.
 - Side-by-side comparison of studies from different dates with automatic 3D
   alignment.
 
-**Measurements**
-- Length, angle, oval, rectangle, polygon, pencil and point, with area, mean,
-  SD, minimum and maximum from the unfiltered pixels; saved per slice.
+**Measurements and key images**
+- Length, angle, Cobb angle, arrow with text, oval, rectangle, polygon, pencil
+  and point, with area, mean, SD, minimum and maximum from the unfiltered
+  pixels (also on reconstructed planes); saved per slice.
+- Measurements can be moved, reshaped by their handles, and deleted; callouts
+  can be dragged aside. Live ratio between two lengths.
+- ROI histogram and line profile.
+- Calibration of an image without pixel spacing from a length of known size.
+- Key images: mark with `K`, filter a series to its key images, and export them
+  with an anonymized case summary.
 
 **Export and privacy**
 - PNG export of an image or a whole series, and anonymized DICOM export (private
@@ -98,9 +108,14 @@ or Pixmeo. It does not use their names or icons in the application.
   patient details.
 - A DICOM metadata inspector beside the image.
 
+**Library housekeeping**
+- Clearing the library only empties SekhmetX's own list and never touches your
+  folders; removing a study can also move its image files to the Recycle Bin /
+  Trash, after asking.
+
 **Application**
-- English and Spanish interface; dark, light or system theme; accent colour of
-  your choice.
+- English and Spanish interface; dark, OLED (pure black), light or system
+  theme; accent colour of your choice.
 - In-app updater that checks GitHub Releases and verifies the download's
   SHA-256 before installing.
 - Opt-in crash reports that you review before anything is sent.
@@ -143,11 +158,13 @@ the window; they are added to the library and open instantly afterwards.
 | 3D rotate (oblique MPR) | `O`, then drag; `Shift` + drag to roll |
 | Window presets | `1`–`9`, `0` for the default |
 | Invert | `I` |
-| Measurements | `L`/`M` length · `E` oval · `B` rectangle · `G` polygon (`Enter` closes) · `F` pencil · `T` point; angle from the ROI menu |
-| Delete last measurement | `Delete` / `Backspace` |
+| Measurements | `L`/`M` length · `E` oval · `B` rectangle · `G` polygon (`Enter` closes) · `F` pencil · `T` point · `Y` arrow; angle and Cobb angle from the ROI menu or right-click palette |
+| Delete selected (or last) measurement | `Delete` / `Backspace` |
+| Mark / unmark key image | `K` |
 | Cine | `P` or `Space` |
 | Flip | `H` / `V` |
-| Reset view | `R` or double-click |
+| Reset view | `R`, or double-click in a single viewport |
+| Enlarge a viewport / back to the layout | Double-click it (with more than one viewport) |
 | Copy image without patient details | `Ctrl+C` / `Cmd+C` |
 
 ---

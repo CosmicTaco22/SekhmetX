@@ -1270,21 +1270,22 @@ impl ViewerApp {
             if !self.viewports[vp_idx].vr_enabled {
                 use crate::ui::icons::{small_tool_button, Icon};
                 let nav_tools: [(Icon, Tool, &str); 6] = [
-                    (Icon::WindowLevel, Tool::WindowLevel, tr.wl),
-                    (Icon::Scroll, Tool::Scroll, tr.scroll),
-                    (Icon::Pan, Tool::Pan, tr.pan),
-                    (Icon::Zoom, Tool::Zoom, tr.zoom),
-                    (Icon::Rotate, Tool::Rotate, tr.rot),
-                    (Icon::Orbit, Tool::Orbit3D, tr.orbit_3d),
+                    (Icon::WindowLevel, Tool::WindowLevel, tr.wl_hover),
+                    (Icon::Scroll, Tool::Scroll, tr.scroll_hover),
+                    (Icon::Pan, Tool::Pan, tr.pan_hover),
+                    (Icon::Zoom, Tool::Zoom, tr.zoom_hover),
+                    (Icon::Rotate, Tool::Rotate, tr.rot_hover),
+                    (Icon::Orbit, Tool::Orbit3D, tr.orbit_3d_hover),
                 ];
-                let roi_tools: [(Icon, Tool, &str); 8] = [
+                let roi_tools: [(Icon, Tool, &str); 9] = [
                     (Icon::Length, Tool::Length, tr.roi_length),
                     (Icon::Angle, Tool::Angle, tr.roi_angle),
-                    (Icon::Angle, Tool::CobbAngle, tr.roi_cobb),
-                    (Icon::Length, Tool::Arrow, tr.roi_arrow),
+                    (Icon::Cobb, Tool::CobbAngle, tr.roi_cobb),
+                    (Icon::Arrow, Tool::Arrow, tr.roi_arrow),
                     (Icon::Oval, Tool::Oval, tr.roi_oval),
                     (Icon::Rectangle, Tool::Rect, tr.roi_rect),
                     (Icon::Polygon, Tool::Polygon, tr.roi_polygon),
+                    (Icon::Pencil, Tool::Pencil, tr.roi_pencil),
                     (Icon::Point, Tool::Point, tr.roi_point),
                 ];
                 for row in [&nav_tools[..], &roi_tools[..]] {
@@ -1532,8 +1533,8 @@ impl ViewerApp {
                     && len_px > 0.0
                 {
                     let cal_lbl = match self.lang {
-                        crate::i18n::Lang::Es => "📏 Calibrar desde última longitud…",
-                        crate::i18n::Lang::En => "📏 Calibrate from last length…",
+                        crate::i18n::Lang::Es => "Calibrar desde última longitud…",
+                        crate::i18n::Lang::En => "Calibrate from last length…",
                     };
                     if ui.button(cal_lbl).clicked() {
                         self.calibrate_last_len_px = len_px;
@@ -1545,8 +1546,8 @@ impl ViewerApp {
                     && self.series_spacing_override.contains_key(&sel)
                 {
                     let rst_lbl = match self.lang {
-                        crate::i18n::Lang::Es => "↺ Restablecer calibración",
-                        crate::i18n::Lang::En => "↺ Reset calibration",
+                        crate::i18n::Lang::Es => "Restablecer calibración",
+                        crate::i18n::Lang::En => "Reset calibration",
                     };
                     if ui.button(rst_lbl).clicked() {
                         self.series_spacing_override.remove(&sel);
@@ -1561,8 +1562,8 @@ impl ViewerApp {
                 {
                     if let crate::app::Measure::Arrow { text, .. } = sel_m {
                         let edit_lbl = match self.lang {
-                            crate::i18n::Lang::Es => "✏ Editar texto de flecha…",
-                            crate::i18n::Lang::En => "✏ Edit Arrow text…",
+                            crate::i18n::Lang::Es => "Editar texto de flecha…",
+                            crate::i18n::Lang::En => "Edit Arrow text…",
                         };
                         if ui.button(edit_lbl).clicked() {
                             self.arrow_edit_target = Some((sp.clone(), sfr, idx));
@@ -1571,8 +1572,8 @@ impl ViewerApp {
                         }
                     }
                     let del_lbl = match self.lang {
-                        crate::i18n::Lang::Es => "🗑 Eliminar ROI seleccionado",
-                        crate::i18n::Lang::En => "🗑 Delete selected ROI",
+                        crate::i18n::Lang::Es => "Eliminar ROI seleccionado",
+                        crate::i18n::Lang::En => "Delete selected ROI",
                     };
                     if ui.button(del_lbl).clicked() {
                         self.delete_selected_or_last_roi(vp_idx);
@@ -1585,10 +1586,10 @@ impl ViewerApp {
                     .is_some_and(|v| !v.is_empty())
                 {
                     let hist_lbl = match (self.lang, self.show_roi_histogram) {
-                        (crate::i18n::Lang::Es, false) => "📊 Mostrar histograma / perfil ROI",
-                        (crate::i18n::Lang::Es, true) => "📊 Ocultar histograma / perfil ROI",
-                        (crate::i18n::Lang::En, false) => "📊 Show ROI Histogram / Profile",
-                        (crate::i18n::Lang::En, true) => "📊 Hide ROI Histogram / Profile",
+                        (crate::i18n::Lang::Es, false) => "Mostrar histograma / perfil ROI",
+                        (crate::i18n::Lang::Es, true) => "Ocultar histograma / perfil ROI",
+                        (crate::i18n::Lang::En, false) => "Show ROI Histogram / Profile",
+                        (crate::i18n::Lang::En, true) => "Hide ROI Histogram / Profile",
                     };
                     if ui.button(hist_lbl).clicked() {
                         self.show_roi_histogram = !self.show_roi_histogram;
@@ -1606,8 +1607,8 @@ impl ViewerApp {
                 }
             }
             let recenter_lbl = match self.lang {
-                crate::i18n::Lang::Es => "⌖ Centrar imagen",
-                crate::i18n::Lang::En => "⌖ Recenter image",
+                crate::i18n::Lang::Es => "Centrar imagen",
+                crate::i18n::Lang::En => "Recenter image",
             };
             if ui.button(recenter_lbl).clicked() {
                 self.viewports[vp_idx].pan = Vec2::ZERO;
@@ -1793,7 +1794,11 @@ impl ViewerApp {
                         .push(Measure::Polygon(pts));
                     self.persist_measures_for(&k);
                 }
-            } else {
+            } else if self.ortho_mpr_active
+                || (self.tiling.cell_count() <= 1 && self.maximized_viewport.is_none())
+            {
+                // With several viewports, double-click maximises instead (see
+                // `render_single_viewport`), keeping the zoom and pan as they were.
                 self.viewports[vp_idx].reset_view();
                 if self.ortho_mpr_active || self.link_zoom {
                     let count = self.tiling.cell_count();
@@ -1843,6 +1848,15 @@ impl ViewerApp {
                 set_measure_handle(m, h_idx, px);
             }
             if response.drag_stopped() {
+                // A handle dragged onto its opposite would leave an empty ROI: put it back.
+                let original = self.roi_handle_original.take();
+                if let Some(list) = self.measures.get_mut(&(sp.clone(), sfr))
+                    && let Some(m) = list.get_mut(m_idx)
+                    && m.is_degenerate()
+                    && let Some(orig) = original
+                {
+                    *m = orig;
+                }
                 self.persist_measures_for(&(sp.clone(), sfr));
                 self.dragging_roi_handle = None;
             }
@@ -1907,6 +1921,7 @@ impl ViewerApp {
                 }
                 (Some((hm, hh, _)), _) => {
                     self.selected_roi = Some((k.0.clone(), k.1, hm));
+                    self.roi_handle_original = list.get(hm).cloned();
                     self.dragging_roi_handle = Some((k.0, k.1, hm, hh));
                     return;
                 }
