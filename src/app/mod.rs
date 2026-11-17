@@ -382,6 +382,7 @@ pub(crate) struct ViewerApp {
     pub(crate) series_spacing_override: HashMap<(usize, usize), (f64, f64)>,
     pub(crate) show_calibrate_modal: bool,
     pub(crate) pending_remove_study: Option<(String, String)>,
+    pub(crate) pending_clear_library: bool,
     pub(crate) calibrate_known_mm: String,
     pub(crate) calibrate_last_len_px: f64,
     pub(crate) drawing: Vec<Pos2>,
@@ -626,6 +627,7 @@ impl ViewerApp {
             series_spacing_override: HashMap::new(),
             show_calibrate_modal: false,
             pending_remove_study: None,
+            pending_clear_library: false,
             calibrate_known_mm: "100".to_string(),
             calibrate_last_len_px: 0.0,
             drawing: Vec::new(),
@@ -2117,6 +2119,7 @@ impl eframe::App for ViewerApp {
         self.draw_settings_modal(&ctx);
         self.draw_calibrate_modal(&ctx);
         self.draw_remove_study_modal(&ctx);
+        self.draw_clear_library_modal(&ctx);
         self.draw_arrow_edit_modal(&ctx);
         self.draw_roi_histogram_modal(&ctx);
         self.draw_vr_tf_editor(&ctx);

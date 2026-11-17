@@ -542,12 +542,16 @@ impl Database {
             .flatten();
         self.conn
             .execute("DELETE FROM studies WHERE uid = ?1", params![study_uid])?;
+        let root = managed_studies_dir();
         if let Some(dir) = managed {
-            let _ = std::fs::remove_dir_all(dir);
+            let p = PathBuf::from(&dir);
+            if p.starts_with(&root) && p != root && p.exists() {
+                let _ = trash::delete(&p);
+            }
         }
         let fallback = study_managed_dir(study_uid);
-        if fallback.exists() {
-            let _ = std::fs::remove_dir_all(fallback);
+        if fallback.starts_with(&root) && fallback != root && fallback.exists() {
+            let _ = trash::delete(&fallback);
         }
         Ok(())
     }
@@ -588,10 +592,6 @@ impl Database {
     pub fn clear_all(&self) -> Result<()> {
         self.conn.execute("DELETE FROM studies", [])?;
         self.conn.execute("DELETE FROM rois", [])?;
-        let dir = managed_studies_dir();
-        if dir.exists() {
-            let _ = std::fs::remove_dir_all(&dir);
-        }
         Ok(())
     }
 

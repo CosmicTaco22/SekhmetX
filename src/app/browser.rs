@@ -777,13 +777,7 @@ impl ViewerApp {
         }
 
         if clear_library {
-            if let Some(db) = &self.db {
-                let _ = db.clear_all();
-            }
-            self.index = None;
-            for vp in &mut self.viewports {
-                vp.reset_series_state(None);
-            }
+            self.pending_clear_library = true;
             return;
         }
         if let Some(uid) = remove_study_uid {
@@ -1081,14 +1075,7 @@ impl ViewerApp {
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button(tr.clear).clicked() {
-                    if let Some(db) = &self.db {
-                        let _ = db.clear_all();
-                    }
-                    self.index = None;
-                    self.selected_db_study = None;
-                    for vp in &mut self.viewports {
-                        vp.reset_series_state(None);
-                    }
+                    self.pending_clear_library = true;
                 }
                 let refresh_lbl = if es { "Actualizar" } else { "Refresh" };
                 if ui.button(refresh_lbl).clicked() {
@@ -1776,10 +1763,17 @@ impl ViewerApp {
         if delete_files {
             let paths = self.study_disk_paths(uid);
             had_source_paths = !paths.is_empty();
-            for p in paths {
-                match std::fs::remove_file(&p) {
-                    Ok(()) => deleted += 1,
-                    Err(_) => failed += 1,
+            if !paths.is_empty() {
+                match trash::delete_all(&paths) {
+                    Ok(()) => deleted = paths.len(),
+                    Err(_) => {
+                        for p in paths {
+                            match trash::delete(&p) {
+                                Ok(()) => deleted += 1,
+                                Err(_) => failed += 1,
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1814,18 +1808,18 @@ impl ViewerApp {
                     if !had_source_paths {
                         "Estudio eliminado de la biblioteca (no había ruta original en disco registrada para esta importación previa).".to_string()
                     } else if failed == 0 {
-                        format!("Estudio eliminado y {deleted} archivo(s) borrado(s) del equipo.")
+                        format!("Estudio eliminado y {deleted} archivo(s) enviado(s) a la papelera.")
                     } else {
-                        format!("Estudio eliminado: {deleted} archivo(s) borrado(s), {failed} con error.")
+                        format!("Estudio eliminado: {deleted} archivo(s) a la papelera, {failed} con error.")
                     }
                 }
                 crate::i18n::Lang::En => {
                     if !had_source_paths {
                         "Study removed from library (original disk path was not recorded for this older import).".to_string()
                     } else if failed == 0 {
-                        format!("Study removed and {deleted} file(s) deleted from computer.")
+                        format!("Study removed and {deleted} file(s) moved to Recycle Bin.")
                     } else {
-                        format!("Study removed: {deleted} file(s) deleted, {failed} failed.")
+                        format!("Study removed: {deleted} file(s) moved to Recycle Bin, {failed} failed.")
                     }
                 }
             });

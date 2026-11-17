@@ -588,8 +588,9 @@ impl ViewerApp {
                             self.confirm_delete_local_data = false;
                             let _ = self.db.take();
                             self.index = None;
-                            let _ = std::fs::remove_dir_all(crate::db::managed_studies_dir());
-                            let _ = std::fs::remove_dir_all(&data_dir);
+                            if data_dir.exists() {
+                                let _ = trash::delete(&data_dir);
+                            }
                             let _ = std::fs::create_dir_all(&data_dir);
                             self.db = crate::db::Database::open_default().ok();
                         }
@@ -1401,10 +1402,10 @@ impl ViewerApp {
                 ui.add_space(4.0);
                 let msg = match self.lang {
                     crate::i18n::Lang::Es => format!(
-                        "¿Deseas eliminar este estudio solo de la biblioteca o también borrar sus {file_count} archivo(s) del equipo?"
+                        "¿Deseas eliminar este estudio solo de la biblioteca o también enviar sus {file_count} archivo(s) a la papelera?"
                     ),
                     crate::i18n::Lang::En => format!(
-                        "Do you want to remove this study from the library only, or also delete its {file_count} file(s) from your computer?"
+                        "Do you want to remove this study from the library only, or also move its {file_count} file(s) to the Recycle Bin?"
                     ),
                 };
                 ui.label(msg);
@@ -1415,8 +1416,8 @@ impl ViewerApp {
                         crate::i18n::Lang::En => "Library Only",
                     };
                     let disk_lbl = match self.lang {
-                        crate::i18n::Lang::Es => "Eliminar también del equipo",
-                        crate::i18n::Lang::En => "Also Delete Files",
+                        crate::i18n::Lang::Es => "Enviar a la papelera",
+                        crate::i18n::Lang::En => "Move to Recycle Bin",
                     };
                     let cancel_lbl = match self.lang {
                         crate::i18n::Lang::Es => "Cancelar",
@@ -1444,6 +1445,70 @@ impl ViewerApp {
             self.execute_remove_study(&uid, delete_files);
         } else if !open || cancel {
             self.pending_remove_study = None;
+        }
+    }
+
+    pub(super) fn draw_clear_library_modal(&mut self, ctx: &egui::Context) {
+        if !self.pending_clear_library {
+            return;
+        }
+        let mut open = true;
+        let mut confirm = false;
+        let mut cancel = false;
+        let title = match self.lang {
+            crate::i18n::Lang::Es => "Limpiar biblioteca",
+            crate::i18n::Lang::En => "Clear Library",
+        };
+        egui::Window::new(title)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .show(ctx, |ui| {
+                let msg = match self.lang {
+                    crate::i18n::Lang::Es => {
+                        "¿Limpiar todos los estudios y ROIs de la biblioteca de SekhmetX?\nTus archivos y carpetas en el equipo NO se eliminarán."
+                    }
+                    crate::i18n::Lang::En => {
+                        "Clear all studies and ROIs from the SekhmetX library?\nYour files and folders on disk will NOT be deleted."
+                    }
+                };
+                ui.label(msg);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    let yes_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "Limpiar biblioteca",
+                        crate::i18n::Lang::En => "Clear Library",
+                    };
+                    let cancel_lbl = match self.lang {
+                        crate::i18n::Lang::Es => "Cancelar",
+                        crate::i18n::Lang::En => "Cancel",
+                    };
+                    if ui.button(yes_lbl).clicked() {
+                        confirm = true;
+                    }
+                    if ui.button(cancel_lbl).clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+        if confirm {
+            self.pending_clear_library = false;
+            if let Some(db) = &self.db {
+                let _ = db.clear_all();
+            }
+            self.index = None;
+            self.selected_db_study = None;
+            self.scan_gen = self.scan_gen.wrapping_add(1);
+            self.thumbnails.clear();
+            self.thumbnails_queued.clear();
+            self.volumes.clear();
+            self.series_spacing_override.clear();
+            for vp in &mut self.viewports {
+                vp.reset_series_state(None);
+            }
+        } else if !open || cancel {
+            self.pending_clear_library = false;
         }
     }
 }
