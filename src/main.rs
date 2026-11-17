@@ -75,6 +75,7 @@ fn main() -> eframe::Result {
     let prev_crash = crash_log::previous_run_crashed();
     crash_log::init();
     let initial: Vec<PathBuf> = args.iter().map(PathBuf::from).collect();
+    #[allow(unused_mut)]
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("SekhmetX")
