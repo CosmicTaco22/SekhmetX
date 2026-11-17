@@ -1542,7 +1542,13 @@ impl ViewerApp {
                             [
                                 ("Paciente", st.patient_name.replace('^', " ")),
                                 ("ID", st.patient_id.clone()),
-                                ("Nacimiento", st.birth_date.clone()),
+                                (
+                                    "Nacimiento",
+                                    crate::app::overlays::format_dob_with_age(
+                                        &st.birth_date,
+                                        &st.date,
+                                    ),
+                                ),
                                 ("Estudio", st.description.clone()),
                                 ("Fecha", st.date.clone()),
                                 ("N.º de acceso", st.accession.clone()),
@@ -1552,7 +1558,13 @@ impl ViewerApp {
                             [
                                 ("Patient", st.patient_name.replace('^', " ")),
                                 ("ID", st.patient_id.clone()),
-                                ("Birth date", st.birth_date.clone()),
+                                (
+                                    "Birth date",
+                                    crate::app::overlays::format_dob_with_age(
+                                        &st.birth_date,
+                                        &st.date,
+                                    ),
+                                ),
                                 ("Study", st.description.clone()),
                                 ("Date", st.date.clone()),
                                 ("Accession", st.accession.clone()),

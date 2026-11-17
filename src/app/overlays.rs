@@ -1054,7 +1054,10 @@ impl ViewerApp {
                 id_line.push(format!("ID: {}", study.patient_id));
             }
             if !study.birth_date.is_empty() {
-                id_line.push(format!("DOB: {}", study.birth_date));
+                id_line.push(format!(
+                    "DOB: {}",
+                    format_dob_with_age(&study.birth_date, &study.date)
+                ));
             }
             if !id_line.is_empty() {
                 tr.push(id_line.join("  "));
@@ -1147,5 +1150,35 @@ impl ViewerApp {
             Align2::RIGHT_BOTTOM,
             br.join("\n"),
         );
+    }
+}
+
+pub(crate) fn format_dob_with_age(dob: &str, ref_date: &str) -> String {
+    fn parse_ymd(s: &str) -> Option<(i32, u32, u32)> {
+        let digits: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+        if digits.len() < 8 {
+            return None;
+        }
+        let y: i32 = digits[0..4].parse().ok()?;
+        let m: u32 = digits[4..6].parse().ok()?;
+        let d: u32 = digits[6..8].parse().ok()?;
+        if (1900..=2100).contains(&y) && (1..=12).contains(&m) && (1..=31).contains(&d) {
+            Some((y, m, d))
+        } else {
+            None
+        }
+    }
+    let Some((dy, dm, dd)) = parse_ymd(dob) else {
+        return dob.to_string();
+    };
+    let (ry, rm, rd) = parse_ymd(ref_date).unwrap_or((2026, 11, 17));
+    let mut age = ry - dy;
+    if (rm, rd) < (dm, dd) {
+        age -= 1;
+    }
+    if (0..=130).contains(&age) {
+        format!("{dob} ({age}y)")
+    } else {
+        dob.to_string()
     }
 }

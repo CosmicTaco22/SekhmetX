@@ -423,6 +423,7 @@ pub(crate) struct ViewerApp {
     pub(crate) ortho_crosshair_lps: Option<[f64; 3]>,
     ortho_saved_tiling: Option<ViewportTiling>,
     crosshair_drag: Option<usize>,
+    crosshair_tilt_drag: Option<(usize, f32)>,
     forced_mpr_series: std::collections::HashSet<(usize, usize)>,
     pending_force_mpr: Option<PendingForceMpr>,
     pub(crate) pending_mpr_activate: Option<(usize, (usize, usize), bool)>,
@@ -665,6 +666,7 @@ impl ViewerApp {
             ortho_crosshair_lps: None,
             ortho_saved_tiling: None,
             crosshair_drag: None,
+            crosshair_tilt_drag: None,
             forced_mpr_series: std::collections::HashSet::new(),
             pending_force_mpr: None,
             pending_mpr_activate: None,
@@ -2043,6 +2045,7 @@ impl ViewerApp {
         self.ortho_crosshair_lps = None;
         self.ortho_saved_tiling = None;
         self.crosshair_drag = None;
+        self.crosshair_tilt_drag = None;
         self.pending_mpr_activate = None;
         self.show_metadata_inspector = false;
         self.metadata_cache = None;

@@ -131,6 +131,75 @@ impl ViewerApp {
         }
     }
 
+    pub(super) fn sync_rotation_from(&mut self, leader_idx: usize, rot_deg: f32) {
+        if !self.ortho_mpr_active && !self.link_zoom && !self.link_cut {
+            return;
+        }
+        let count = self.tiling.cell_count();
+        for i in 0..count {
+            if self.are_viewports_linked(leader_idx, i) && self.viewports[i].selected.is_some() {
+                self.viewports[i].rotation = rot_deg;
+            }
+        }
+    }
+
+    pub(super) fn sync_mpr_orientation_from(&mut self, leader_idx: usize) {
+        if self.ortho_mpr_active || (!self.link_cut && !self.link_zoom) {
+            return;
+        }
+        let Some(leader_sel) = self.viewports.get(leader_idx).and_then(|v| v.selected) else {
+            return;
+        };
+        let Some(lp) = self.effective_mpr_plane(leader_idx) else {
+            return;
+        };
+        let leader_lps = lp.slice_center_lps();
+        let count = self.tiling.cell_count();
+        for other_idx in 0..count {
+            if !self.are_viewports_linked(leader_idx, other_idx) {
+                continue;
+            }
+            let Some(other_sel) = self.viewports[other_idx].selected else {
+                continue;
+            };
+            if !self.viewports[other_idx].mpr_enabled {
+                continue;
+            }
+            let Some(mut op) = self.effective_mpr_plane(other_idx) else {
+                continue;
+            };
+            let reg_opt = self.registrations.get(&(leader_sel, other_sel)).cloned();
+            if let Some(reg) = reg_opt.filter(|r| r.is_reliable()) {
+                let target_lps = reg.transform_point(leader_lps);
+                let rot_v = |m: [[f64; 3]; 3], v: [f64; 3]| -> [f64; 3] {
+                    [
+                        m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
+                        m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
+                        m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
+                    ]
+                };
+                op.u_axis = rot_v(reg.rotation, lp.u_axis);
+                op.v_axis = rot_v(reg.rotation, lp.v_axis);
+                op.normal = rot_v(reg.rotation, lp.normal);
+                op.offset_mm = dot3(sub3(target_lps, op.center_lps), op.normal);
+            } else {
+                op.u_axis = lp.u_axis;
+                op.v_axis = lp.v_axis;
+                op.normal = lp.normal;
+                if let Some(other_vol) = self.volumes.get(&other_sel) {
+                    let proj = dot3(sub3(leader_lps, op.center_lps), op.normal);
+                    let half = other_vol.projected_half_span_mm(op.normal).max(1.0);
+                    if proj.abs() <= half + 20.0 {
+                        op.offset_mm = proj;
+                    }
+                }
+            }
+            self.viewports[other_idx].mpr_plane = Some(op);
+            self.viewports[other_idx].mpr_cached = None;
+            self.sync_slice_index_from_mpr_plane(other_idx);
+        }
+    }
+
     pub(super) fn sync_window_delta(&mut self, leader_idx: usize, d_level: f32, d_width: f32) {
         if !self.ortho_mpr_active && !self.link_wl {
             return;
@@ -346,9 +415,20 @@ impl ViewerApp {
         if count <= 1 {
             return;
         }
-        let half = vol.projected_half_span_mm(plane.normal).max(1.0);
-        let t = ((plane.offset_mm / half) * 0.5 + 0.5).clamp(0.0, 1.0);
-        self.viewports[vp_idx].slice = (t * (count - 1) as f64).round() as usize;
+        let vol_normal = MprPlane3D::from_volume_native(&vol).normal;
+        let d = dot3(plane.normal, vol_normal);
+        if d.abs() > 0.99 && vol.depth > 1 {
+            let vox = vol.lps_to_voxel(plane.slice_center_lps());
+            let frac = (vox[2] / (vol.depth - 1) as f64).clamp(0.0, 1.0);
+            self.viewports[vp_idx].slice = (frac * (count - 1) as f64).round() as usize;
+        } else {
+            let half = vol.projected_half_span_mm(plane.normal).max(1.0);
+            let mut t = ((plane.offset_mm / half) * 0.5 + 0.5).clamp(0.0, 1.0);
+            if d < 0.0 {
+                t = 1.0 - t;
+            }
+            self.viewports[vp_idx].slice = (t * (count - 1) as f64).round() as usize;
+        }
     }
 
     pub(crate) fn set_viewport_mpr_plane(
@@ -727,6 +807,7 @@ impl ViewerApp {
         let Some(cur_sel) = self.viewports.get(vp_idx).and_then(|v| v.selected) else {
             return;
         };
+        self.viewports[vp_idx].pan = Vec2::ZERO;
         let current_lps = self
             .effective_mpr_plane(vp_idx)
             .map(|p| add3(p.center_lps, scale3(p.normal, p.offset_mm)));

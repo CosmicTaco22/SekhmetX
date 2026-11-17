@@ -273,6 +273,19 @@ impl ViewerApp {
             if !consumed {
                 self.handle_drag(vp_idx, &response, view, &frame);
             }
+            if !consumed
+                && response.double_clicked_by(egui::PointerButton::Primary)
+                && self.arrow_edit_target.is_none()
+                && !self.ortho_mpr_active
+                && (self.tiling.cell_count() > 1 || self.maximized_viewport.is_some())
+            {
+                self.active_viewport = vp_idx;
+                self.maximized_viewport = if self.maximized_viewport == Some(vp_idx) {
+                    None
+                } else {
+                    Some(vp_idx)
+                };
+            }
             if gpu_mpr.is_some() {
                 gpu_mpr = self.mpr_gpu_target(vp_idx);
                 if let Some((_, _, ref updated_f)) = gpu_mpr {
@@ -503,6 +516,65 @@ impl ViewerApp {
         Some(self.pixel_to_screen(vp_idx, img, frame, pos2(px as f32, py as f32)))
     }
 
+    fn ortho_crosshair_axes_screen(
+        &self,
+        vp_idx: usize,
+        img: Rect,
+        frame: &Frame,
+        c: Pos2,
+    ) -> Option<[(Vec2, Color32); 2]> {
+        let cur_plane = self.viewports.get(vp_idx)?.mpr_plane.as_ref()?;
+        let (other_a, col_a, other_b, col_b) = match vp_idx {
+            0 => (
+                1,
+                Color32::from_rgba_unmultiplied(74, 222, 128, 210),
+                2,
+                Color32::from_rgba_unmultiplied(248, 113, 113, 210),
+            ),
+            1 => (
+                0,
+                Color32::from_rgba_unmultiplied(74, 168, 255, 210),
+                2,
+                Color32::from_rgba_unmultiplied(248, 113, 113, 210),
+            ),
+            _ => (
+                0,
+                Color32::from_rgba_unmultiplied(74, 168, 255, 210),
+                1,
+                Color32::from_rgba_unmultiplied(74, 222, 128, 210),
+            ),
+        };
+        let (sy, sx) = frame.spacing.unwrap_or((1.0, 1.0));
+        let sx = sx.max(1e-6);
+        let sy = sy.max(1e-6);
+        let c_px = self.screen_to_pixel(vp_idx, img, frame, c);
+        let proj_dir = |other_idx: usize, fallback: Vec2| -> Vec2 {
+            let Some(op) = self.viewports.get(other_idx).and_then(|v| v.mpr_plane.as_ref()) else {
+                return fallback;
+            };
+            let na = cur_plane.normal;
+            let nb = op.normal;
+            let d3 = [
+                na[1] * nb[2] - na[2] * nb[1],
+                na[2] * nb[0] - na[0] * nb[2],
+                na[0] * nb[1] - na[1] * nb[0],
+            ];
+            let du = (dot3(d3, cur_plane.u_axis) / sx) as f32;
+            let dv = (dot3(d3, cur_plane.v_axis) / sy) as f32;
+            let p2 = self.pixel_to_screen(vp_idx, img, frame, pos2(c_px.x + du * 20.0, c_px.y + dv * 20.0));
+            let sdir = p2 - c;
+            if sdir.length_sq() > 1e-4 {
+                sdir.normalized()
+            } else {
+                fallback
+            }
+        };
+        Some([
+            (proj_dir(other_a, vec2(1.0, 0.0)), col_a),
+            (proj_dir(other_b, vec2(0.0, 1.0)), col_b),
+        ])
+    }
+
     fn handle_ortho_crosshair_drag(
         &mut self,
         vp_idx: usize,
@@ -513,6 +585,10 @@ impl ViewerApp {
         if !self.ortho_mpr_active || vp_idx >= 3 {
             return false;
         }
+        if response.drag_stopped() && self.crosshair_tilt_drag.is_some_and(|(i, _)| i == vp_idx) {
+            self.crosshair_tilt_drag = None;
+            return true;
+        }
         if response.drag_stopped() && self.crosshair_drag == Some(vp_idx) {
             self.crosshair_drag = None;
             return true;
@@ -521,6 +597,92 @@ impl ViewerApp {
         let cross = self.ortho_crosshair_screen_pos(vp_idx, img, frame);
         let pointer_pos = response.interact_pointer_pos();
         let shift_held = response.ctx.input(|i| i.modifiers.shift);
+
+        // Double-click near crosshair center resets oblique tilt back to orthogonal AX/COR/SAG.
+        if response.double_clicked()
+            && let (Some(p), Some(c)) = (pointer_pos, cross)
+            && p.distance(c) <= 18.0
+            && let Some(pt_lps) = self.ortho_crosshair_lps
+        {
+            for idx in 0..3 {
+                if let Some(cur_c) = self.viewports[idx].mpr_plane.as_ref().map(|p| p.center_lps) {
+                    let mut plane = match idx {
+                        0 => crate::volume::MprPlane3D::axial(cur_c),
+                        1 => crate::volume::MprPlane3D::coronal(cur_c),
+                        _ => crate::volume::MprPlane3D::sagittal(cur_c),
+                    };
+                    plane.offset_mm = dot3(sub3(pt_lps, plane.center_lps), plane.normal);
+                    self.viewports[idx].mpr_plane = Some(plane);
+                    self.viewports[idx].mpr_cached = None;
+                    self.sync_slice_index_from_mpr_plane(idx);
+                }
+            }
+            return true;
+        }
+
+        // Handle ongoing or starting oblique tilt drag on the 4 crosshair rotation handles.
+        if let Some((drag_vp, prev_ang)) = self.crosshair_tilt_drag
+            && drag_vp == vp_idx
+            && let (Some(pos), Some(c)) = (pointer_pos, cross)
+        {
+            let new_ang = (pos.y - c.y).atan2(pos.x - c.x);
+            let mut d_ang = (new_ang - prev_ang) as f64;
+            if d_ang > std::f64::consts::PI {
+                d_ang -= std::f64::consts::TAU;
+            } else if d_ang < -std::f64::consts::PI {
+                d_ang += std::f64::consts::TAU;
+            }
+            if d_ang.abs() > 1e-4
+                && let Some(cur_plane) = self.viewports.get(vp_idx).and_then(|v| v.mpr_plane.clone())
+                && let Some(pt_lps) = self.ortho_crosshair_lps
+            {
+                let flip_sign = if self.viewports[vp_idx].x_flipped ^ self.viewports[vp_idx].y_flipped {
+                    -1.0
+                } else {
+                    1.0
+                };
+                let axis = cur_plane.normal;
+                let angle = d_ang * flip_sign;
+                for other_idx in 0..3 {
+                    if other_idx == vp_idx {
+                        continue;
+                    }
+                    if let Some(mut op) = self.viewports[other_idx].mpr_plane.clone() {
+                        op.u_axis = rotate_vec3_around_axis(op.u_axis, axis, angle);
+                        op.v_axis = rotate_vec3_around_axis(op.v_axis, axis, angle);
+                        op.normal = rotate_vec3_around_axis(op.normal, axis, angle);
+                        op.offset_mm = dot3(sub3(pt_lps, op.center_lps), op.normal);
+                        self.viewports[other_idx].mpr_plane = Some(op);
+                        self.viewports[other_idx].mpr_cached = None;
+                        self.sync_slice_index_from_mpr_plane(other_idx);
+                    }
+                }
+            }
+            self.crosshair_tilt_drag = Some((vp_idx, new_ang));
+            return true;
+        }
+
+        if response.drag_started_by(egui::PointerButton::Primary)
+            && let (Some(pos), Some(c)) = (
+                response
+                    .ctx
+                    .input(|i| i.pointer.press_origin())
+                    .or(pointer_pos),
+                cross,
+            )
+            && let Some(axes) = self.ortho_crosshair_axes_screen(vp_idx, img, frame, c)
+        {
+            for (dir, _) in axes {
+                for sign in [-1.0_f32, 1.0_f32] {
+                    let h = c + dir * (64.0 * sign);
+                    if h.distance(pos) <= 10.0 {
+                        let ang = (pos.y - c.y).atan2(pos.x - c.x);
+                        self.crosshair_tilt_drag = Some((vp_idx, ang));
+                        return true;
+                    }
+                }
+            }
+        }
 
         let start_drag = response.drag_started_by(egui::PointerButton::Primary)
             && (shift_held
@@ -564,52 +726,28 @@ impl ViewerApp {
             return;
         };
         let clipped = painter.with_clip_rect(view);
-        let (h_color, v_color, badge, badge_color) = match vp_idx {
-            0 => (
-                Color32::from_rgba_unmultiplied(74, 222, 128, 210), // Coronal (Green)
-                Color32::from_rgba_unmultiplied(248, 113, 113, 210), // Sagittal (Red)
-                "AXIAL",
-                Color32::from_rgb(74, 168, 255),
-            ),
-            1 => (
-                Color32::from_rgba_unmultiplied(74, 168, 255, 210), // Axial (Blue)
-                Color32::from_rgba_unmultiplied(248, 113, 113, 210), // Sagittal (Red)
-                "CORONAL",
-                Color32::from_rgb(74, 222, 128),
-            ),
-            _ => (
-                Color32::from_rgba_unmultiplied(74, 168, 255, 210), // Axial (Blue)
-                Color32::from_rgba_unmultiplied(74, 222, 128, 210), // Coronal (Green)
-                "SAGITTAL",
-                Color32::from_rgb(248, 113, 113),
-            ),
+        let (badge, badge_color) = match vp_idx {
+            0 => ("AXIAL", Color32::from_rgb(74, 168, 255)),
+            1 => ("CORONAL", Color32::from_rgb(74, 222, 128)),
+            _ => ("SAGITTAL", Color32::from_rgb(248, 113, 113)),
         };
         let gap = 10.0;
-        // Horizontal line (with open center gap)
-        if c.x - gap > view.min.x {
-            clipped.line_segment(
-                [pos2(view.min.x, c.y), pos2(c.x - gap, c.y)],
-                Stroke::new(1.25, h_color),
-            );
-        }
-        if c.x + gap < view.max.x {
-            clipped.line_segment(
-                [pos2(c.x + gap, c.y), pos2(view.max.x, c.y)],
-                Stroke::new(1.25, h_color),
-            );
-        }
-        // Vertical line (with open center gap)
-        if c.y - gap > view.min.y {
-            clipped.line_segment(
-                [pos2(c.x, view.min.y), pos2(c.x, c.y - gap)],
-                Stroke::new(1.25, v_color),
-            );
-        }
-        if c.y + gap < view.max.y {
-            clipped.line_segment(
-                [pos2(c.x, c.y + gap), pos2(c.x, view.max.y)],
-                Stroke::new(1.25, v_color),
-            );
+        let extent = view.width().max(view.height()) + 20.0;
+        if let Some(axes) = self.ortho_crosshair_axes_screen(vp_idx, img, frame, c) {
+            for (dir, line_col) in axes {
+                for sign in [-1.0_f32, 1.0_f32] {
+                    let d = dir * sign;
+                    clipped.line_segment(
+                        [c + d * gap, c + d * extent],
+                        Stroke::new(1.25, line_col),
+                    );
+                    let handle_pt = c + d * 64.0;
+                    if view.contains(handle_pt) {
+                        clipped.circle_filled(handle_pt, 3.2, line_col);
+                        clipped.circle_stroke(handle_pt, 3.2, Stroke::new(0.8, Color32::BLACK));
+                    }
+                }
+            }
         }
         clipped.circle_stroke(c, 4.0, Stroke::new(1.25, badge_color));
         clipped.text(
@@ -1467,6 +1605,14 @@ impl ViewerApp {
                     ui.close();
                 }
             }
+            let recenter_lbl = match self.lang {
+                crate::i18n::Lang::Es => "⌖ Centrar imagen",
+                crate::i18n::Lang::En => "⌖ Recenter image",
+            };
+            if ui.button(recenter_lbl).clicked() {
+                self.viewports[vp_idx].pan = Vec2::ZERO;
+                ui.close();
+            }
 
             ui.separator();
             if self.tiling.cell_count() > 1 {
@@ -1668,7 +1814,9 @@ impl ViewerApp {
 
         if response.dragged_by(egui::PointerButton::Middle) {
             self.viewports[vp_idx].pan += delta;
-            self.sync_pan_from(vp_idx, delta);
+            if !response.ctx.input(|i| i.modifiers.alt) {
+                self.sync_pan_from(vp_idx, delta);
+            }
             return;
         }
         if response.dragged_by(egui::PointerButton::Secondary) {
@@ -1932,7 +2080,9 @@ impl ViewerApp {
             Tool::Pan => {
                 if is_drag {
                     self.viewports[vp_idx].pan += delta;
-                    self.sync_pan_from(vp_idx, delta);
+                    if !response.ctx.input(|i| i.modifiers.alt) {
+                        self.sync_pan_from(vp_idx, delta);
+                    }
                 }
             }
             Tool::Zoom => {
@@ -1961,8 +2111,9 @@ impl ViewerApp {
                     (self.rot_drag, response.interact_pointer_pos())
                     && id == vp_idx {
                         let a1 = (now.y - center.y).atan2(now.x - center.x).to_degrees();
-                        self.viewports[vp_idx].rotation =
-                            (init_rot + (a1 - a0)).rem_euclid(360.0);
+                        let next_rot = (init_rot + (a1 - a0)).rem_euclid(360.0);
+                        self.viewports[vp_idx].rotation = next_rot;
+                        self.sync_rotation_from(vp_idx, next_rot);
                     }
                 if response.drag_stopped() {
                     self.rot_drag = None;
@@ -2010,6 +2161,7 @@ impl ViewerApp {
                                     dot3(sub3(anchor_lps, plane.center_lps), plane.normal);
                             }
                         self.set_viewport_mpr_plane(vp_idx, plane, true);
+                        self.sync_mpr_orientation_from(vp_idx);
                     }
                 if response.drag_stopped() {
                     self.orbit_drag = None;
@@ -2571,4 +2723,26 @@ fn hit_test_roi_interior(
         }
         _ => measure_screen_distance(m, scr, to_scr) <= 9.0,
     }
+}
+
+fn rotate_vec3_around_axis(v: [f64; 3], axis: [f64; 3], angle: f64) -> [f64; 3] {
+    let (s, c) = angle.sin_cos();
+    let k_dot_v = dot3(axis, v);
+    let k_cross_v = [
+        axis[1] * v[2] - axis[2] * v[1],
+        axis[2] * v[0] - axis[0] * v[2],
+        axis[0] * v[1] - axis[1] * v[0],
+    ];
+    let mut out = [
+        v[0] * c + k_cross_v[0] * s + axis[0] * k_dot_v * (1.0 - c),
+        v[1] * c + k_cross_v[1] * s + axis[1] * k_dot_v * (1.0 - c),
+        v[2] * c + k_cross_v[2] * s + axis[2] * k_dot_v * (1.0 - c),
+    ];
+    let len = (out[0] * out[0] + out[1] * out[1] + out[2] * out[2]).sqrt();
+    if len > 1e-12 {
+        out[0] /= len;
+        out[1] /= len;
+        out[2] /= len;
+    }
+    out
 }
