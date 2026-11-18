@@ -84,6 +84,28 @@ impl ViewerApp {
     }
 
     pub(crate) fn apply_same_size_zoom_from(&mut self, leader_idx: usize) {
+        // Preferred: match the scale actually on screen (mm per screen pixel).
+        if let Some(Some(lead_base)) = self.viewport_mm_per_px.get(leader_idx).copied() {
+            let leader_zoom = self.viewports[leader_idx].zoom;
+            let count = self.tiling.cell_count();
+            let mut all_measured = true;
+            let mut updates = Vec::new();
+            for i in 0..count {
+                if i == leader_idx || !self.are_viewports_linked(leader_idx, i) || self.viewports[i].selected.is_none() {
+                    continue;
+                }
+                match self.viewport_mm_per_px.get(i).copied().flatten() {
+                    Some(base) => updates.push((i, leader_zoom * base / lead_base.max(1e-6))),
+                    None => all_measured = false,
+                }
+            }
+            for (i, z) in updates {
+                self.viewports[i].zoom = z.clamp(0.05, 50.0);
+            }
+            if all_measured {
+                return;
+            }
+        }
         let Some(leader_fov) = self.viewport_fov_mm(leader_idx) else {
             return;
         };
@@ -106,6 +128,11 @@ impl ViewerApp {
         if !self.ortho_mpr_active && !self.link_zoom {
             return;
         }
+        if self.solo_adjust {
+            // Zoomed alone on purpose: keep the sizes different from now on.
+            self.link_zoom_same_size = false;
+            return;
+        }
         if self.link_zoom_same_size && !self.ortho_mpr_active && self.viewport_fov_mm(leader_idx).is_some() {
             self.apply_same_size_zoom_from(leader_idx);
             return;
@@ -120,7 +147,7 @@ impl ViewerApp {
     }
 
     pub(super) fn sync_pan_from(&mut self, leader_idx: usize, delta: Vec2) {
-        if !self.ortho_mpr_active && !self.link_zoom {
+        if self.solo_adjust || (!self.ortho_mpr_active && !self.link_zoom) {
             return;
         }
         let count = self.tiling.cell_count();
@@ -135,7 +162,7 @@ impl ViewerApp {
     /// just turned. A difference set on purpose between two viewports (for a patient
     /// lying rolled on one date) is kept: rotation follows as a change, not a copy.
     pub(crate) fn sync_rotation_from(&mut self, leader_idx: usize, delta_deg: f32) {
-        if delta_deg == 0.0 || (!self.ortho_mpr_active && !self.any_link_enabled()) {
+        if self.solo_adjust || delta_deg == 0.0 || (!self.ortho_mpr_active && !self.any_link_enabled()) {
             return;
         }
         let count = self.tiling.cell_count();
@@ -156,6 +183,10 @@ impl ViewerApp {
     /// `delta`, keeping any difference set between the two by hand.
     pub(super) fn sync_mpr_orientation_from(&mut self, leader_idx: usize, delta: [[f64; 3]; 3]) {
         if self.ortho_mpr_active || (!self.link_cut && !self.link_zoom) {
+            return;
+        }
+        if self.solo_adjust {
+            self.pending_relock = Some(leader_idx);
             return;
         }
         let Some(leader_sel) = self.viewports.get(leader_idx).and_then(|v| v.selected) else {
@@ -210,7 +241,7 @@ impl ViewerApp {
     }
 
     pub(super) fn sync_window_delta(&mut self, leader_idx: usize, d_level: f32, d_width: f32) {
-        if !self.ortho_mpr_active && !self.link_wl {
+        if self.solo_adjust || (!self.ortho_mpr_active && !self.link_wl) {
             return;
         }
         let count = self.tiling.cell_count();
@@ -454,7 +485,10 @@ impl ViewerApp {
         self.viewports[vp_idx].mpr_enabled = true;
         self.viewports[vp_idx].mpr_plane = Some(plane);
         self.sync_slice_index_from_mpr_plane(vp_idx);
-        if synchronize_others && self.sync_mode != SliceSynchronization::Off {
+        if synchronize_others && self.solo_adjust && self.link_cut {
+            self.pending_relock = Some(vp_idx);
+        }
+        if synchronize_others && !self.solo_adjust && self.sync_mode != SliceSynchronization::Off {
             self.synchronize_mpr_followers_with_delta(vp_idx, delta_mm);
         }
     }
@@ -640,6 +674,88 @@ impl ViewerApp {
     /// Optimal side-by-side comparison mode: links Zoom (`= mm` same physical size), Cut,
     /// and optionally WL/WW across the selected viewports, enables 3D MPR where volumes exist,
     /// and aligns XYZ planes (orientation + slice height) across the compared viewports.
+    /// Turns `other_idx` to look like `leader_idx`: the same plane orientation and the
+    /// matching position (through a trusted or locked registration when there is one,
+    /// otherwise by patient coordinates), and the same 2D rotation and flips.
+    pub(crate) fn align_plane_to(&mut self, leader_idx: usize, other_idx: usize) {
+        let (Some(leader_sel), Some(other_sel)) =
+            (self.viewports[leader_idx].selected, self.viewports[other_idx].selected)
+        else {
+            return;
+        };
+        self.viewports[other_idx].rotation = self.viewports[leader_idx].rotation;
+        self.viewports[other_idx].x_flipped = self.viewports[leader_idx].x_flipped;
+        self.viewports[other_idx].y_flipped = self.viewports[leader_idx].y_flipped;
+        let Some(lp) = self.effective_mpr_plane(leader_idx) else {
+            return;
+        };
+        if self.viewport_volume(other_idx).is_some() {
+            self.viewports[other_idx].mpr_enabled = true;
+        }
+        let Some(mut op) = self.effective_mpr_plane(other_idx) else {
+            return;
+        };
+        let leader_lps = lp.slice_center_lps();
+        if let Some(reg) = self
+            .registrations
+            .get(&(leader_sel, other_sel))
+            .filter(|r| r.is_reliable())
+            .cloned()
+        {
+            let target_lps = reg.transform_point(leader_lps);
+            op.u_axis = crate::volume::mat3_mul_vec(reg.rotation, lp.u_axis);
+            op.v_axis = crate::volume::mat3_mul_vec(reg.rotation, lp.v_axis);
+            op.normal = crate::volume::mat3_mul_vec(reg.rotation, lp.normal);
+            op.offset_mm = dot3(sub3(target_lps, op.center_lps), op.normal);
+        } else {
+            op.u_axis = lp.u_axis;
+            op.v_axis = lp.v_axis;
+            op.normal = lp.normal;
+            let proj = dot3(sub3(leader_lps, op.center_lps), op.normal);
+            let in_range = self.volumes.get(&other_sel).is_some_and(|v| {
+                proj.abs() <= v.projected_half_span_mm(op.normal).max(1.0) + 20.0
+            });
+            if in_range {
+                op.offset_mm = proj;
+            }
+        }
+        self.viewports[other_idx].mpr_plane = Some(op);
+        self.viewports[other_idx].mpr_cached = None;
+        self.sync_slice_index_from_mpr_plane(other_idx);
+    }
+
+    /// When a link is switched on, the viewport being worked in (`leader_idx`) is the
+    /// reference: every viewport linked to it takes its zoom (`zoom`), its window
+    /// (`wl`) and its plane, position and rotation (`cut`). To make the first viewport
+    /// look like the second instead, start from the second.
+    pub(crate) fn align_linked_to(&mut self, leader_idx: usize, zoom: bool, wl: bool, cut: bool) {
+        let count = self.tiling.cell_count();
+        let leader_win = if wl {
+            self.viewports[leader_idx]
+                .window
+                .or_else(|| self.viewport_frame(leader_idx).map(|f| self.effective_window(leader_idx, f)))
+        } else {
+            None
+        };
+        for other_idx in 0..count {
+            if other_idx == leader_idx
+                || !self.are_viewports_linked(leader_idx, other_idx)
+                || self.viewports[other_idx].selected.is_none()
+            {
+                continue;
+            }
+            if let Some(w) = leader_win {
+                self.viewports[other_idx].window = Some(w);
+            }
+            if cut {
+                self.align_plane_to(leader_idx, other_idx);
+            }
+        }
+        if zoom && self.link_zoom_same_size {
+            self.apply_same_size_zoom_from(leader_idx);
+        }
+    }
+
     pub(crate) fn compare_align_linked_viewports(&mut self) {
         let cell_count = self.tiling.cell_count();
         let chosen: Vec<usize> = (0..cell_count)
@@ -664,9 +780,9 @@ impl ViewerApp {
         self.link_cut = true;
 
         let leader_idx = self.active_viewport;
-        let Some(leader_sel) = self.viewports[leader_idx].selected else {
+        if self.viewports[leader_idx].selected.is_none() {
             return;
-        };
+        }
         if self.viewport_volume(leader_idx).is_some() && !self.viewports[leader_idx].mpr_enabled {
             self.viewports[leader_idx].mpr_enabled = true;
         }
@@ -678,63 +794,21 @@ impl ViewerApp {
             None
         };
         let leader_pan = self.viewports[leader_idx].pan;
-        let leader_plane = self.effective_mpr_plane(leader_idx);
-
-        let mat_vec = |m: [[f64; 3]; 3], v: [f64; 3]| -> [f64; 3] {
-            [
-                m[0][0] * v[0] + m[0][1] * v[1] + m[0][2] * v[2],
-                m[1][0] * v[0] + m[1][1] * v[1] + m[1][2] * v[2],
-                m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
-            ]
-        };
 
         for &other_idx in &chosen {
             if other_idx == leader_idx {
                 continue;
             }
-            let Some(other_sel) = self.viewports[other_idx].selected else {
+            if self.viewports[other_idx].selected.is_none() {
                 continue;
-            };
+            }
             if let Some(w) = leader_win {
                 self.viewports[other_idx].window = Some(w);
             }
             self.viewports[other_idx].pan = leader_pan;
             self.viewports[other_idx].rotation = self.viewports[leader_idx].rotation;
 
-            if self.viewport_volume(other_idx).is_some() {
-                self.viewports[other_idx].mpr_enabled = true;
-            }
-            if let Some(lp) = leader_plane.as_ref()
-                && let Some(mut op) = self.effective_mpr_plane(other_idx)
-            {
-                let leader_lps = lp.slice_center_lps();
-                if let Some(reg) = self
-                    .registrations
-                    .get(&(leader_sel, other_sel))
-                    .filter(|r| r.is_reliable())
-                    .cloned()
-                {
-                    let target_lps = reg.transform_point(leader_lps);
-                    op.u_axis = mat_vec(reg.rotation, lp.u_axis);
-                    op.v_axis = mat_vec(reg.rotation, lp.v_axis);
-                    op.normal = mat_vec(reg.rotation, lp.normal);
-                    op.offset_mm = dot3(sub3(target_lps, op.center_lps), op.normal);
-                } else {
-                    op.u_axis = lp.u_axis;
-                    op.v_axis = lp.v_axis;
-                    op.normal = lp.normal;
-                    let proj = dot3(sub3(leader_lps, op.center_lps), op.normal);
-                    let in_range = self.volumes.get(&other_sel).is_some_and(|v| {
-                        proj.abs() <= v.projected_half_span_mm(op.normal).max(1.0) + 20.0
-                    });
-                    if in_range {
-                        op.offset_mm = proj;
-                    }
-                }
-                self.viewports[other_idx].mpr_plane = Some(op);
-                self.viewports[other_idx].mpr_cached = None;
-                self.sync_slice_index_from_mpr_plane(other_idx);
-            }
+            self.align_plane_to(leader_idx, other_idx);
         }
 
         self.apply_same_size_zoom_from(leader_idx);
@@ -1045,7 +1119,11 @@ impl ViewerApp {
             self.angle_pending = None;
         }
 
+        if synchronize_others && self.solo_adjust && self.link_cut && !self.ortho_mpr_active {
+            self.pending_relock = Some(vp_idx);
+        }
         if synchronize_others
+            && !self.solo_adjust
             && self.link_cut
             && self.sync_mode != SliceSynchronization::Off
             && !self.ortho_mpr_active

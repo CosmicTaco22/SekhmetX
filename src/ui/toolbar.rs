@@ -1254,8 +1254,8 @@ impl ViewerApp {
                     .changed()
                 {
                     self.ensure_default_link_pair();
-                    if self.link_zoom && self.link_zoom_same_size {
-                        self.apply_same_size_zoom_from(self.active_viewport);
+                    if self.link_zoom {
+                        self.align_linked_to(self.active_viewport, true, false, false);
                     }
                 }
                 if self.link_zoom {
@@ -1290,16 +1290,26 @@ impl ViewerApp {
                     }
                 }
                 if icons::toggle_button(ui, &mut self.link_wl, lbl_wl)
-                    .on_hover_text(if es { "Vincular nivel / ancho de ventana entre visores vinculados" } else { "Link window level / width across linked viewports" })
+                    .on_hover_text(if es { "Vincular nivel / ancho de ventana: los demás visores toman la ventana del visor activo" } else { "Link window level / width: the other viewports take the active viewport's window" })
                     .changed()
                 {
                     self.ensure_default_link_pair();
+                    if self.link_wl {
+                        self.align_linked_to(self.active_viewport, false, true, false);
+                    }
                 }
                 if icons::toggle_button(ui, &mut self.link_cut, lbl_cut)
-                    .on_hover_text(if es { "Vincular la posición de corte entre visores (cada uno conserva su plano)" } else { "Link slice position across linked viewports (each keeps its own plane)" })
+                    .on_hover_text(if es {
+                        "Vincular el corte: los demás visores toman el plano, la posición y la rotación del visor activo. Ctrl+arrastrar (Cmd en Mac) mueve o gira un solo visor y queda vinculado con esa diferencia."
+                    } else {
+                        "Link the cut: the other viewports take the active viewport's plane, position and rotation. Ctrl+drag (Cmd on Mac) moves or turns one viewport alone, and it stays linked with that difference."
+                    })
                     .changed()
                 {
                     self.ensure_default_link_pair();
+                    if self.link_cut {
+                        self.align_linked_to(self.active_viewport, false, false, true);
+                    }
                 }
                 if cell_count > 2 {
                     ui.separator();

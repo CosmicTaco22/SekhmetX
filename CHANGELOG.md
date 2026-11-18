@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.25] - 2026-11-18
+
+### Fixed
+- **"= mm" zoom link showed the two images at different scales** when one plane was turned (3D MPR): it compared the source slices' field of view, but a turned plane is shown as a resliced image of another size. It now matches the scale actually on screen (millimetres per screen pixel, measured each time a viewport is drawn). On the test phantom a 20 cm ruler measured 331 px and 370 px before, and 331 px in both after.
+
+### Added
+- **Ctrl (Cmd on Mac) = this viewport only, for everything:** while held, scrolling (Scroll tool, arrow keys, slider), zoom, pan, window/level, 2D rotation and 3D rotation change only the viewport you are working in. After moving or turning one viewport alone with **Cut** linked, its new offset is locked automatically when Ctrl/Cmd is released, so the viewports stay linked with that difference. Zooming one alone switches the zoom link from "= mm" to "Rel" so the sizes stay as set. (`Ctrl`+wheel, which zooms, now zooms only that viewport.)
+- **The viewport you start from leads when you switch a link on:** turning on **Cut** makes the other linked viewports take the active viewport's plane, position, rotation and flips (through the registration or manual lock when there is one); **WL/WW** gives them its window; **Zoom "= mm"** its scale. To make the first look like the second, start from the second. Shared with **Compare** (`align_plane_to`, `align_linked_to` in `src/app/mpr_sync.rs`).
+
 ## [0.5.24] - 2026-11-18
 
 ### Fixed: rotation could not be matched between two studies of a patient lying rotated

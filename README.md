@@ -88,8 +88,10 @@ or Pixmeo. It does not use their names or icons in the application.
 - GPU volume rendering and 3D MIP with presets, shading, a transfer-function
   editor, clipping and an orientation cube.
 - Side-by-side comparison of studies from different dates with automatic 3D
-  alignment, or manual alignment (turn one image alone, then lock) when the
-  patient lay differently.
+  alignment, or manual alignment when the patient lay differently: hold
+  `Ctrl`/`Cmd` to move or turn one image alone and it stays linked with that
+  difference. Switching a link on makes the others match the viewport you are
+  in; "= mm" zoom shows both at the same physical scale.
 
 **Measurements and key images**
 - Length, angle, Cobb angle, arrow with text, oval, rectangle, polygon, pencil
@@ -157,7 +159,8 @@ the window; they are added to the library and open instantly afterwards.
 | Axial / coronal / sagittal | `A` / `C` / `S` (uses the scanner's own series when available) |
 | Window / level, zoom | `W`, `Z`; right drag zooms, middle drag pans |
 | 3D rotate (oblique MPR) | `O`, then drag; `Shift` + drag to roll |
-| Rotate one image alone while linked (e.g. patient rolled on one date) | `Ctrl` + drag (`Cmd` on Mac) with Rotate or 3D rotate, then **Lock 3D Sync** |
+| Change one linked viewport only (scroll, zoom, pan, window, rotate) | Hold `Ctrl` (`Cmd` on Mac) while doing it; with **Cut** linked, the new offset stays linked when you let go |
+| Make the other viewports match this one | Switch a link (**Cut**, **WL/WW**, **Zoom**) on while working in this viewport |
 | Window presets | `1`–`9`, `0` for the default |
 | Invert | `I` |
 | Measurements | `L`/`M` length · `E` oval · `B` rectangle · `G` polygon (`Enter` closes) · `F` pencil · `T` point · `Y` arrow; angle and Cobb angle from the ROI menu or right-click palette |

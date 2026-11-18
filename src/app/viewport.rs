@@ -327,6 +327,17 @@ impl ViewerApp {
 
         let window = self.effective_window(vp_idx, &frame);
         let img = self.image_rect(vp_idx, view, &frame);
+        if let Some(slot) = self.viewport_mm_per_px.get_mut(vp_idx) {
+            *slot = frame.spacing.and_then(|(_rs, cs)| {
+                // Millimetres per screen pixel at zoom 1, along an image row
+                // (on screen vertically when the image is turned 90°).
+                let zoom = self.viewports[vp_idx].zoom.max(1e-6);
+                let rot = self.viewports[vp_idx].rotation.rem_euclid(180.0);
+                let screen_len = if (45.0..135.0).contains(&rot) { img.height() } else { img.width() };
+                let screen_per_col = screen_len / frame.width.max(1) as f32;
+                (screen_per_col > 0.0).then(|| cs as f32 / screen_per_col * zoom)
+            });
+        }
         if let Some((ref gpu_vol, ref gpu_geom, _)) = gpu_mpr {
             painter.add(
                 self.gpu_mpr_callback(ui, vp_idx, gpu_vol.clone(), gpu_geom.clone(), img, window, frame.inverts)

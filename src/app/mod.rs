@@ -440,6 +440,15 @@ pub(crate) struct ViewerApp {
     copy_shot_rx: Receiver<Arc<egui::ColorImage>>,
     pub(crate) copy_anonymize_frame: bool,
     pub(crate) viewport_rects: Vec<Rect>,
+    /// Millimetres per screen pixel of each viewport's displayed image at zoom 1,
+    /// measured when it is drawn (the resliced image of a turned MPR plane differs
+    /// in size from the source slices). Used by the "= mm" zoom link.
+    pub(crate) viewport_mm_per_px: Vec<Option<f32>>,
+    /// Ctrl (Cmd on Mac) held this frame: changes apply to the touched viewport only.
+    pub(crate) solo_adjust: bool,
+    /// A viewport moved or turned alone while Cut was linked; its new relation to
+    /// the others is locked once Ctrl/Cmd is released.
+    pub(crate) pending_relock: Option<usize>,
     pub(crate) show_vr_tf_editor: bool,
     pub(crate) vr_tf_selected_stop: usize,
     pub(crate) vr_histogram_cache: Option<(u64, u32, u32, Vec<f32>)>,
@@ -686,6 +695,9 @@ impl ViewerApp {
             copy_shot_rx,
             copy_anonymize_frame: false,
             viewport_rects: vec![Rect::NOTHING; 16],
+            viewport_mm_per_px: vec![None; 16],
+            solo_adjust: false,
+            pending_relock: None,
             show_vr_tf_editor: false,
             vr_tf_selected_stop: 0,
             vr_histogram_cache: None,
@@ -2121,6 +2133,21 @@ impl ViewerApp {
 impl eframe::App for ViewerApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let (cmd_held, pointer_down) = ctx.input(|i| (i.modifiers.command, i.pointer.any_down()));
+        self.solo_adjust = cmd_held;
+        // A viewport moved alone with Ctrl/Cmd: keep it linked at its new offset.
+        if !cmd_held
+            && !pointer_down
+            && let Some(vp) = self.pending_relock.take()
+            && self.link_cut
+            && self.tiling.cell_count() > 1
+            && vp < self.tiling.cell_count()
+        {
+            let prev_active = self.active_viewport;
+            self.active_viewport = vp;
+            self.lock_current_3d_alignment();
+            self.active_viewport = prev_active;
+        }
         self.process_copy_screenshot(&ctx);
         self.poll_background(&ctx);
         self.handle_dropped_files(&ctx);
