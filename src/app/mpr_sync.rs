@@ -131,8 +131,8 @@ impl ViewerApp {
         }
     }
 
-    pub(super) fn sync_rotation_from(&mut self, leader_idx: usize, rot_deg: f32) {
-        if !self.ortho_mpr_active && !self.link_zoom && !self.link_cut {
+    pub(crate) fn sync_rotation_from(&mut self, leader_idx: usize, rot_deg: f32) {
+        if !self.ortho_mpr_active && !self.any_link_enabled() {
             return;
         }
         let count = self.tiling.cell_count();
@@ -685,6 +685,7 @@ impl ViewerApp {
                 self.viewports[other_idx].window = Some(w);
             }
             self.viewports[other_idx].pan = leader_pan;
+            self.viewports[other_idx].rotation = self.viewports[leader_idx].rotation;
 
             if self.viewport_volume(other_idx).is_some() {
                 self.viewports[other_idx].mpr_enabled = true;
@@ -693,7 +694,12 @@ impl ViewerApp {
                 && let Some(mut op) = self.effective_mpr_plane(other_idx)
             {
                 let leader_lps = lp.slice_center_lps();
-                if let Some(reg) = self.registrations.get(&(leader_sel, other_sel)).cloned() {
+                if let Some(reg) = self
+                    .registrations
+                    .get(&(leader_sel, other_sel))
+                    .filter(|r| r.is_reliable())
+                    .cloned()
+                {
                     let target_lps = reg.transform_point(leader_lps);
                     op.u_axis = mat_vec(reg.rotation, lp.u_axis);
                     op.v_axis = mat_vec(reg.rotation, lp.v_axis);
@@ -703,7 +709,13 @@ impl ViewerApp {
                     op.u_axis = lp.u_axis;
                     op.v_axis = lp.v_axis;
                     op.normal = lp.normal;
-                    op.offset_mm = dot3(sub3(leader_lps, op.center_lps), op.normal);
+                    let proj = dot3(sub3(leader_lps, op.center_lps), op.normal);
+                    let in_range = self.volumes.get(&other_sel).is_some_and(|v| {
+                        proj.abs() <= v.projected_half_span_mm(op.normal).max(1.0) + 20.0
+                    });
+                    if in_range {
+                        op.offset_mm = proj;
+                    }
                 }
                 self.viewports[other_idx].mpr_plane = Some(op);
                 self.viewports[other_idx].mpr_cached = None;

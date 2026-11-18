@@ -1217,19 +1217,8 @@ impl RigidTransform3D {
             return Self::centroid_only(source, target);
         }
 
-        // Precompute mean and variance of source samples for fast NCC evaluation.
-        let n = samples.len() as f64;
-        let mean_a: f64 = samples.iter().map(|(_, v)| *v as f64).sum::<f64>() / n;
-        let var_a: f64 = samples
-            .iter()
-            .map(|(_, v)| {
-                let d = *v as f64 - mean_a;
-                d * d
-            })
-            .sum::<f64>()
-            .max(1e-6);
-
-        // Evaluates Normalized Cross-Correlation for parameter vector `[tx, ty, tz, rx_deg, ry_deg, rz_deg]`.
+        // Evaluates Normalized Cross-Correlation over overlapping samples for `[tx, ty, tz, rx_deg, ry_deg, rz_deg]`.
+        let min_valid = (samples.len() / 5).max(32);
         let eval_ncc = |params: &[f64; 6]| -> f64 {
             let rot = euler_deg_to_matrix(params[3], params[4], params[5]);
             let trans = [
@@ -1237,45 +1226,62 @@ impl RigidTransform3D {
                 pivot_b_init[1] + params[1],
                 pivot_b_init[2] + params[2],
             ];
+            let mut sum_a = 0.0f64;
+            let mut sum_a2 = 0.0f64;
             let mut sum_b = 0.0f64;
             let mut sum_b2 = 0.0f64;
             let mut sum_ab = 0.0f64;
             let mut valid = 0usize;
-            let bg_b = target.background_value() as f64;
 
             for &(rel_a, val_a) in &samples {
-                let da = val_a as f64 - mean_a;
                 let rot_p = mat3_mul_vec(rot, rel_a);
                 let pt_b = add3(trans, rot_p);
-                let vb = match target.sample_lps(pt_b) {
-                    Some(v) => {
-                        valid += 1;
-                        v as f64
-                    }
-                    None => bg_b,
-                };
-                sum_b += vb;
-                sum_b2 += vb * vb;
-                sum_ab += da * vb;
+                if let Some(v) = target.sample_lps(pt_b) {
+                    let va = (val_a as f64).clamp(-250.0, 900.0);
+                    let vb = (v as f64).clamp(-250.0, 900.0);
+                    valid += 1;
+                    sum_a += va;
+                    sum_a2 += va * va;
+                    sum_b += vb;
+                    sum_b2 += vb * vb;
+                    sum_ab += va * vb;
+                }
             }
-            if valid < samples.len() / 3 {
+            if valid < min_valid {
                 return -1.0;
             }
-            let mean_b = sum_b / n;
-            let var_b = (sum_b2 - n * mean_b * mean_b).max(1e-6);
-            // Note: sum(da) == 0, so sum((a - mean_a)*(b - mean_b)) == sum(da * b).
-            sum_ab / (var_a * var_b).sqrt()
+            let vn = valid as f64;
+            let ma = sum_a / vn;
+            let mb = sum_b / vn;
+            let va_ov = (sum_a2 - vn * ma * ma).max(1e-6);
+            let vb_ov = (sum_b2 - vn * mb * mb).max(1e-6);
+            (sum_ab - vn * ma * mb) / (va_ov * vb_ov).sqrt()
         };
 
-        // Multi-scale coarse-to-fine coordinate pattern search over (tx, ty, tz, rx, ry, rz).
+        // Coarse (tz, rz) sweep so partial-overlap + rolled scans (e.g. TAP vs Abdomen-only with patient roll)
+        // find the matching Z range and axial roll angle before 6-DOF refinement.
         let mut best_params = [0.0f64; 6];
         let mut best_score = eval_ncc(&best_params);
+        let max_tz = ((source.projected_half_span_mm([0.0, 0.0, 1.0])
+            + target.projected_half_span_mm([0.0, 0.0, 1.0]))
+        .min(350.0)) as i32;
+        for rz in [-24.0_f64, -12.0, 0.0, 12.0, 24.0] {
+            for tz_i in (-max_tz..=max_tz).step_by(35) {
+                let cand = [0.0, 0.0, tz_i as f64, 0.0, 0.0, rz];
+                let s = eval_ncc(&cand);
+                if s > best_score {
+                    best_score = s;
+                    best_params = cand;
+                }
+            }
+        }
 
         let scales: &[(f64, f64, usize)] = &[
-            (10.0, 8.0, 2), // Coarse: 10 mm translation step, 8° rotation step
-            (4.0, 3.5, 2),  // Medium: 4 mm translation step, 3.5° rotation step
-            (1.5, 1.2, 2),  // Fine: 1.5 mm translation step, 1.2° rotation step
-            (0.5, 0.4, 1),  // Sub-millimeter / sub-degree polish
+            (25.0, 12.0, 2), // Wide coarse: up to ±50 mm translation, ±24° rotation
+            (10.0, 8.0, 2),  // Coarse: 10 mm translation step, 8° rotation step
+            (4.0, 3.5, 2),   // Medium: 4 mm translation step, 3.5° rotation step
+            (1.5, 1.2, 2),   // Fine: 1.5 mm translation step, 1.2° rotation step
+            (0.5, 0.4, 1),   // Sub-millimeter / sub-degree polish
         ];
 
         for &(t_step, r_step, passes) in scales {

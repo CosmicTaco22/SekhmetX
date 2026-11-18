@@ -1489,13 +1489,15 @@ impl ViewerApp {
             };
             ui.menu_button(transform_lbl, |ui| {
                 if ui.button(tr.rotate_ccw).clicked() {
-                    let vp = &mut self.viewports[vp_idx];
-                    vp.rotation = (vp.rotation - 90.0).rem_euclid(360.0);
+                    let next_rot = (self.viewports[vp_idx].rotation - 90.0).rem_euclid(360.0);
+                    self.viewports[vp_idx].rotation = next_rot;
+                    self.sync_rotation_from(vp_idx, next_rot);
                     ui.close();
                 }
                 if ui.button(tr.rotate_cw).clicked() {
-                    let vp = &mut self.viewports[vp_idx];
-                    vp.rotation = (vp.rotation + 90.0).rem_euclid(360.0);
+                    let next_rot = (self.viewports[vp_idx].rotation + 90.0).rem_euclid(360.0);
+                    self.viewports[vp_idx].rotation = next_rot;
+                    self.sync_rotation_from(vp_idx, next_rot);
                     ui.close();
                 }
                 let mut xf = self.viewports[vp_idx].x_flipped;

@@ -644,13 +644,17 @@ impl ViewerApp {
                     ui.checkbox(&mut self.active_cell_mut().invert, tr.invert);
                     ui.separator();
                     if ui.button(tr.rotate_ccw).clicked() {
-                        let vp = self.active_cell_mut();
-                        vp.rotation = (vp.rotation - 90.0).rem_euclid(360.0);
+                        let vp_idx = self.active_viewport;
+                        let next_rot = (self.viewports[vp_idx].rotation - 90.0).rem_euclid(360.0);
+                        self.viewports[vp_idx].rotation = next_rot;
+                        self.sync_rotation_from(vp_idx, next_rot);
                         ui.close();
                     }
                     if ui.button(tr.rotate_cw).clicked() {
-                        let vp = self.active_cell_mut();
-                        vp.rotation = (vp.rotation + 90.0).rem_euclid(360.0);
+                        let vp_idx = self.active_viewport;
+                        let next_rot = (self.viewports[vp_idx].rotation + 90.0).rem_euclid(360.0);
+                        self.viewports[vp_idx].rotation = next_rot;
+                        self.sync_rotation_from(vp_idx, next_rot);
                         ui.close();
                     }
                     let mut x_flip = self.active_cell().x_flipped;
