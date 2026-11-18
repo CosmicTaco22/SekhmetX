@@ -549,13 +549,7 @@ impl ViewerApp {
                         crate::i18n::Lang::En => "Open folder",
                     };
                     if ui.button(open_lbl).clicked() {
-                        let _ = std::fs::create_dir_all(&data_dir);
-                        #[cfg(target_os = "windows")]
-                        let _ = std::process::Command::new("explorer").arg(&data_dir).spawn();
-                        #[cfg(target_os = "macos")]
-                        let _ = std::process::Command::new("open").arg(&data_dir).spawn();
-                        #[cfg(all(unix, not(target_os = "macos")))]
-                        let _ = std::process::Command::new("xdg-open").arg(&data_dir).spawn();
+                        open_in_file_manager(&data_dir);
                     }
                     let del_lbl = match self.lang {
                         crate::i18n::Lang::Es => "Eliminar todos los datos locales…",
@@ -603,6 +597,25 @@ impl ViewerApp {
                         }
                     });
                 }
+                // A faint "⋯" in the corner, for whoever is looking for it: opens the
+                // folder with the settings, library database and log.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let tip = match self.lang {
+                        crate::i18n::Lang::Es => "Abrir la carpeta de datos del programa (ajustes, biblioteca y registro)",
+                        crate::i18n::Lang::En => "Open the program's data folder (settings, library and log)",
+                    };
+                    let dots = egui::RichText::new("⋯")
+                        .size(10.0)
+                        .color(crate::ui::theme::dim_text(ui).gamma_multiply(0.6));
+                    if ui
+                        .add(egui::Label::new(dots).sense(egui::Sense::click()))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(tip)
+                        .clicked()
+                    {
+                        open_in_file_manager(&data_dir);
+                    }
+                });
             });
         if !open {
             self.show_settings_modal = false;
@@ -1513,6 +1526,17 @@ impl ViewerApp {
             self.pending_clear_library = false;
         }
     }
+}
+
+/// Opens `dir` in the system file manager (Explorer, Finder, or the desktop's own).
+fn open_in_file_manager(dir: &std::path::Path) {
+    let _ = std::fs::create_dir_all(dir);
+    #[cfg(target_os = "windows")]
+    let _ = std::process::Command::new("explorer").arg(dir).spawn();
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("open").arg(dir).spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
 }
 
 fn summarize_samples(samples: &[f32]) -> (f32, f32, f32) {

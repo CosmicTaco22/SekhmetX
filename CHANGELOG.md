@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.28] - 2026-11-18
+
+### Added
+- **Hidden shortcut to the data folder:** a faint "⋯" in the bottom-right corner of **Settings** opens the folder holding the settings, library database and log (`sekhmetx.log`), for troubleshooting. Hovering it says what it does (English and Spanish). The visible **Open folder** button under "Local data" stays. Both use one helper, `open_in_file_manager` in `src/app/modals.rs`.
+
 ## [0.5.27] - 2026-11-18
 
 ### Improved: alignment level by level along the body
