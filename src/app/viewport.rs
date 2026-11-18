@@ -465,6 +465,15 @@ impl ViewerApp {
                                 if es { "Mismo marco de referencia" } else { "Same frame of reference" }.to_string(),
                                 Color32::from_rgb(130, 220, 155),
                             ))
+                        } else if reg.outline_based {
+                            Some((
+                                if es {
+                                    "Alineado por el contorno del cuerpo (aprox.)".to_string()
+                                } else {
+                                    "Aligned by the body outline (approximate)".to_string()
+                                },
+                                Color32::from_rgb(130, 220, 155),
+                            ))
                         } else if reg.is_reliable() {
                             Some((
                                 if es {

@@ -1160,6 +1160,9 @@ pub struct RigidTransform3D {
     pub rotation: [[f64; 3]; 3],
     /// Normalized cross-correlation score (`-1.0..=1.0`) achieved after registration.
     pub correlation: f64,
+    /// Aligned by the body outline and height profiles because the voxel match was
+    /// weak (interior changes between dates); trusted, shown as approximate.
+    pub outline_based: bool,
 }
 
 impl RigidTransform3D {
@@ -1170,6 +1173,7 @@ impl RigidTransform3D {
             pivot_target_lps: [0.0, 0.0, 0.0],
             rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             correlation,
+            outline_based: false,
         }
     }
 
@@ -1185,12 +1189,13 @@ impl RigidTransform3D {
                 [r[0][2], r[1][2], r[2][2]],
             ],
             correlation: self.correlation,
+            outline_based: self.outline_based,
         }
     }
 
     /// Returns `true` when the registration score is high enough to trust 3D alignment.
     pub fn is_reliable(&self) -> bool {
-        self.correlation >= 0.45
+        self.outline_based || self.correlation >= 0.45
     }
 
     /// Identity alignment around the volumes' foreground centroids (translation-only baseline).
@@ -1200,6 +1205,7 @@ impl RigidTransform3D {
             pivot_target_lps: target.foreground_centroid_lps,
             rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             correlation: 0.0,
+            outline_based: false,
         }
     }
 
@@ -1214,6 +1220,127 @@ impl RigidTransform3D {
             && !a.is_empty() && a == b {
                 return Self::identity(1.0);
             }
+        let whole = Self::register_whole_volume(source, target);
+        let Some(body) = Self::register_by_body(source, target) else {
+            return whole;
+        };
+        // A trusted result beats an untrusted one; between equals, the better match.
+        match (body.is_reliable(), whole.is_reliable()) {
+            (true, false) => body,
+            (false, true) => whole,
+            _ if body.correlation >= whole.correlation => body,
+            _ => whole,
+        }
+    }
+
+    /// Registration built for two CT scans of one patient on different dates, where
+    /// the patient may lie rolled, the table sits at another height, and one scan may
+    /// cover more of the body than the other (thorax-abdomen-pelvis against abdomen).
+    ///
+    /// 1. On each axial slice the body is found: the largest connected region above
+    ///    -350 HU (which leaves the CT table out), with lungs and bowel gas filled in.
+    /// 2. The two scans are matched in height by comparing slice-by-slice profiles of
+    ///    body area, air content and bone content.
+    /// 3. The roll is the difference in the tilt of the body outline at matching
+    ///    heights; the shift is the difference of the body centres.
+    /// 4. That starting point is refined by correlating voxels inside the body only.
+    ///
+    /// Returns `None` when the volumes are not axial CT or do not overlap enough.
+    fn register_by_body(source: &Volume3D, target: &Volume3D) -> Option<Self> {
+        let prof_s = body_profile(source)?;
+        let prof_t = body_profile(target)?;
+        let (shift_z, profile_score, z_lo, z_hi) = match_profiles(&prof_s, &prof_t)?;
+
+        // Roll and centres over the matched heights.
+        let mut rolls = Vec::new();
+        let (mut cs, mut ct) = (Vec::new(), Vec::new());
+        let mut z = z_lo;
+        while z <= z_hi {
+            if let (Some(a), Some(b)) = (profile_at(&prof_s, z), profile_at(&prof_t, z + shift_z)) {
+                cs.push((a.cx, a.cy));
+                ct.push((b.cx, b.cy));
+                if a.elongation > 1.15 && b.elongation > 1.15 {
+                    let mut d = (b.angle - a.angle).to_degrees();
+                    while d > 90.0 {
+                        d -= 180.0;
+                    }
+                    while d < -90.0 {
+                        d += 180.0;
+                    }
+                    rolls.push(d);
+                }
+            }
+            z += 5.0;
+        }
+        if cs.len() < 4 {
+            return None;
+        }
+        let roll_count = rolls.len();
+        let roll = median(&mut rolls).unwrap_or(0.0);
+        // Spread of the per-slice roll estimates (interquartile range), degrees.
+        let roll_spread = if roll_count >= 4 {
+            rolls[roll_count * 3 / 4] - rolls[roll_count / 4]
+        } else {
+            f64::INFINITY
+        };
+        let z_mid = 0.5 * (z_lo + z_hi);
+        let pivot_a = [
+            median(&mut cs.iter().map(|c| c.0).collect::<Vec<_>>())?,
+            median(&mut cs.iter().map(|c| c.1).collect::<Vec<_>>())?,
+            z_mid,
+        ];
+        let pivot_b = [
+            median(&mut ct.iter().map(|c| c.0).collect::<Vec<_>>())?,
+            median(&mut ct.iter().map(|c| c.1).collect::<Vec<_>>())?,
+            z_mid + shift_z,
+        ];
+
+        // Voxels inside the source body, over the matched heights only.
+        let samples = body_samples(source, z_lo, z_hi, 40_000);
+        if samples.len() < 64 {
+            return None;
+        }
+        let samples: Vec<([f64; 3], f32)> =
+            samples.into_iter().map(|(p, v)| (sub3(p, pivot_a), v)).collect();
+        let scales: &[(f64, f64, usize)] = &[
+            (6.0, 4.0, 2),
+            (3.0, 2.0, 2),
+            (1.5, 1.0, 2),
+            (0.6, 0.4, 1),
+        ];
+        let start = [0.0, 0.0, 0.0, 0.0, 0.0, roll];
+        let (params, score) = refine_ncc(&samples, target, pivot_b, start, scales);
+        // When the voxel match is weak (bowel, contrast phase and breathing differ
+        // between dates) but the height profiles agree and the outline gives one
+        // consistent roll, trust the outline. Keep the refinement only if it stayed
+        // close to the outline's answer.
+        let outline_strong = outline_is_trustworthy(profile_score, roll_count, roll_spread);
+        let near_outline = (params[5] - roll).abs() <= 6.0
+            && params[3].abs() <= 8.0
+            && params[4].abs() <= 8.0
+            && params[2].abs() <= 15.0;
+        let outline_based = score < 0.45 && outline_strong;
+        let params = if outline_based && !near_outline { start } else { params };
+        crate::crash_log::log_line(
+            "INFO",
+            &format!(
+                "Body registration: profile {profile_score:.2}, height shift {shift_z:.1} mm, \
+                 outline roll {roll:.1}° (spread {roll_spread:.1}°, {roll_count} slices), \
+                 voxel score {score:.2}, outline-based {outline_based}"
+            ),
+        );
+        Some(Self {
+            pivot_source_lps: pivot_a,
+            pivot_target_lps: add3(pivot_b, [params[0], params[1], params[2]]),
+            rotation: euler_deg_to_matrix(params[3], params[4], params[5]),
+            correlation: if outline_based { ncc_at(&samples, target, pivot_b, &params) } else { score },
+            outline_based,
+        })
+    }
+
+    /// The original whole-volume search, kept as a second opinion for volumes the
+    /// body-based method cannot read (non-axial or non-CT acquisitions).
+    fn register_whole_volume(source: &Volume3D, target: &Volume3D) -> Self {
         let pivot_a = source.foreground_centroid_lps;
         let pivot_b_init = target.foreground_centroid_lps;
 
@@ -1240,65 +1367,23 @@ impl RigidTransform3D {
             return Self::centroid_only(source, target);
         }
 
-        // Evaluates Normalized Cross-Correlation over overlapping samples for `[tx, ty, tz, rx_deg, ry_deg, rz_deg]`.
-        let min_valid = (samples.len() / 5).max(32);
-        let eval_ncc = |params: &[f64; 6]| -> f64 {
-            let rot = euler_deg_to_matrix(params[3], params[4], params[5]);
-            let trans = [
-                pivot_b_init[0] + params[0],
-                pivot_b_init[1] + params[1],
-                pivot_b_init[2] + params[2],
-            ];
-            let mut sum_a = 0.0f64;
-            let mut sum_a2 = 0.0f64;
-            let mut sum_b = 0.0f64;
-            let mut sum_b2 = 0.0f64;
-            let mut sum_ab = 0.0f64;
-            let mut valid = 0usize;
-
-            for &(rel_a, val_a) in &samples {
-                let rot_p = mat3_mul_vec(rot, rel_a);
-                let pt_b = add3(trans, rot_p);
-                if let Some(v) = target.sample_lps(pt_b) {
-                    let va = (val_a as f64).clamp(-250.0, 900.0);
-                    let vb = (v as f64).clamp(-250.0, 900.0);
-                    valid += 1;
-                    sum_a += va;
-                    sum_a2 += va * va;
-                    sum_b += vb;
-                    sum_b2 += vb * vb;
-                    sum_ab += va * vb;
-                }
-            }
-            if valid < min_valid {
-                return -1.0;
-            }
-            let vn = valid as f64;
-            let ma = sum_a / vn;
-            let mb = sum_b / vn;
-            let va_ov = (sum_a2 - vn * ma * ma).max(1e-6);
-            let vb_ov = (sum_b2 - vn * mb * mb).max(1e-6);
-            (sum_ab - vn * ma * mb) / (va_ov * vb_ov).sqrt()
-        };
-
-        // Coarse (tz, rz) sweep so partial-overlap + rolled scans (e.g. TAP vs Abdomen-only with patient roll)
-        // find the matching Z range and axial roll angle before 6-DOF refinement.
+        // Coarse (tz, rz) sweep so partial-overlap + rolled scans find the matching Z range and
+        // axial roll angle before 6-DOF refinement.
         let mut best_params = [0.0f64; 6];
-        let mut best_score = eval_ncc(&best_params);
+        let mut best_score = ncc_at(&samples, target, pivot_b_init, &best_params);
         let max_tz = ((source.projected_half_span_mm([0.0, 0.0, 1.0])
             + target.projected_half_span_mm([0.0, 0.0, 1.0]))
         .min(350.0)) as i32;
         for rz in [-24.0_f64, -12.0, 0.0, 12.0, 24.0] {
             for tz_i in (-max_tz..=max_tz).step_by(35) {
                 let cand = [0.0, 0.0, tz_i as f64, 0.0, 0.0, rz];
-                let s = eval_ncc(&cand);
-                if s > best_score {
-                    best_score = s;
+                let sc = ncc_at(&samples, target, pivot_b_init, &cand);
+                if sc > best_score {
+                    best_score = sc;
                     best_params = cand;
                 }
             }
         }
-
         let scales: &[(f64, f64, usize)] = &[
             (25.0, 12.0, 2), // Wide coarse: up to ±50 mm translation, ±24° rotation
             (10.0, 8.0, 2),  // Coarse: 10 mm translation step, 8° rotation step
@@ -1306,36 +1391,7 @@ impl RigidTransform3D {
             (1.5, 1.2, 2),   // Fine: 1.5 mm translation step, 1.2° rotation step
             (0.5, 0.4, 1),   // Sub-millimeter / sub-degree polish
         ];
-
-        for &(t_step, r_step, passes) in scales {
-            let steps = [t_step, t_step, t_step, r_step, r_step, r_step];
-            for _ in 0..passes {
-                let mut improved = false;
-                for dim in 0..6 {
-                    let s = steps[dim];
-                    let mut cand_plus = best_params;
-                    cand_plus[dim] += s;
-                    let score_plus = eval_ncc(&cand_plus);
-
-                    let mut cand_minus = best_params;
-                    cand_minus[dim] -= s;
-                    let score_minus = eval_ncc(&cand_minus);
-
-                    if score_plus > best_score && score_plus >= score_minus {
-                        best_score = score_plus;
-                        best_params = cand_plus;
-                        improved = true;
-                    } else if score_minus > best_score {
-                        best_score = score_minus;
-                        best_params = cand_minus;
-                        improved = true;
-                    }
-                }
-                if !improved {
-                    break;
-                }
-            }
-        }
+        let (best_params, best_score) = refine_ncc(&samples, target, pivot_b_init, best_params, scales);
 
         let rotation = euler_deg_to_matrix(best_params[3], best_params[4], best_params[5]);
         let pivot_target_lps = [
@@ -1349,6 +1405,7 @@ impl RigidTransform3D {
             pivot_target_lps,
             rotation,
             correlation: best_score,
+            outline_based: false,
         }
     }
 
@@ -1459,6 +1516,390 @@ fn euler_deg_to_matrix(rx_deg: f64, ry_deg: f64, rz_deg: f64) -> [[f64; 3]; 3] {
         [cy * sz, cx * cz + sx * sy * sz, cx * sy * sz - cz * sx],
         [-sy, cy * sx, cx * cy],
     ]
+}
+
+/// Normalized cross-correlation between `samples` (source points relative to the
+/// source pivot, and their values) and `target` under `params`
+/// `[tx, ty, tz, rx°, ry°, rz°]` about `pivot_b`. Only samples that land inside the
+/// target count; values are clamped to -250…900 so air and metal do not dominate.
+fn ncc_at(samples: &[([f64; 3], f32)], target: &Volume3D, pivot_b: [f64; 3], params: &[f64; 6]) -> f64 {
+    let rot = euler_deg_to_matrix(params[3], params[4], params[5]);
+    let trans = [pivot_b[0] + params[0], pivot_b[1] + params[1], pivot_b[2] + params[2]];
+    let (mut sa, mut sa2, mut sb, mut sb2, mut sab) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+    let mut valid = 0usize;
+    for &(rel_a, val_a) in samples {
+        if let Some(v) = target.sample_lps(add3(trans, mat3_mul_vec(rot, rel_a))) {
+            let va = (val_a as f64).clamp(-250.0, 900.0);
+            let vb = (v as f64).clamp(-250.0, 900.0);
+            valid += 1;
+            sa += va;
+            sa2 += va * va;
+            sb += vb;
+            sb2 += vb * vb;
+            sab += va * vb;
+        }
+    }
+    if valid < (samples.len() / 5).max(32) {
+        return -1.0;
+    }
+    let n = valid as f64;
+    let (ma, mb) = (sa / n, sb / n);
+    let va = (sa2 - n * ma * ma).max(1e-6);
+    let vb = (sb2 - n * mb * mb).max(1e-6);
+    (sab - n * ma * mb) / (va * vb).sqrt()
+}
+
+/// Whether the body outline alone can be trusted for alignment: the height profiles
+/// of the two scans agree (mean correlation ≥ 0.75), and at least six matched slices
+/// give a roll whose middle half lies within 6°.
+fn outline_is_trustworthy(profile_score: f64, roll_slices: usize, roll_spread_deg: f64) -> bool {
+    profile_score >= 0.75 && roll_slices >= 6 && roll_spread_deg <= 6.0
+}
+
+/// Coordinate pattern search over the six parameters, coarse to fine, from `start`.
+fn refine_ncc(
+    samples: &[([f64; 3], f32)],
+    target: &Volume3D,
+    pivot_b: [f64; 3],
+    start: [f64; 6],
+    scales: &[(f64, f64, usize)],
+) -> ([f64; 6], f64) {
+    let mut best = start;
+    let mut best_score = ncc_at(samples, target, pivot_b, &best);
+    for &(t_step, r_step, passes) in scales {
+        let steps = [t_step, t_step, t_step, r_step, r_step, r_step];
+        for _ in 0..passes {
+            let mut improved = false;
+            for (dim, &step) in steps.iter().enumerate() {
+                let mut plus = best;
+                plus[dim] += step;
+                let s_plus = ncc_at(samples, target, pivot_b, &plus);
+                let mut minus = best;
+                minus[dim] -= step;
+                let s_minus = ncc_at(samples, target, pivot_b, &minus);
+                if s_plus > best_score && s_plus >= s_minus {
+                    best_score = s_plus;
+                    best = plus;
+                    improved = true;
+                } else if s_minus > best_score {
+                    best_score = s_minus;
+                    best = minus;
+                    improved = true;
+                }
+            }
+            if !improved {
+                break;
+            }
+        }
+    }
+    (best, best_score)
+}
+
+fn median(v: &mut [f64]) -> Option<f64> {
+    if v.is_empty() {
+        return None;
+    }
+    v.sort_by(|a, b| a.total_cmp(b));
+    Some(v[v.len() / 2])
+}
+
+/// What one axial slice says about the body: its height (patient z, mm), area,
+/// air and bone content, centre, and the tilt of its outline.
+#[derive(Clone, Copy, Debug)]
+struct BodySlice {
+    z: f64,
+    area: f64,
+    air: f64,
+    bone: f64,
+    cx: f64,
+    cy: f64,
+    /// Angle of the outline's long axis in the axial plane, radians.
+    angle: f64,
+    /// Long axis over short axis of the outline.
+    elongation: f64,
+}
+
+/// Body threshold: -350 HU for CT (fat and soft tissue above, air below); for
+/// other data, the volume's own foreground threshold.
+fn body_threshold(vol: &Volume3D) -> Option<f32> {
+    let ct_like = vol.value_unit == "HU" && vol.full_window.low() < -500.0;
+    ct_like.then_some(-350.0)
+}
+
+/// The body mask of slice `z` on a grid of every `step`-th voxel: the largest
+/// connected region above `thresh` (after one erosion, so a table touching the back
+/// by a thin pad is cut away), grown back, with enclosed holes (lungs, bowel gas)
+/// filled. Returns the grid width, height and mask.
+fn body_mask(vol: &Volume3D, z: usize, step: usize, thresh: f32) -> (usize, usize, Vec<bool>) {
+    let gw = vol.width.div_ceil(step);
+    let gh = vol.height.div_ceil(step);
+    let wh = vol.width * vol.height;
+    let above: Vec<bool> = (0..gw * gh)
+        .map(|i| {
+            let (gx, gy) = (i % gw, i / gw);
+            let (x, y) = ((gx * step).min(vol.width - 1), (gy * step).min(vol.height - 1));
+            vol.voxel_at(z * wh + y * vol.width + x) > thresh
+        })
+        .collect();
+    let at = |m: &Vec<bool>, x: isize, y: isize| -> bool {
+        x >= 0 && y >= 0 && (x as usize) < gw && (y as usize) < gh && m[y as usize * gw + x as usize]
+    };
+    // Erode once.
+    let eroded: Vec<bool> = (0..gw * gh)
+        .map(|i| {
+            let (x, y) = ((i % gw) as isize, (i / gw) as isize);
+            at(&above, x, y) && at(&above, x - 1, y) && at(&above, x + 1, y) && at(&above, x, y - 1) && at(&above, x, y + 1)
+        })
+        .collect();
+    // Largest 4-connected component of the eroded mask.
+    let mut label = vec![0u32; gw * gh];
+    let (mut best_label, mut best_size, mut next) = (0u32, 0usize, 1u32);
+    for start in 0..gw * gh {
+        if !eroded[start] || label[start] != 0 {
+            continue;
+        }
+        let mut stack = vec![start];
+        label[start] = next;
+        let mut size = 0usize;
+        while let Some(i) = stack.pop() {
+            size += 1;
+            let (x, y) = (i % gw, i / gw);
+            for (nx, ny) in [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)] {
+                if nx < gw && ny < gh {
+                    let j = ny * gw + nx;
+                    if eroded[j] && label[j] == 0 {
+                        label[j] = next;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        if size > best_size {
+            best_size = size;
+            best_label = next;
+        }
+        next += 1;
+    }
+    let mut body = vec![false; gw * gh];
+    if best_size == 0 {
+        return (gw, gh, body);
+    }
+    // Grow back by one, within the original mask.
+    for i in 0..gw * gh {
+        let (x, y) = ((i % gw) as isize, (i / gw) as isize);
+        let core = |xx: isize, yy: isize| {
+            xx >= 0 && yy >= 0 && (xx as usize) < gw && (yy as usize) < gh && label[yy as usize * gw + xx as usize] == best_label
+        };
+        body[i] = above[i] && (core(x, y) || core(x - 1, y) || core(x + 1, y) || core(x, y - 1) || core(x, y + 1));
+    }
+    // Fill holes: everything not reachable from the border without crossing the body.
+    let mut outside = vec![false; gw * gh];
+    let mut stack: Vec<usize> = (0..gw * gh)
+        .filter(|&i| {
+            let (x, y) = (i % gw, i / gw);
+            (x == 0 || y == 0 || x == gw - 1 || y == gh - 1) && !body[i]
+        })
+        .collect();
+    for &i in &stack {
+        outside[i] = true;
+    }
+    while let Some(i) = stack.pop() {
+        let (x, y) = (i % gw, i / gw);
+        for (nx, ny) in [(x.wrapping_sub(1), y), (x + 1, y), (x, y.wrapping_sub(1)), (x, y + 1)] {
+            if nx < gw && ny < gh {
+                let j = ny * gw + nx;
+                if !body[j] && !outside[j] {
+                    outside[j] = true;
+                    stack.push(j);
+                }
+            }
+        }
+    }
+    (gw, gh, outside.iter().map(|o| !o).collect())
+}
+
+/// One `BodySlice` per (sub-sampled) axial slice; `None` unless the volume is CT
+/// acquired roughly axially.
+fn body_profile(vol: &Volume3D) -> Option<Vec<BodySlice>> {
+    let thresh = body_threshold(vol)?;
+    if vol.slice_dir[2].abs() < 0.8 || vol.depth < 6 {
+        return None;
+    }
+    let step = (vol.width.max(vol.height) / 128).max(1);
+    let z_step = (vol.depth / 220).max(1);
+    let wh = vol.width * vol.height;
+    let cell = vol.spacing[0] * vol.spacing[1] * (step * step) as f64;
+    let mut out = Vec::new();
+    for z in (0..vol.depth).step_by(z_step) {
+        let (gw, gh, mask) = body_mask(vol, z, step, thresh);
+        let (mut n, mut air, mut bone) = (0usize, 0usize, 0usize);
+        let (mut sx, mut sy, mut sxx, mut syy, mut sxy) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for gy in 0..gh {
+            for gx in 0..gw {
+                if !mask[gy * gw + gx] {
+                    continue;
+                }
+                let (x, y) = ((gx * step).min(vol.width - 1), (gy * step).min(vol.height - 1));
+                let v = vol.voxel_at(z * wh + y * vol.width + x);
+                let p = vol.voxel_to_lps([x as f64, y as f64, z as f64]);
+                n += 1;
+                air += (v < -400.0) as usize;
+                bone += (v > 200.0) as usize;
+                sx += p[0];
+                sy += p[1];
+                sxx += p[0] * p[0];
+                syy += p[1] * p[1];
+                sxy += p[0] * p[1];
+            }
+        }
+        if n < 20 {
+            continue;
+        }
+        let nf = n as f64;
+        let (cx, cy) = (sx / nf, sy / nf);
+        let (vxx, vyy, vxy) = (sxx / nf - cx * cx, syy / nf - cy * cy, sxy / nf - cx * cy);
+        let angle = 0.5 * (2.0 * vxy).atan2(vxx - vyy);
+        let tr = vxx + vyy;
+        let disc = ((vxx - vyy).powi(2) + 4.0 * vxy * vxy).sqrt();
+        let (l1, l2) = (0.5 * (tr + disc), (0.5 * (tr - disc)).max(1e-6));
+        out.push(BodySlice {
+            z: vol.voxel_to_lps([vol.width as f64 * 0.5, vol.height as f64 * 0.5, z as f64])[2],
+            area: nf * cell,
+            air: air as f64 / nf,
+            bone: bone as f64 / nf,
+            cx,
+            cy,
+            angle,
+            elongation: (l1 / l2).sqrt(),
+        });
+    }
+    out.sort_by(|a, b| a.z.total_cmp(&b.z));
+    (out.len() >= 6).then_some(out)
+}
+
+/// The profile at height `z`, interpolated between the nearest two slices.
+fn profile_at(p: &[BodySlice], z: f64) -> Option<BodySlice> {
+    let (first, last) = (p.first()?, p.last()?);
+    if z < first.z || z > last.z {
+        return None;
+    }
+    let i = p.partition_point(|s| s.z < z).clamp(1, p.len() - 1);
+    let (a, b) = (p[i - 1], p[i]);
+    let t = if (b.z - a.z).abs() < 1e-9 { 0.0 } else { (z - a.z) / (b.z - a.z) };
+    let lerp = |u: f64, v: f64| u + t * (v - u);
+    Some(BodySlice {
+        z,
+        area: lerp(a.area, b.area),
+        air: lerp(a.air, b.air),
+        bone: lerp(a.bone, b.bone),
+        cx: lerp(a.cx, b.cx),
+        cy: lerp(a.cy, b.cy),
+        angle: if t < 0.5 { a.angle } else { b.angle },
+        elongation: lerp(a.elongation, b.elongation),
+    })
+}
+
+fn ncc_1d(a: &[f64], b: &[f64]) -> Option<f64> {
+    let n = a.len() as f64;
+    if a.len() < 8 {
+        return None;
+    }
+    let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+    let (mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0);
+    for (x, y) in a.iter().zip(b) {
+        sab += (x - ma) * (y - mb);
+        saa += (x - ma).powi(2);
+        sbb += (y - mb).powi(2);
+    }
+    // A flat feature says nothing about the height; leave it out.
+    (saa > 1e-9 * n && sbb > 1e-9 * n).then(|| sab / (saa * sbb).sqrt())
+}
+
+/// The height shift `s` (target z = source z + s) at which the two body profiles
+/// agree best, the agreement (mean correlation of area, air and bone profiles), and
+/// the overlapping source heights `[z_lo, z_hi]`.
+fn match_profiles(ps: &[BodySlice], pt: &[BodySlice]) -> Option<(f64, f64, f64, f64)> {
+    let (s_lo, s_hi) = (ps.first()?.z, ps.last()?.z);
+    let (t_lo, t_hi) = (pt.first()?.z, pt.last()?.z);
+    let min_overlap = (0.35 * (s_hi - s_lo).min(t_hi - t_lo)).max(50.0);
+    let score_at = |shift: f64| -> Option<(f64, f64, f64)> {
+        let lo = s_lo.max(t_lo - shift);
+        let hi = s_hi.min(t_hi - shift);
+        if hi - lo < min_overlap {
+            return None;
+        }
+        let mut cols: [(Vec<f64>, Vec<f64>); 3] = Default::default();
+        let mut z = lo;
+        while z <= hi {
+            if let (Some(a), Some(b)) = (profile_at(ps, z), profile_at(pt, z + shift)) {
+                cols[0].0.push(a.area);
+                cols[0].1.push(b.area);
+                cols[1].0.push(a.air);
+                cols[1].1.push(b.air);
+                cols[2].0.push(a.bone);
+                cols[2].1.push(b.bone);
+            }
+            z += 2.5;
+        }
+        let scores: Vec<f64> = cols.iter().filter_map(|(a, b)| ncc_1d(a, b)).collect();
+        if scores.is_empty() {
+            return None;
+        }
+        Some((scores.iter().sum::<f64>() / scores.len() as f64, lo, hi))
+    };
+    let mut best: Option<(f64, f64, f64, f64)> = None;
+    let consider = |shift: f64, best: &mut Option<(f64, f64, f64, f64)>| {
+        if let Some((sc, lo, hi)) = score_at(shift)
+            && best.is_none_or(|b| sc > b.1)
+        {
+            *best = Some((shift, sc, lo, hi));
+        }
+    };
+    let mut shift = (t_lo - s_hi).floor();
+    while shift <= (t_hi - s_lo).ceil() {
+        consider(shift, &mut best);
+        shift += 2.5;
+    }
+    let coarse = best?.0;
+    let mut fine = coarse - 2.5;
+    while fine <= coarse + 2.5 {
+        consider(fine, &mut best);
+        fine += 0.5;
+    }
+    best
+}
+
+/// Up to `max` voxels inside the body of `vol`, between heights `z_lo` and `z_hi`,
+/// as (patient position, value).
+fn body_samples(vol: &Volume3D, z_lo: f64, z_hi: f64, max: usize) -> Vec<([f64; 3], f32)> {
+    let Some(thresh) = body_threshold(vol) else {
+        return Vec::new();
+    };
+    let step = (vol.width.max(vol.height) / 128).max(1);
+    let wh = vol.width * vol.height;
+    let slices: Vec<usize> = (0..vol.depth)
+        .filter(|&z| {
+            let zz = vol.voxel_to_lps([vol.width as f64 * 0.5, vol.height as f64 * 0.5, z as f64])[2];
+            zz >= z_lo && zz <= z_hi
+        })
+        .collect();
+    if slices.is_empty() {
+        return Vec::new();
+    }
+    let take = slices.len().min(40);
+    let mut out = Vec::new();
+    for k in 0..take {
+        let z = slices[k * slices.len() / take];
+        let (gw, gh, mask) = body_mask(vol, z, step, thresh);
+        let inside: Vec<usize> = (0..gw * gh).filter(|&i| mask[i]).collect();
+        let per_slice = (max / take).max(1);
+        let stride = (inside.len() / per_slice).max(1);
+        for &i in inside.iter().step_by(stride) {
+            let (x, y) = (((i % gw) * step).min(vol.width - 1), ((i / gw) * step).min(vol.height - 1));
+            out.push((vol.voxel_to_lps([x as f64, y as f64, z as f64]), vol.voxel_at(z * wh + y * vol.width + x)));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1789,6 +2230,194 @@ mod tests {
         assert_ne!(got_resliced, expected_sag);
     }
 
+    /// Two CT "dates" of one synthetic patient, like a thorax-abdomen-pelvis scan
+    /// against an abdomen-only one: the later scan covers far more of the body, the
+    /// patient is rolled 17° and shifted, the frames of reference differ by 430 mm in
+    /// height, the CT table (which does not roll with the patient) sits lower, and the
+    /// later scan has noise, another contrast phase, moved bowel gas and arms down.
+    fn two_date_phantoms(interior_noise_hu: f32) -> (Arc<Volume3D>, Arc<Volume3D>, f64, [f64; 3]) {
+        let roll_deg = 17.0f64;
+        // A large height offset between the two scans' frames of reference is common.
+        let (tx, ty, tz) = (14.0f64, -22.0f64, 430.0f64);
+        let (rs, rc) = roll_deg.to_radians().sin_cos();
+        // Patient anatomy in body coordinates (u: right→left, v: front→back, w: feet→head), HU.
+        // `later`: a later date with another contrast phase, moved bowel gas and the arms
+        // down beside the body.
+        let anatomy = |u: f64, v: f64, w: f64, later: bool| -> f32 {
+            let arm = |cu: f64| ((u - cu) / 32.0).powi(2) + ((v + 5.0) / 40.0).powi(2) < 1.0;
+            if later && w < 330.0 && (arm(-205.0) || arm(205.0)) {
+                return if ((u.abs() - 205.0) / 10.0).powi(2) + ((v + 5.0) / 12.0).powi(2) < 1.0 { 700.0 } else { 40.0 };
+            }
+            let a = 150.0 + 25.0 * (w / 90.0).sin();
+            let b = 105.0 + 10.0 * (w / 70.0).cos();
+            let e = (u / a).powi(2) + (v / b).powi(2);
+            if e > 1.0 {
+                return -1000.0;
+            }
+            let blob = |cu: f64, cv: f64, ru: f64, rv: f64| ((u - cu) / ru).powi(2) + ((v - cv) / rv).powi(2) < 1.0;
+            if blob(0.0, 70.0, 18.0, 18.0) {
+                return 500.0; // spine
+            }
+            if w > 260.0 && (blob(-65.0, 10.0, 50.0, 70.0) || blob(65.0, 10.0, 50.0, 70.0)) {
+                return -850.0; // lungs
+            }
+            if w < 40.0 && (blob(-95.0, 30.0, 35.0, 22.0) || blob(95.0, 30.0, 35.0, 22.0)) {
+                return 650.0; // pelvic bone
+            }
+            if (150.0..270.0).contains(&w) && blob(-70.0, -10.0, 60.0, 55.0) {
+                return if later { 115.0 } else { 70.0 }; // liver, patient's right; another contrast phase
+            }
+            if (80.0..150.0).contains(&w) && (blob(-55.0, 45.0, 22.0, 30.0) || blob(55.0, 45.0, 22.0, 30.0)) {
+                return 160.0; // kidneys
+            }
+            let gas_u = if later { -10.0 + 0.3 * w } else { 30.0 + 0.2 * w };
+            if (60.0..200.0).contains(&w) && blob(gas_u, -40.0, 14.0, 10.0) {
+                return -900.0; // bowel gas, moved between dates
+            }
+            if e > 0.82 {
+                return -100.0; // subcutaneous fat
+            }
+            30.0
+        };
+        let dim = 96usize;
+        let sp = 4.0f64;
+        let half = dim as f64 * sp * 0.5;
+        let build = |later: bool, z_from: f64, z_to: f64| -> Arc<Volume3D> {
+            let mut frames = Vec::new();
+            let mut slices = Vec::new();
+            let n = ((z_to - z_from) / 5.0) as usize + 1;
+            for k in 0..n {
+                let z = z_from + k as f64 * 5.0;
+                let mut pix = vec![-1000.0f32; dim * dim];
+                for yi in 0..dim {
+                    for xi in 0..dim {
+                        let (x, y) = (xi as f64 * sp - half, yi as f64 * sp - half);
+                        // The table: flat, under the patient, not rolled.
+                        let table_y = if later { 150.0 } else { 135.0 };
+                        if (table_y..table_y + 8.0).contains(&y) && x.abs() < 170.0 {
+                            pix[yi * dim + xi] = 250.0;
+                            continue;
+                        }
+                        let (u, v, w) = if later {
+                            let (dx, dy) = (x - tx, y - ty);
+                            (rc * dx + rs * dy, -rs * dx + rc * dy, z - tz)
+                        } else {
+                            (x, y, z)
+                        };
+                        // Image noise (a fixed pseudo-random pattern, ±40 HU).
+                        let h = ((xi * 73856093) ^ (yi * 19349663) ^ (k * 83492791) ^ later as usize) % 1000;
+                        let noise = (h as f32 / 1000.0 - 0.5) * 80.0;
+                        let mut value = anatomy(u, v, w, later);
+                        // Structural change inside the body between dates: soft tissue
+                        // (not lungs, bone or fat) gets an unrelated smooth pattern.
+                        if later && interior_noise_hu > 0.0 && (0.0..200.0).contains(&value) {
+                            let pattern = ((u / 23.0 + w / 31.0).sin() * (v / 19.0 - w / 47.0).cos()) as f32;
+                            value = 40.0 + pattern * interior_noise_hu;
+                        }
+                        pix[yi * dim + xi] = value + noise;
+                    }
+                }
+                let orig = [-half, -half, z];
+                let orient = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+                frames.push(Arc::new(Frame {
+                    width: dim as u32,
+                    height: dim as u32,
+                    pixels: Pixels::Gray(pix),
+                    stored_window: None,
+                    full_window: Window { level: 0.0, width: 2000.0 },
+                    bits_window: None,
+                    inverts: false,
+                    voi_lut_applied: false,
+                    slope: 1.0,
+                    spacing: Some((sp, sp)),
+                    pixel_ratio: 1.0,
+                    origin: Some(orig),
+                    orientation: orient,
+                    is_3d_plane: true,
+                    frame_of_reference_uid: None,
+                    slice_thickness: Some(5.0),
+                    slice_location: None,
+                    value_unit: "HU",
+                }));
+                slices.push(crate::dicom_index::SliceRef {
+                    path: std::path::PathBuf::from(format!("b_{later}_{k}.dcm")),
+                    frame: 0,
+                    instance: k as i64 + 1,
+                    position: Some(orig),
+                    orientation: orient,
+                    is_3d_plane: true,
+                    spacing: Some((sp, sp)),
+                    slice_location: None,
+                    frame_of_reference_uid: None,
+                });
+            }
+            let series = Series {
+                uid: if later { "later" } else { "earlier" }.into(),
+                number: 1,
+                description: String::new(),
+                modality: "CT".into(),
+                rows: dim as u32,
+                columns: dim as u32,
+                normal: None,
+                dominant_plane: crate::dicom_index::DominantPlane::Axial,
+                frame_of_reference_uid: None,
+                acquisition_time_secs: None,
+                acquisition_number: None,
+                convolution_kernel: None,
+                window_center: None,
+                window_width: None,
+                mpr_group_id: None,
+                slices,
+            };
+            Volume3D::from_series(&series, &frames).unwrap()
+        };
+        // Abdomen only (w 0…240) against thorax-abdomen-pelvis (w -110…405).
+        let earlier = build(false, 0.0, 240.0);
+        let later = build(true, tz - 110.0, tz + 405.0);
+
+        (earlier, later, roll_deg, [tx, ty, tz])
+    }
+
+    fn check_two_dates(reg: &RigidTransform3D, roll_deg: f64, shift: [f64; 3], tol_mm: f64, tol_deg: f64) {
+        let (rs, rc) = roll_deg.to_radians().sin_cos();
+        let expect = |p: [f64; 3]| [rc * p[0] - rs * p[1] + shift[0], rs * p[0] + rc * p[1] + shift[1], p[2] + shift[2]];
+        for p in [[0.0, 0.0, 120.0], [-70.0, -10.0, 200.0], [55.0, 45.0, 100.0], [0.0, 70.0, 30.0]] {
+            let got = reg.transform_point(p);
+            let exp = expect(p);
+            let err = len3(sub3(got, exp));
+            assert!(err < tol_mm, "error {err:.1} mm at {p:?} (got {got:?}, expected {exp:?})");
+        }
+        let got_roll = reg.rotation[1][0].atan2(reg.rotation[0][0]).to_degrees();
+        assert!((got_roll - roll_deg).abs() < tol_deg, "roll {got_roll:.1}° instead of {roll_deg}°");
+    }
+
+    #[test]
+    fn body_registration_handles_roll_partial_overlap_and_table() {
+        let (earlier, later, roll, shift) = two_date_phantoms(0.0);
+        let reg = RigidTransform3D::register(&earlier, &later);
+        assert!(reg.is_reliable(), "not reliable, score {:.3}", reg.correlation);
+        check_two_dates(&reg, roll, shift, 5.0, 2.0);
+    }
+
+    /// Organs that look different between dates (an unrelated pattern replaces the
+    /// later scan's soft tissue): alignment still comes out right.
+    #[test]
+    fn body_registration_survives_interior_changes() {
+        let (earlier, later, roll, shift) = two_date_phantoms(250.0);
+        let reg = RigidTransform3D::register(&earlier, &later);
+        assert!(reg.is_reliable(), "not reliable, score {:.3}", reg.correlation);
+        // About one 5 mm slice of error is acceptable with scrambled organs.
+        check_two_dates(&reg, roll, shift, 8.0, 2.5);
+    }
+
+    #[test]
+    fn outline_is_trusted_only_when_profiles_and_roll_agree() {
+        assert!(outline_is_trustworthy(0.85, 20, 3.0));
+        assert!(!outline_is_trustworthy(0.60, 20, 3.0)); // heights do not match well
+        assert!(!outline_is_trustworthy(0.85, 4, 3.0)); // too few slices
+        assert!(!outline_is_trustworthy(0.85, 20, 12.0)); // roll estimates disagree
+    }
+
     #[test]
     fn registration_recovers_10_deg_rotation_and_15_mm_shift() {
         let dim = 24usize;
@@ -2057,6 +2686,7 @@ mod tests {
             pivot_target_lps: [-3.0, 12.0, 40.0],
             rotation: euler_deg_to_matrix(12.0, -7.0, 23.0),
             correlation: 0.88,
+            outline_based: false,
         };
         let inv = t.inverse();
         let pt = [25.0, 14.0, -8.0];

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.26] - 2026-11-18
+
+### Added: automatic rotation between two dates
+- **The other image now turns by itself.** When the automatic alignment between two studies is trusted and **Cut** is linked, the linked viewports are turned and moved to match the viewport the comparison started from (the one active when the link was switched on, or the Compare leader), not whichever image was touched last (`link_master` in `src/app/mod.rs`). Before, a good alignment only moved the slice position, and the roll had to be corrected by hand.
+- **Alignment by the body outline** (`register_by_body` in `src/volume.rs`), tried alongside the earlier whole-volume method; the better one is used. It finds the body on each axial slice (above −350 HU, the CT table removed), matches the two studies along their length by the body's cross-section, air and bone, measures the patient's roll from the outline's shape, and then refines on body voxels only. This handles scans that cover different lengths (chest-abdomen-pelvis against abdomen) and a rolled patient. When the fine match stays weak but the outline evidence agrees across slices, the outline result is used and the status says "Aligned by the body outline (approximate)" / "Alineado por el contorno del cuerpo (aprox.)". Tested on synthetic two-date phantoms with a 17° roll, part overlap, a table, and changed interior.
+- **Log lines for troubleshooting:** `sekhmetx.log` records each alignment ("Body registration: profile …, height shift …, outline roll …" and "Registration finished: score …, trusted …").
+
 ## [0.5.25] - 2026-11-18
 
 ### Fixed

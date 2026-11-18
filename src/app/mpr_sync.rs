@@ -645,6 +645,7 @@ impl ViewerApp {
                 pivot_target_lps: other_slice_pt,
                 rotation: rot,
                 correlation: 1.0,
+                outline_based: false,
             };
             let rot_inv = [
                 [rot[0][0], rot[1][0], rot[2][0]],
@@ -656,6 +657,7 @@ impl ViewerApp {
                 pivot_target_lps: leader_slice_pt,
                 rotation: rot_inv,
                 correlation: 1.0,
+                outline_based: false,
             };
             new_regs.push(((leader_sel, other_sel), reg_fwd));
             new_regs.push(((other_sel, leader_sel), reg_rev));
@@ -729,6 +731,7 @@ impl ViewerApp {
     /// (`wl`) and its plane, position and rotation (`cut`). To make the first viewport
     /// look like the second instead, start from the second.
     pub(crate) fn align_linked_to(&mut self, leader_idx: usize, zoom: bool, wl: bool, cut: bool) {
+        self.link_master = Some(leader_idx);
         let count = self.tiling.cell_count();
         let leader_win = if wl {
             self.viewports[leader_idx]
@@ -783,6 +786,7 @@ impl ViewerApp {
         if self.viewports[leader_idx].selected.is_none() {
             return;
         }
+        self.link_master = Some(leader_idx);
         if self.viewport_volume(leader_idx).is_some() && !self.viewports[leader_idx].mpr_enabled {
             self.viewports[leader_idx].mpr_enabled = true;
         }

@@ -449,6 +449,9 @@ pub(crate) struct ViewerApp {
     /// A viewport moved or turned alone while Cut was linked; its new relation to
     /// the others is locked once Ctrl/Cmd is released.
     pub(crate) pending_relock: Option<usize>,
+    /// The viewport a comparison started from (link switched on there, Compare, or
+    /// Lock). Automatic alignment turns the other viewports to match it.
+    pub(crate) link_master: Option<usize>,
     pub(crate) show_vr_tf_editor: bool,
     pub(crate) vr_tf_selected_stop: usize,
     pub(crate) vr_histogram_cache: Option<(u64, u32, u32, Vec<f32>)>,
@@ -698,6 +701,7 @@ impl ViewerApp {
             viewport_mm_per_px: vec![None; 16],
             solo_adjust: false,
             pending_relock: None,
+            link_master: None,
             show_vr_tf_editor: false,
             vr_tf_selected_stop: 0,
             vr_histogram_cache: None,
@@ -1361,6 +1365,7 @@ impl ViewerApp {
 
         // Drain completed background 3D registrations (one direction + exact inverse).
         let mut completed_reg = false;
+        let mut completed_pairs: Vec<SeriesPair> = Vec::new();
         while let Ok((pair, reg)) = self.reg_rx.try_recv() {
             let inv = reg.inverse();
             self.registrations_in_flight.remove(&pair);
@@ -1369,9 +1374,42 @@ impl ViewerApp {
             if self.locked_pairs.contains(&pair) || self.locked_pairs.contains(&(pair.1, pair.0)) {
                 continue;
             }
+            crate::crash_log::log_line(
+                "INFO",
+                &format!(
+                    "Registration finished: score {:.2}, outline-based {}, trusted {}",
+                    reg.correlation,
+                    reg.outline_based,
+                    reg.is_reliable()
+                ),
+            );
             self.registrations.insert(pair, reg);
             self.registrations.insert((pair.1, pair.0), inv);
+            completed_pairs.push(pair);
             completed_reg = true;
+        }
+        // A trusted alignment just arrived: with Cut linked, turn the other viewports
+        // to match the viewport the comparison started from (no manual rotation needed).
+        if !completed_pairs.is_empty() && self.link_cut && !self.ortho_mpr_active {
+            let count = self.tiling.cell_count();
+            let master = self.link_master.filter(|&m| m < count).unwrap_or(self.active_viewport.min(count.saturating_sub(1)));
+            if let Some(master_sel) = self.viewports.get(master).and_then(|v| v.selected) {
+                for other_idx in 0..count {
+                    let Some(other_sel) = self.viewports[other_idx].selected else {
+                        continue;
+                    };
+                    let pair = (master_sel, other_sel);
+                    let just_done = completed_pairs.iter().any(|&p| p == pair || p == (other_sel, master_sel));
+                    if other_idx != master
+                        && just_done
+                        && self.are_viewports_linked(master, other_idx)
+                        && !self.locked_pairs.contains(&pair)
+                        && self.registrations.get(&pair).is_some_and(|r| r.is_reliable())
+                    {
+                        self.align_plane_to(master, other_idx);
+                    }
+                }
+            }
         }
 
         // Automatically compute 3D Rigid Registration between the active viewport's volume

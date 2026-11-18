@@ -88,7 +88,10 @@ or Pixmeo. It does not use their names or icons in the application.
 - GPU volume rendering and 3D MIP with presets, shading, a transfer-function
   editor, clipping and an orientation cube.
 - Side-by-side comparison of studies from different dates with automatic 3D
-  alignment, or manual alignment when the patient lay differently: hold
+  alignment that matches the body outline (so a patient lying rolled, or a
+  scan covering a different stretch of the body, still lines up) and turns the
+  other images to match the viewport the comparison started from; or manual
+  alignment when the patient lay differently: hold
   `Ctrl`/`Cmd` to move or turn one image alone and it stays linked with that
   difference. Switching a link on makes the others match the viewport you are
   in; "= mm" zoom shows both at the same physical scale.
