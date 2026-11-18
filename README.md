@@ -89,7 +89,8 @@ or Pixmeo. It does not use their names or icons in the application.
   editor, clipping and an orientation cube.
 - Side-by-side comparison of studies from different dates with automatic 3D
   alignment that matches the body outline (so a patient lying rolled, or a
-  scan covering a different stretch of the body, still lines up) and turns the
+  scan covering a different stretch of the body, still lines up), refined
+  level by level for breathing and posture differences, and turns the
   other images to match the viewport the comparison started from; or manual
   alignment when the patient lay differently: hold
   `Ctrl`/`Cmd` to move or turn one image alone and it stays linked with that

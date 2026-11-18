@@ -220,9 +220,10 @@ impl ViewerApp {
                         m[2][0] * v[0] + m[2][1] * v[1] + m[2][2] * v[2],
                     ]
                 };
-                op.u_axis = rot_v(reg.rotation, lp.u_axis);
-                op.v_axis = rot_v(reg.rotation, lp.v_axis);
-                op.normal = rot_v(reg.rotation, lp.normal);
+                let rotation = reg.rotation_at(leader_lps);
+                op.u_axis = rot_v(rotation, lp.u_axis);
+                op.v_axis = rot_v(rotation, lp.v_axis);
+                op.normal = rot_v(rotation, lp.normal);
                 op.offset_mm = dot3(sub3(target_lps, op.center_lps), op.normal);
             } else {
                 op.rotate_axes(delta);
@@ -549,6 +550,16 @@ impl ViewerApp {
                 if other_mpr && let Some(mut other_plane) = self.effective_mpr_plane(other_idx) {
                     // Never force-change the follower's plane orientation (Ax/Cor/Sag);
                     // only project the cut position onto the follower's own normal.
+                    // With per-level alignment, turn it by the change in the local
+                    // fit between the old and new height (a few degrees at most).
+                    if !reg.local.is_empty() && delta_mm.abs() > 1e-6 {
+                        let before = sub3(leader_lps, scale3(leader_plane.normal, delta_mm));
+                        let turn = crate::volume::rotation_between(
+                            reg.rotation_at(before),
+                            reg.rotation_at(leader_lps),
+                        );
+                        other_plane.rotate_axes(turn);
+                    }
                     other_plane.offset_mm =
                         dot3(sub3(target_lps, other_plane.center_lps), other_plane.normal);
                     updates.push((other_idx, other_plane));
@@ -646,6 +657,7 @@ impl ViewerApp {
                 rotation: rot,
                 correlation: 1.0,
                 outline_based: false,
+                local: Vec::new(),
             };
             let rot_inv = [
                 [rot[0][0], rot[1][0], rot[2][0]],
@@ -658,6 +670,7 @@ impl ViewerApp {
                 rotation: rot_inv,
                 correlation: 1.0,
                 outline_based: false,
+                local: Vec::new(),
             };
             new_regs.push(((leader_sel, other_sel), reg_fwd));
             new_regs.push(((other_sel, leader_sel), reg_rev));
@@ -705,9 +718,10 @@ impl ViewerApp {
             .cloned()
         {
             let target_lps = reg.transform_point(leader_lps);
-            op.u_axis = crate::volume::mat3_mul_vec(reg.rotation, lp.u_axis);
-            op.v_axis = crate::volume::mat3_mul_vec(reg.rotation, lp.v_axis);
-            op.normal = crate::volume::mat3_mul_vec(reg.rotation, lp.normal);
+            let rotation = reg.rotation_at(leader_lps);
+            op.u_axis = crate::volume::mat3_mul_vec(rotation, lp.u_axis);
+            op.v_axis = crate::volume::mat3_mul_vec(rotation, lp.v_axis);
+            op.normal = crate::volume::mat3_mul_vec(rotation, lp.normal);
             op.offset_mm = dot3(sub3(target_lps, op.center_lps), op.normal);
         } else {
             op.u_axis = lp.u_axis;

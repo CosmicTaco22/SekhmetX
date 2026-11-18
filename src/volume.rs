@@ -1163,6 +1163,33 @@ pub struct RigidTransform3D {
     /// Aligned by the body outline and height profiles because the voxel match was
     /// weak (interior changes between dates); trusted, shown as approximate.
     pub outline_based: bool,
+    /// Alignments fitted to short stretches of the body, ordered by source height
+    /// (`pivot_source_lps[2]`). Between two dates the patient breathes, bends and
+    /// lies differently, so one rigid fit is a compromise; points are mapped by the
+    /// local fits nearest their height, blended. Empty: the global fit alone.
+    pub local: Vec<LocalRigid>,
+}
+
+/// One local alignment: maps points near `pivot_source_lps` (by height).
+#[derive(Clone, Debug)]
+pub struct LocalRigid {
+    pub pivot_source_lps: [f64; 3],
+    pub pivot_target_lps: [f64; 3],
+    pub rotation: [[f64; 3]; 3],
+}
+
+impl LocalRigid {
+    fn map(&self, p: [f64; 3]) -> [f64; 3] {
+        add3(self.pivot_target_lps, mat3_mul_vec(self.rotation, sub3(p, self.pivot_source_lps)))
+    }
+
+    fn inverse(&self) -> Self {
+        Self {
+            pivot_source_lps: self.pivot_target_lps,
+            pivot_target_lps: self.pivot_source_lps,
+            rotation: transpose3(self.rotation),
+        }
+    }
 }
 
 impl RigidTransform3D {
@@ -1174,6 +1201,7 @@ impl RigidTransform3D {
             rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             correlation,
             outline_based: false,
+            local: Vec::new(),
         }
     }
 
@@ -1190,6 +1218,11 @@ impl RigidTransform3D {
             ],
             correlation: self.correlation,
             outline_based: self.outline_based,
+            local: {
+                let mut l: Vec<LocalRigid> = self.local.iter().map(LocalRigid::inverse).collect();
+                l.sort_by(|a, b| a.pivot_source_lps[2].total_cmp(&b.pivot_source_lps[2]));
+                l
+            },
         }
     }
 
@@ -1206,6 +1239,7 @@ impl RigidTransform3D {
             rotation: [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
             correlation: 0.0,
             outline_based: false,
+            local: Vec::new(),
         }
     }
 
@@ -1225,12 +1259,16 @@ impl RigidTransform3D {
             return whole;
         };
         // A trusted result beats an untrusted one; between equals, the better match.
-        match (body.is_reliable(), whole.is_reliable()) {
+        let mut best = match (body.is_reliable(), whole.is_reliable()) {
             (true, false) => body,
             (false, true) => whole,
             _ if body.correlation >= whole.correlation => body,
             _ => whole,
+        };
+        if best.is_reliable() {
+            best.fit_local(source, target);
         }
+        best
     }
 
     /// Registration built for two CT scans of one patient on different dates, where
@@ -1303,13 +1341,14 @@ impl RigidTransform3D {
         let samples: Vec<([f64; 3], f32)> =
             samples.into_iter().map(|(p, v)| (sub3(p, pivot_a), v)).collect();
         let scales: &[(f64, f64, usize)] = &[
-            (6.0, 4.0, 2),
-            (3.0, 2.0, 2),
+            (6.0, 4.0, 6),
+            (3.0, 2.0, 4),
             (1.5, 1.0, 2),
-            (0.6, 0.4, 1),
+            (0.6, 0.4, 2),
+            (0.3, 0.2, 1),
         ];
         let start = [0.0, 0.0, 0.0, 0.0, 0.0, roll];
-        let (params, score) = refine_ncc(&samples, target, pivot_b, start, scales);
+        let (params, score) = refine_ncc(&samples, target, pivot_b, &IDENTITY3, start, scales, &|_| 0.0);
         // When the voxel match is weak (bowel, contrast phase and breathing differ
         // between dates) but the height profiles agree and the outline gives one
         // consistent roll, trust the outline. Keep the refinement only if it stayed
@@ -1333,8 +1372,9 @@ impl RigidTransform3D {
             pivot_source_lps: pivot_a,
             pivot_target_lps: add3(pivot_b, [params[0], params[1], params[2]]),
             rotation: euler_deg_to_matrix(params[3], params[4], params[5]),
-            correlation: if outline_based { ncc_at(&samples, target, pivot_b, &params) } else { score },
+            correlation: if outline_based { ncc_at(&samples, target, pivot_b, &IDENTITY3, &params) } else { score },
             outline_based,
+            local: Vec::new(),
         })
     }
 
@@ -1370,14 +1410,14 @@ impl RigidTransform3D {
         // Coarse (tz, rz) sweep so partial-overlap + rolled scans find the matching Z range and
         // axial roll angle before 6-DOF refinement.
         let mut best_params = [0.0f64; 6];
-        let mut best_score = ncc_at(&samples, target, pivot_b_init, &best_params);
+        let mut best_score = ncc_at(&samples, target, pivot_b_init, &IDENTITY3, &best_params);
         let max_tz = ((source.projected_half_span_mm([0.0, 0.0, 1.0])
             + target.projected_half_span_mm([0.0, 0.0, 1.0]))
         .min(350.0)) as i32;
         for rz in [-24.0_f64, -12.0, 0.0, 12.0, 24.0] {
             for tz_i in (-max_tz..=max_tz).step_by(35) {
                 let cand = [0.0, 0.0, tz_i as f64, 0.0, 0.0, rz];
-                let sc = ncc_at(&samples, target, pivot_b_init, &cand);
+                let sc = ncc_at(&samples, target, pivot_b_init, &IDENTITY3, &cand);
                 if sc > best_score {
                     best_score = sc;
                     best_params = cand;
@@ -1391,7 +1431,7 @@ impl RigidTransform3D {
             (1.5, 1.2, 2),   // Fine: 1.5 mm translation step, 1.2° rotation step
             (0.5, 0.4, 1),   // Sub-millimeter / sub-degree polish
         ];
-        let (best_params, best_score) = refine_ncc(&samples, target, pivot_b_init, best_params, scales);
+        let (best_params, best_score) = refine_ncc(&samples, target, pivot_b_init, &IDENTITY3, best_params, scales, &|_| 0.0);
 
         let rotation = euler_deg_to_matrix(best_params[3], best_params[4], best_params[5]);
         let pivot_target_lps = [
@@ -1406,13 +1446,150 @@ impl RigidTransform3D {
             rotation,
             correlation: best_score,
             outline_based: false,
+            local: Vec::new(),
         }
     }
 
     /// Maps a 3D point in `source` LPS coordinates to the registered 3D point in `target` LPS coordinates.
+    /// Uses the local fits at the point's height when there are any.
     pub fn transform_point(&self, pt_source_lps: [f64; 3]) -> [f64; 3] {
+        if let Some((a, b, w)) = self.local_pair(pt_source_lps[2]) {
+            let (pa, pb) = (a.map(pt_source_lps), b.map(pt_source_lps));
+            return add3(pa, scale3(sub3(pb, pa), w));
+        }
         let rel = sub3(pt_source_lps, self.pivot_source_lps);
         add3(self.pivot_target_lps, mat3_mul_vec(self.rotation, rel))
+    }
+
+    /// The rotation to use for a plane shown at `pt_source_lps`: the local fits'
+    /// rotation at that height, blended, or the global one.
+    pub fn rotation_at(&self, pt_source_lps: [f64; 3]) -> [[f64; 3]; 3] {
+        let Some((a, b, w)) = self.local_pair(pt_source_lps[2]) else {
+            return self.rotation;
+        };
+        let mut m = [[0.0f64; 3]; 3];
+        for (r, row) in m.iter_mut().enumerate() {
+            for (c, cell) in row.iter_mut().enumerate() {
+                *cell = a.rotation[r][c] + w * (b.rotation[r][c] - a.rotation[r][c]);
+            }
+        }
+        orthonormalize3(m)
+    }
+
+    /// The two local fits around height `z` and the blend weight towards the second
+    /// (heights beyond the fitted range use the end fit).
+    fn local_pair(&self, z: f64) -> Option<(&LocalRigid, &LocalRigid, f64)> {
+        let l = &self.local;
+        let (first, last) = (l.first()?, l.last()?);
+        if z <= first.pivot_source_lps[2] {
+            return Some((first, first, 0.0));
+        }
+        if z >= last.pivot_source_lps[2] {
+            return Some((last, last, 0.0));
+        }
+        let i = l.partition_point(|e| e.pivot_source_lps[2] < z).clamp(1, l.len() - 1);
+        let (a, b) = (&l[i - 1], &l[i]);
+        let span = b.pivot_source_lps[2] - a.pivot_source_lps[2];
+        let w = if span.abs() < 1e-9 { 0.0 } else { (z - a.pivot_source_lps[2]) / span };
+        Some((a, b, w.clamp(0.0, 1.0)))
+    }
+
+    /// Fits the alignment again over short overlapping stretches of the body (80 mm
+    /// every 30 mm), starting from the global fit, and keeps each local fit that
+    /// matches its stretch better without straying far (15 mm sideways, 30 mm in
+    /// height for breathing, 6°). Rejected
+    /// stretches keep the global fit, and the fits are smoothed with their
+    /// neighbours so the follower does not jump while scrolling. Axial CT only.
+    fn fit_local(&mut self, source: &Volume3D, target: &Volume3D) {
+        if body_threshold(source).is_none() || source.slice_dir[2].abs() < 0.8 || source.depth < 6 {
+            return;
+        }
+        let zs: Vec<f64> = (0..source.depth)
+            .map(|z| source.voxel_to_lps([source.width as f64 * 0.5, source.height as f64 * 0.5, z as f64])[2])
+            .collect();
+        let (z_min, z_max) = zs.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &z| (a.min(z), b.max(z)));
+        const HALF: f64 = 40.0;
+        const STEP: f64 = 30.0;
+        if z_max - z_min < 2.0 * HALF {
+            return;
+        }
+        let scales: &[(f64, f64, usize)] = &[(3.0, 2.0, 6), (1.5, 1.0, 4), (0.75, 0.5, 3), (0.3, 0.25, 2)];
+        let mut fits: Vec<(f64, [f64; 6])> = Vec::new();
+        let mut accepted = 0usize;
+        let mut zc = z_min + HALF;
+        while zc <= z_max - HALF + 1e-6 {
+            let samples = body_samples(source, zc - HALF, zc + HALF, 12_000);
+            let mut params = [0.0; 6];
+            if samples.len() >= 200 {
+                let c = [
+                    samples.iter().map(|s| s.0[0]).sum::<f64>() / samples.len() as f64,
+                    samples.iter().map(|s| s.0[1]).sum::<f64>() / samples.len() as f64,
+                    zc,
+                ];
+                let rel: Vec<([f64; 3], f32)> = samples.into_iter().map(|(p, v)| (sub3(p, c), v)).collect();
+                let pivot_b = self.global_map(c);
+                let base_score = ncc_at(&rel, target, pivot_b, &self.rotation, &[0.0; 6]);
+                if base_score > 0.0 {
+                    // Moving away from the whole-scan fit has to pay for itself:
+                    // 10 mm sideways costs 0.03 of correlation, 10 mm in height
+                    // 0.01 (breathing moves organs 2-3 cm up and down), 5° 0.01.
+                    let cost = |p: &[f64; 6]| {
+                        0.0003 * (p[0] * p[0] + p[1] * p[1])
+                            + 0.0001 * p[2] * p[2]
+                            + 0.0004 * (p[3] * p[3] + p[4] * p[4] + p[5] * p[5])
+                    };
+                    let (p, sc) = refine_ncc(&rel, target, pivot_b, &self.rotation, [0.0; 6], scales, &cost);
+                    let near = p[..2].iter().all(|t| t.abs() <= 15.0)
+                        && p[2].abs() <= 30.0
+                        && p[3..].iter().all(|r| r.abs() <= 6.0);
+                    if near && sc >= 0.4 && sc > base_score + 0.02 {
+                        params = p;
+                        accepted += 1;
+                    }
+                }
+            }
+            fits.push((zc, params));
+            zc += STEP;
+        }
+        crate::crash_log::log_line(
+            "INFO",
+            &format!("Local alignment: {accepted} of {} stretches refined", fits.len()),
+        );
+        if accepted == 0 {
+            return;
+        }
+        // Median of each parameter with its neighbours: one odd stretch cannot pull.
+        let smoothed: Vec<[f64; 6]> = (0..fits.len())
+            .map(|i| {
+                let lo = i.saturating_sub(1);
+                let hi = (i + 1).min(fits.len() - 1);
+                let mut out = [0.0; 6];
+                for (d, o) in out.iter_mut().enumerate() {
+                    let mut v: Vec<f64> = (lo..=hi).map(|j| fits[j].1[d]).collect();
+                    *o = if v.len() == 2 { 0.5 * (v[0] + v[1]) } else { median(&mut v).unwrap_or(0.0) };
+                }
+                out
+            })
+            .collect();
+        // Each local fit pivots about the global centre line at its height.
+        let (cx, cy) = (self.pivot_source_lps[0], self.pivot_source_lps[1]);
+        self.local = fits
+            .iter()
+            .zip(&smoothed)
+            .map(|(&(zc, _), p)| {
+                let c = [cx, cy, zc];
+                let rotation = mat3_mul(euler_deg_to_matrix(p[3], p[4], p[5]), self.rotation);
+                LocalRigid {
+                    pivot_source_lps: c,
+                    pivot_target_lps: add3(self.global_map(c), [p[0], p[1], p[2]]),
+                    rotation,
+                }
+            })
+            .collect();
+    }
+
+    fn global_map(&self, p: [f64; 3]) -> [f64; 3] {
+        add3(self.pivot_target_lps, mat3_mul_vec(self.rotation, sub3(p, self.pivot_source_lps)))
     }
 
     /// Maps a 3D slicing plane `source_plane` from `source` (Study A) into the corresponding
@@ -1506,6 +1683,42 @@ pub fn mat3_mul_vec(m: [[f64; 3]; 3], v: [f64; 3]) -> [f64; 3] {
     ]
 }
 
+const IDENTITY3: [[f64; 3]; 3] = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+
+#[inline]
+fn mat3_mul(a: [[f64; 3]; 3], b: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let mut m = [[0.0f64; 3]; 3];
+    for (r, row) in m.iter_mut().enumerate() {
+        for (c, cell) in row.iter_mut().enumerate() {
+            *cell = (0..3).map(|k| a[r][k] * b[k][c]).sum();
+        }
+    }
+    m
+}
+
+/// The rotation that turns `from` into `to`: `to · fromᵀ`.
+pub fn rotation_between(from: [[f64; 3]; 3], to: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    mat3_mul(to, transpose3(from))
+}
+
+#[inline]
+fn transpose3(r: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    [
+        [r[0][0], r[1][0], r[2][0]],
+        [r[0][1], r[1][1], r[2][1]],
+        [r[0][2], r[1][2], r[2][2]],
+    ]
+}
+
+/// Nearest rotation to a nearly orthogonal matrix (Gram-Schmidt on its columns).
+fn orthonormalize3(m: [[f64; 3]; 3]) -> [[f64; 3]; 3] {
+    let col = |c: usize| [m[0][c], m[1][c], m[2][c]];
+    let x = normalize3(col(0));
+    let y = normalize3(sub3(col(1), scale3(x, dot3(col(1), x))));
+    let z = cross3(x, y);
+    [[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]]
+}
+
 #[inline]
 fn euler_deg_to_matrix(rx_deg: f64, ry_deg: f64, rz_deg: f64) -> [[f64; 3]; 3] {
     let (sx, cx) = rx_deg.to_radians().sin_cos();
@@ -1522,8 +1735,14 @@ fn euler_deg_to_matrix(rx_deg: f64, ry_deg: f64, rz_deg: f64) -> [[f64; 3]; 3] {
 /// source pivot, and their values) and `target` under `params`
 /// `[tx, ty, tz, rx°, ry°, rz°]` about `pivot_b`. Only samples that land inside the
 /// target count; values are clamped to -250…900 so air and metal do not dominate.
-fn ncc_at(samples: &[([f64; 3], f32)], target: &Volume3D, pivot_b: [f64; 3], params: &[f64; 6]) -> f64 {
-    let rot = euler_deg_to_matrix(params[3], params[4], params[5]);
+fn ncc_at(
+    samples: &[([f64; 3], f32)],
+    target: &Volume3D,
+    pivot_b: [f64; 3],
+    base: &[[f64; 3]; 3],
+    params: &[f64; 6],
+) -> f64 {
+    let rot = mat3_mul(euler_deg_to_matrix(params[3], params[4], params[5]), *base);
     let trans = [pivot_b[0] + params[0], pivot_b[1] + params[1], pivot_b[2] + params[2]];
     let (mut sa, mut sa2, mut sb, mut sb2, mut sab) = (0.0f64, 0.0f64, 0.0f64, 0.0f64, 0.0f64);
     let mut valid = 0usize;
@@ -1561,11 +1780,14 @@ fn refine_ncc(
     samples: &[([f64; 3], f32)],
     target: &Volume3D,
     pivot_b: [f64; 3],
+    base: &[[f64; 3]; 3],
     start: [f64; 6],
     scales: &[(f64, f64, usize)],
+    penalty: &dyn Fn(&[f64; 6]) -> f64,
 ) -> ([f64; 6], f64) {
+    let score = |p: &[f64; 6]| ncc_at(samples, target, pivot_b, base, p) - penalty(p);
     let mut best = start;
-    let mut best_score = ncc_at(samples, target, pivot_b, &best);
+    let mut best_score = score(&best);
     for &(t_step, r_step, passes) in scales {
         let steps = [t_step, t_step, t_step, r_step, r_step, r_step];
         for _ in 0..passes {
@@ -1573,10 +1795,10 @@ fn refine_ncc(
             for (dim, &step) in steps.iter().enumerate() {
                 let mut plus = best;
                 plus[dim] += step;
-                let s_plus = ncc_at(samples, target, pivot_b, &plus);
+                let s_plus = score(&plus);
                 let mut minus = best;
                 minus[dim] -= step;
-                let s_minus = ncc_at(samples, target, pivot_b, &minus);
+                let s_minus = score(&minus);
                 if s_plus > best_score && s_plus >= s_minus {
                     best_score = s_plus;
                     best = plus;
@@ -2235,11 +2457,18 @@ mod tests {
     /// patient is rolled 17° and shifted, the frames of reference differ by 430 mm in
     /// height, the CT table (which does not roll with the patient) sits lower, and the
     /// later scan has noise, another contrast phase, moved bowel gas and arms down.
-    fn two_date_phantoms(interior_noise_hu: f32) -> (Arc<Volume3D>, Arc<Volume3D>, f64, [f64; 3]) {
+    /// `twist_deg` and `bend_mm`: the later scan's roll and front-back position change
+    /// along the body (by that much over the earlier scan's 240 mm), as when the
+    /// patient lies twisted or bent differently; the stated roll and shift hold at
+    /// the middle (w = 120 mm).
+    fn two_date_phantoms(
+        interior_noise_hu: f32,
+        twist_deg: f64,
+        bend_mm: f64,
+    ) -> (Arc<Volume3D>, Arc<Volume3D>, f64, [f64; 3]) {
         let roll_deg = 17.0f64;
         // A large height offset between the two scans' frames of reference is common.
         let (tx, ty, tz) = (14.0f64, -22.0f64, 430.0f64);
-        let (rs, rc) = roll_deg.to_radians().sin_cos();
         // Patient anatomy in body coordinates (u: right→left, v: front→back, w: feet→head), HU.
         // `later`: a later date with another contrast phase, moved bowel gas and the arms
         // down beside the body.
@@ -2299,8 +2528,11 @@ mod tests {
                             continue;
                         }
                         let (u, v, w) = if later {
-                            let (dx, dy) = (x - tx, y - ty);
-                            (rc * dx + rs * dy, -rs * dx + rc * dy, z - tz)
+                            let w = z - tz;
+                            let k = (w - 120.0) / 240.0;
+                            let (rs, rc) = (roll_deg + twist_deg * k).to_radians().sin_cos();
+                            let (dx, dy) = (x - tx, y - ty - bend_mm * k);
+                            (rc * dx + rs * dy, -rs * dx + rc * dy, w)
                         } else {
                             (x, y, z)
                         };
@@ -2393,7 +2625,7 @@ mod tests {
 
     #[test]
     fn body_registration_handles_roll_partial_overlap_and_table() {
-        let (earlier, later, roll, shift) = two_date_phantoms(0.0);
+        let (earlier, later, roll, shift) = two_date_phantoms(0.0, 0.0, 0.0);
         let reg = RigidTransform3D::register(&earlier, &later);
         assert!(reg.is_reliable(), "not reliable, score {:.3}", reg.correlation);
         check_two_dates(&reg, roll, shift, 5.0, 2.0);
@@ -2403,11 +2635,50 @@ mod tests {
     /// later scan's soft tissue): alignment still comes out right.
     #[test]
     fn body_registration_survives_interior_changes() {
-        let (earlier, later, roll, shift) = two_date_phantoms(250.0);
+        let (earlier, later, roll, shift) = two_date_phantoms(250.0, 0.0, 0.0);
         let reg = RigidTransform3D::register(&earlier, &later);
         assert!(reg.is_reliable(), "not reliable, score {:.3}", reg.correlation);
         // About one 5 mm slice of error is acceptable with scrambled organs.
         check_two_dates(&reg, roll, shift, 8.0, 2.5);
+    }
+
+    /// The patient lies twisted (roll changes 10° along the scan) and bent (front-back
+    /// position changes 14 mm, both extreme): the per-level fits follow both, so the
+    /// levels line up clearly better than with the single whole-scan fit (on this
+    /// phantom, about 4 mm against 7 mm on average).
+    #[test]
+    fn local_alignment_follows_twist_and_bend_along_the_body() {
+        let (twist, bend) = (10.0, 14.0);
+        let (earlier, later, roll, [tx, ty, tz]) = two_date_phantoms(0.0, twist, bend);
+        let reg = RigidTransform3D::register(&earlier, &later);
+        assert!(reg.is_reliable(), "not reliable, score {:.3}", reg.correlation);
+        assert!(!reg.local.is_empty(), "no local fits");
+        let global = RigidTransform3D { local: Vec::new(), ..reg.clone() };
+        let expect = |p: [f64; 3]| {
+            let k = (p[2] - 120.0) / 240.0;
+            let (rs, rc) = (roll + twist * k).to_radians().sin_cos();
+            [rc * p[0] - rs * p[1] + tx, rs * p[0] + rc * p[1] + ty + bend * k, p[2] + tz]
+        };
+        let roll_of = |m: [[f64; 3]; 3]| m[1][0].atan2(m[0][0]).to_degrees();
+        let (mut local_err, mut global_err) = (0.0f64, 0.0f64);
+        for w in [50.0, 90.0, 150.0, 190.0] {
+            let k = (w - 120.0) / 240.0;
+            for (u, v) in [(0.0, 70.0), (-90.0, 0.0), (90.0, 0.0), (0.0, -80.0)] {
+                let p = [u, v, w];
+                let e_local = len3(sub3(reg.transform_point(p), expect(p)));
+                assert!(e_local < 10.0, "local error {e_local:.1} mm at {p:?}");
+                local_err += e_local;
+                global_err += len3(sub3(global.transform_point(p), expect(p)));
+            }
+            let r = roll_of(reg.rotation_at([0.0, 0.0, w]));
+            assert!((r - (roll + twist * k)).abs() < 2.5, "roll {r:.1}° at {w} mm, expected {:.1}°", roll + twist * k);
+        }
+        assert!(local_err < 0.75 * global_err, "local {local_err:.1} vs global {global_err:.1}");
+        // The reverse direction maps back.
+        let inv = reg.inverse();
+        let p = [30.0, 20.0, 140.0];
+        let back = inv.transform_point(reg.transform_point(p));
+        assert!(len3(sub3(back, p)) < 1.5, "round trip off by {:.2} mm", len3(sub3(back, p)));
     }
 
     #[test]
@@ -2687,6 +2958,7 @@ mod tests {
             rotation: euler_deg_to_matrix(12.0, -7.0, 23.0),
             correlation: 0.88,
             outline_based: false,
+            local: Vec::new(),
         };
         let inv = t.inverse();
         let pt = [25.0, 14.0, -8.0];

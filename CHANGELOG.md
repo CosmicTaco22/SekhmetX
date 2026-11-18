@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.27] - 2026-11-18
+
+### Improved: alignment level by level along the body
+Between two dates the patient breathes differently, lies a little twisted or with the pelvis tilted, so one alignment for the whole scan is a compromise: on a real chest-abdomen-pelvis against abdomen comparison the chest came out lower than the other date and the pelvis turned differently from the abdomen.
+- **Alignment per level** (`fit_local` in `src/volume.rs`): after the whole-scan fit, the alignment is fitted again over overlapping 8 cm stretches every 3 cm, starting from the whole-scan fit. Each stretch may move up to 30 mm in height (breathing), 15 mm sideways and 6° in any direction, and only when that clearly improves the match there (each millimetre and degree has to pay for itself, so changed organs cannot pull it off). Neighbouring stretches are smoothed, and positions between them are blended, so the linked image follows smoothly while scrolling: slice position and turn change gradually from level to level.
+- Finer and longer final search for the whole-scan fit (more steps, 0.3 mm / 0.2° last step).
+- `sekhmetx.log` records "Local alignment: N of M stretches refined".
+- Tested on a synthetic patient lying twisted (roll changing 10° along the scan) and bent (14 mm): average error 4 mm per level against 7 mm with one fit; the earlier tests (roll, part overlap, table, changed organs) still pass.
+
 ## [0.5.26] - 2026-11-18
 
 ### Added: automatic rotation between two dates
