@@ -88,7 +88,8 @@ or Pixmeo. It does not use their names or icons in the application.
 - GPU volume rendering and 3D MIP with presets, shading, a transfer-function
   editor, clipping and an orientation cube.
 - Side-by-side comparison of studies from different dates with automatic 3D
-  alignment.
+  alignment, or manual alignment (turn one image alone, then lock) when the
+  patient lay differently.
 
 **Measurements and key images**
 - Length, angle, Cobb angle, arrow with text, oval, rectangle, polygon, pencil
@@ -156,6 +157,7 @@ the window; they are added to the library and open instantly afterwards.
 | Axial / coronal / sagittal | `A` / `C` / `S` (uses the scanner's own series when available) |
 | Window / level, zoom | `W`, `Z`; right drag zooms, middle drag pans |
 | 3D rotate (oblique MPR) | `O`, then drag; `Shift` + drag to roll |
+| Rotate one image alone while linked (e.g. patient rolled on one date) | `Ctrl` + drag (`Cmd` on Mac) with Rotate or 3D rotate, then **Lock 3D Sync** |
 | Window presets | `1`–`9`, `0` for the default |
 | Invert | `I` |
 | Measurements | `L`/`M` length · `E` oval · `B` rectangle · `G` polygon (`Enter` closes) · `F` pencil · `T` point · `Y` arrow; angle and Cobb angle from the ROI menu or right-click palette |

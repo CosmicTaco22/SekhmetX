@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.24] - 2026-11-18
+
+### Fixed: rotation could not be matched between two studies of a patient lying rotated
+When the automatic 3D alignment between two dates fails (score below 0.45; for example a thorax-abdomen-pelvis scan compared with an abdomen-only scan, with the patient rolled), rotation sync could not be made to work:
+- Rotating either image with **3D Rotate** or **Rotate** copied its exact orientation onto the linked image, so a correction for the patient's roll could never exist between the two; **Lock 3D Sync** then recorded "no difference".
+- A background alignment that finished after **Lock 3D Sync** silently replaced the lock with its own low score, so the lock was ignored.
+
+Now:
+- **Rotation follows as a change, not a copy** (`MprPlane3D::rotation_since` / `rotate_axes` in `src/volume.rs`, `sync_mpr_orientation_from` and `sync_rotation_from` in `src/app/mpr_sync.rs`): rotating one image turns the linked one by the same amount, keeping any difference set between them. Tested.
+- **Ctrl+drag (Cmd on Mac) with Rotate or 3D Rotate turns only that image**, to correct one date's roll; then **Lock 3D Sync** keeps that alignment.
+- **A manual lock is never replaced** by a background alignment (`locked_pairs` in `src/app/mod.rs`).
+- **Clear status text**, in English and Spanish: "Alignment locked by hand", or, when automatic alignment fails, what to do ("Ctrl+rotate this image to match, then Lock 3D Sync"). The text is wrapped below the patient details instead of running into them. The bottom-left "Sync Locked (NCC …)" readout, which appeared even when nothing was locked, now says "locked" only for a real lock.
+- Rotation readout shows 0° instead of 360°.
+
+## [0.5.23] - 2026-11-18
+- 2D rotation (toolbar and right-click menu) synced to linked viewports; registration rotation applied only when reliable; registration search widened for partial overlap and patient roll (Z sweep and ±24° roll).
+
 ## [0.5.18] - 2026-11-17
 
 ### Fixed

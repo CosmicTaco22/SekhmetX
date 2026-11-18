@@ -1089,14 +1089,18 @@ impl ViewerApp {
                     )
                 })
                 .unwrap_or_default();
-            let reg_corr = vp.selected.and_then(|sel| {
-                self.registrations
-                    .iter()
-                    .find(|&(&(a, b), _)| a == sel || b == sel)
-                    .map(|(_, r)| r.correlation)
-            });
-            if let Some(corr) = reg_corr.filter(|_| self.tiling.cell_count() > 1) {
-                bl.push(format!("3D MPR{slab_info} · Sync Locked (NCC {corr:.2})"));
+            // "Locked" only for a pair aligned by hand with the active viewport; the
+            // alignment state itself is shown at the top of the follower viewport.
+            let locked = self.tiling.cell_count() > 1
+                && vp.selected.is_some_and(|sel| {
+                    self.viewports
+                        .get(self.active_viewport)
+                        .and_then(|a| a.selected)
+                        .is_some_and(|lead| lead != sel && self.locked_pairs.contains(&(lead, sel)))
+                });
+            if locked {
+                let lbl = if self.lang == crate::i18n::Lang::Es { "fijado" } else { "locked" };
+                bl.push(format!("3D MPR{slab_info} · {lbl}"));
             } else {
                 bl.push(format!("3D MPR{slab_info}"));
             }
@@ -1119,8 +1123,10 @@ impl ViewerApp {
             }
         }
         let mut view_flags = vec![format!("Zoom: {:.0}%", vp.zoom * 100.0)];
-        if vp.rotation.abs() > 0.05 {
-            view_flags.push(format!("Rot: {:.0}°", vp.rotation));
+        // Whole degrees, 0–359 (359.7° reads as 0°, not 360°).
+        let rot_deg = (vp.rotation.round() as i32).rem_euclid(360);
+        if rot_deg != 0 {
+            view_flags.push(format!("Rot: {rot_deg}°"));
         }
         if vp.effective_invert() {
             view_flags.push("Inverted".into());

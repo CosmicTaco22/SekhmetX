@@ -131,19 +131,30 @@ impl ViewerApp {
         }
     }
 
-    pub(crate) fn sync_rotation_from(&mut self, leader_idx: usize, rot_deg: f32) {
-        if !self.ortho_mpr_active && !self.any_link_enabled() {
+    /// Turns every linked viewport by the same in-plane amount `delta_deg` the leader
+    /// just turned. A difference set on purpose between two viewports (for a patient
+    /// lying rolled on one date) is kept: rotation follows as a change, not a copy.
+    pub(crate) fn sync_rotation_from(&mut self, leader_idx: usize, delta_deg: f32) {
+        if delta_deg == 0.0 || (!self.ortho_mpr_active && !self.any_link_enabled()) {
             return;
         }
         let count = self.tiling.cell_count();
         for i in 0..count {
-            if self.are_viewports_linked(leader_idx, i) && self.viewports[i].selected.is_some() {
-                self.viewports[i].rotation = rot_deg;
+            if i != leader_idx
+                && self.are_viewports_linked(leader_idx, i)
+                && self.viewports[i].selected.is_some()
+            {
+                let r = &mut self.viewports[i].rotation;
+                *r = (*r + delta_deg).rem_euclid(360.0);
             }
         }
     }
 
-    pub(super) fn sync_mpr_orientation_from(&mut self, leader_idx: usize) {
+    /// After the leader's plane turned by `delta` (see `MprPlane3D::rotation_since`),
+    /// turns linked viewports to match. With a trusted or locked registration the
+    /// follower takes the registered orientation; otherwise it turns by the same
+    /// `delta`, keeping any difference set between the two by hand.
+    pub(super) fn sync_mpr_orientation_from(&mut self, leader_idx: usize, delta: [[f64; 3]; 3]) {
         if self.ortho_mpr_active || (!self.link_cut && !self.link_zoom) {
             return;
         }
@@ -183,9 +194,7 @@ impl ViewerApp {
                 op.normal = rot_v(reg.rotation, lp.normal);
                 op.offset_mm = dot3(sub3(target_lps, op.center_lps), op.normal);
             } else {
-                op.u_axis = lp.u_axis;
-                op.v_axis = lp.v_axis;
-                op.normal = lp.normal;
+                op.rotate_axes(delta);
                 if let Some(other_vol) = self.volumes.get(&other_sel) {
                     let proj = dot3(sub3(leader_lps, op.center_lps), op.normal);
                     let half = other_vol.projected_half_span_mm(op.normal).max(1.0);
@@ -618,9 +627,14 @@ impl ViewerApp {
             new_regs.push(((other_sel, leader_sel), reg_rev));
         }
         for (pair, reg) in new_regs {
+            self.locked_pairs.insert(pair);
+            self.registrations_in_flight.remove(&pair);
             self.registrations.insert(pair, reg);
         }
-        self.message = Some("Locked 3D slice & angle alignment across viewports.".into());
+        self.message = Some(match self.lang {
+            crate::i18n::Lang::Es => "Alineación fijada: posición y ángulo actuales de cada visor se mantienen al desplazar o rotar.".into(),
+            crate::i18n::Lang::En => "Alignment locked: each viewport keeps its current position and angle relative to the others.".into(),
+        });
     }
 
     /// Optimal side-by-side comparison mode: links Zoom (`= mm` same physical size), Cut,

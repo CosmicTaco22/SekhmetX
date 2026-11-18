@@ -377,6 +377,8 @@ pub(crate) struct ViewerApp {
     volume_errors: HashMap<(usize, usize), crate::volume::VolumeError>,
     registrations: HashMap<SeriesPair, RigidTransform3D>,
     registrations_in_flight: std::collections::HashSet<SeriesPair>,
+    /// Pairs aligned by hand with Lock 3D Sync; a background registration never replaces them.
+    pub(crate) locked_pairs: std::collections::HashSet<SeriesPair>,
     reg_tx: std::sync::mpsc::Sender<(SeriesPair, RigidTransform3D)>,
     reg_rx: Receiver<(SeriesPair, RigidTransform3D)>,
     thumbnails: HashMap<(u64, usize, usize), TextureHandle>,
@@ -628,6 +630,7 @@ impl ViewerApp {
             volume_errors: HashMap::new(),
             registrations: HashMap::new(),
             registrations_in_flight: std::collections::HashSet::new(),
+            locked_pairs: std::collections::HashSet::new(),
             reg_tx,
             reg_rx,
             thumbnails: HashMap::new(),
@@ -1031,6 +1034,7 @@ impl ViewerApp {
                     self.volumes.clear();
                     self.registrations.clear();
                     self.registrations_in_flight.clear();
+                    self.locked_pairs.clear();
                     self.thumbnails.clear();
                     self.thumbnails_queued.clear();
                     for vp in &mut self.viewports {
@@ -1349,6 +1353,10 @@ impl ViewerApp {
             let inv = reg.inverse();
             self.registrations_in_flight.remove(&pair);
             self.registrations_in_flight.remove(&(pair.1, pair.0));
+            // A hand-made lock that arrived while this was computing wins.
+            if self.locked_pairs.contains(&pair) || self.locked_pairs.contains(&(pair.1, pair.0)) {
+                continue;
+            }
             self.registrations.insert(pair, reg);
             self.registrations.insert((pair.1, pair.0), inv);
             completed_reg = true;
@@ -2106,6 +2114,7 @@ impl ViewerApp {
         self.failed.clear();
         self.registrations.clear();
         self.registrations_in_flight.clear();
+        self.locked_pairs.clear();
     }
 }
 

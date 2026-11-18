@@ -7,6 +7,7 @@ Per `AGENTS.md`, before updating SekhmetX or fixing any bug:
 3. Port/adapt the fix, add a regression test, mark the item `[x]` here, and release.
 
 ## Resolved
+- [x] **Rotation sync between two studies could not be made to work** (`v0.5.24`): with automatic 3D alignment failing (patient rolled, partial overlap), rotating either image copied its orientation onto the other and a later background alignment replaced a manual lock. Rotation now follows as a relative change, `Ctrl`/`Cmd`+drag turns one image alone, and manual locks are kept.
 - [x] **In-app Auto-Update** (`v0.2.2`–`v0.2.3`): Checks GitHub Releases (`CosmicTaco22/SekhmetX`), streams downloads to disk, verifies `SHA256SUMS` before `self_replace`, exposes startup-check toggle, and notes unsigned builds.
 - [x] **3D loses detail / lung dots in MPR** (`v0.2.3`): Native-plane MPR (`SlabMode::Thin`) now returns exact bit-identical source slice voxels; oblique MPR samples only the viewport's own volume by default, with sibling blending moved behind an explicit off-by-default `Blend Siblings` toggle that disables ROI stats while active.
 - [x] **Double `"HU HU"` in status bar & plane badge overlapping orientation letter** (`v0.2.3`): Removed duplicate `"HU"` suffix in `cursor_info` and shifted the `AXIAL`/`CORONAL`/`SAGITTAL` badge below the top orientation letter.

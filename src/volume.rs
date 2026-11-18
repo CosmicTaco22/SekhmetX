@@ -1125,6 +1125,29 @@ impl MprPlane3D {
     pub fn slice_center_lps(&self) -> [f64; 3] {
         add3(self.center_lps, scale3(self.normal, self.offset_mm))
     }
+
+    /// The rotation that turned `before`'s axes into `self`'s: `R = B_self · B_beforeᵀ`,
+    /// where `B` has the plane's `u`, `v` and normal as columns.
+    pub fn rotation_since(&self, before: &MprPlane3D) -> [[f64; 3]; 3] {
+        let (a, b) = ([before.u_axis, before.v_axis, before.normal], [self.u_axis, self.v_axis, self.normal]);
+        let mut r = [[0.0f64; 3]; 3];
+        for (row, r_row) in r.iter_mut().enumerate() {
+            for (col, cell) in r_row.iter_mut().enumerate() {
+                *cell = (0..3).map(|k| b[k][row] * a[k][col]).sum();
+            }
+        }
+        r
+    }
+
+    /// Turns the plane's axes by `rotation`, keeping the point it currently shows on
+    /// the plane (the slice moves with the axes, not to another place).
+    pub fn rotate_axes(&mut self, rotation: [[f64; 3]; 3]) {
+        let shown = self.slice_center_lps();
+        self.u_axis = normalize3(mat3_mul_vec(rotation, self.u_axis));
+        self.v_axis = normalize3(mat3_mul_vec(rotation, self.v_axis));
+        self.normal = normalize3(mat3_mul_vec(rotation, self.normal));
+        self.offset_mm = dot3(sub3(shown, self.center_lps), self.normal);
+    }
 }
 
 /// 6-Degree-of-Freedom 3D Rigid Registration transform mapping a 3D plane or point
@@ -1970,6 +1993,61 @@ mod tests {
 
         let duplicate_slice = [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 2.0]];
         assert!(SliceRegularity::evaluate(&duplicate_slice, [0.0, 0.0, 1.0], 0.5).is_irregular);
+    }
+
+    /// Rotating one viewport turns a linked one by the same amount and keeps the
+    /// orientation difference between them (e.g. a manual roll correction).
+    #[test]
+    fn plane_rotation_delta_preserves_the_relative_orientation() {
+        let base = MprPlane3D {
+            center_lps: [0.0, 0.0, 0.0],
+            u_axis: [1.0, 0.0, 0.0],
+            v_axis: [0.0, 1.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            offset_mm: 12.0,
+            slab_mode: SlabMode::Thin,
+            slab_thickness_mm: 1.0,
+        };
+        let mut leader = base.clone();
+        // Follower already corrected by 15° of roll relative to the leader.
+        let mut follower = base.clone();
+        follower.orbit_3d(0.0, 0.0, 15.0);
+        // The follower's axes as seen from the leader's own axes (B_leaderᵀ · B_follower):
+        // this is what the eye compares between the two viewports.
+        let seen_from = |l: &MprPlane3D, f: &MprPlane3D| -> [[f64; 3]; 3] {
+            let (lb, fb) = ([l.u_axis, l.v_axis, l.normal], [f.u_axis, f.v_axis, f.normal]);
+            let mut m = [[0.0f64; 3]; 3];
+            for (i, row) in m.iter_mut().enumerate() {
+                for (j, cell) in row.iter_mut().enumerate() {
+                    *cell = dot3(lb[i], fb[j]);
+                }
+            }
+            m
+        };
+        let relative_before = seen_from(&leader, &follower);
+
+        let before = leader.clone();
+        leader.orbit_3d(20.0, -10.0, 5.0);
+        let delta = leader.rotation_since(&before);
+        let shown_before = follower.slice_center_lps();
+        follower.rotate_axes(delta);
+
+        let relative_after = seen_from(&leader, &follower);
+        for r in 0..3 {
+            for c in 0..3 {
+                assert!((relative_before[r][c] - relative_after[r][c]).abs() < 1e-9);
+            }
+        }
+        // The point the follower showed is still on its (turned) plane.
+        let off_plane = dot3(sub3(shown_before, follower.center_lps), follower.normal) - follower.offset_mm;
+        assert!(off_plane.abs() < 1e-9);
+        // The delta is the identity when nothing turned.
+        let still = leader.rotation_since(&leader);
+        for (r, row) in still.iter().enumerate() {
+            for (c, cell) in row.iter().enumerate() {
+                assert!((cell - if r == c { 1.0 } else { 0.0 }).abs() < 1e-12);
+            }
+        }
     }
 
     #[test]

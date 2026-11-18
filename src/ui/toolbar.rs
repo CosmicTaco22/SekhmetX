@@ -647,14 +647,14 @@ impl ViewerApp {
                         let vp_idx = self.active_viewport;
                         let next_rot = (self.viewports[vp_idx].rotation - 90.0).rem_euclid(360.0);
                         self.viewports[vp_idx].rotation = next_rot;
-                        self.sync_rotation_from(vp_idx, next_rot);
+                        self.sync_rotation_from(vp_idx, -90.0);
                         ui.close();
                     }
                     if ui.button(tr.rotate_cw).clicked() {
                         let vp_idx = self.active_viewport;
                         let next_rot = (self.viewports[vp_idx].rotation + 90.0).rem_euclid(360.0);
                         self.viewports[vp_idx].rotation = next_rot;
-                        self.sync_rotation_from(vp_idx, next_rot);
+                        self.sync_rotation_from(vp_idx, 90.0);
                         ui.close();
                     }
                     let mut x_flip = self.active_cell().x_flipped;

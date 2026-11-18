@@ -429,9 +429,18 @@ impl ViewerApp {
                 self.viewports[vp_idx].selected,
             )
                 && leader_sel != cur_sel {
-                    let align_text = if self.registrations_in_flight.contains(&(leader_sel, cur_sel))
+                    let es = self.lang == crate::i18n::Lang::Es;
+                    let align_text = if self.locked_pairs.contains(&(leader_sel, cur_sel)) {
+                        Some((
+                            if es { "Alineación fijada a mano" } else { "Alignment locked by hand" }.to_string(),
+                            Color32::from_rgb(130, 220, 155),
+                        ))
+                    } else if self.registrations_in_flight.contains(&(leader_sel, cur_sel))
                     {
-                        Some(("Aligning…".to_string(), Color32::from_rgb(130, 210, 255)))
+                        Some((
+                            if es { "Alineando…" } else { "Aligning…" }.to_string(),
+                            Color32::from_rgb(130, 210, 255),
+                        ))
                     } else if let Some(reg) = self.registrations.get(&(leader_sel, cur_sel)) {
                         let same_for = matches!(
                             (
@@ -442,17 +451,26 @@ impl ViewerApp {
                         );
                         if same_for {
                             Some((
-                                "Same Frame of Reference".to_string(),
+                                if es { "Mismo marco de referencia" } else { "Same frame of reference" }.to_string(),
                                 Color32::from_rgb(130, 220, 155),
                             ))
                         } else if reg.is_reliable() {
                             Some((
-                                format!("Auto-aligned (approximate) · score {:.2}", reg.correlation),
+                                if es {
+                                    format!("Alineado automáticamente (aprox.) · {:.2}", reg.correlation)
+                                } else {
+                                    format!("Auto-aligned (approximate) · score {:.2}", reg.correlation)
+                                },
                                 Color32::from_rgb(130, 220, 155),
                             ))
                         } else {
                             Some((
-                                "Not aligned: synced by position".to_string(),
+                                if es {
+                                    "Sin alineación automática: Ctrl+rotar esta imagen hasta que coincida y pulsar Fijar Sincr. 3D"
+                                } else {
+                                    "Not aligned automatically: Ctrl+rotate this image to match, then Lock 3D Sync"
+                                }
+                                .to_string(),
                                 Color32::from_rgb(255, 200, 80),
                             ))
                         }
@@ -460,13 +478,23 @@ impl ViewerApp {
                         None
                     };
                     if let Some((txt, col)) = align_text {
-                        painter.text(
-                            pos2(view.center().x, view.min.y + 42.0),
-                            Align2::CENTER_TOP,
+                        // Wrapped to the middle of the viewport so it never runs into
+                        // the patient details in the top corners.
+                        let mut job = egui::text::LayoutJob::simple(
                             txt,
                             FontId::proportional(11.0),
                             col,
+                            (view.width() * 0.36).max(140.0),
                         );
+                        job.halign = egui::Align::Center;
+                        let galley = painter.layout_job(job);
+                        let pos = pos2(view.center().x, view.min.y + 68.0);
+                        let bg = Rect::from_center_size(
+                            pos2(pos.x, pos.y + galley.size().y * 0.5),
+                            galley.size() + vec2(10.0, 4.0),
+                        );
+                        painter.rect_filled(bg, 4.0, Color32::from_black_alpha(150));
+                        painter.galley(pos, galley, col);
                     }
                 }
         }
@@ -1491,13 +1519,13 @@ impl ViewerApp {
                 if ui.button(tr.rotate_ccw).clicked() {
                     let next_rot = (self.viewports[vp_idx].rotation - 90.0).rem_euclid(360.0);
                     self.viewports[vp_idx].rotation = next_rot;
-                    self.sync_rotation_from(vp_idx, next_rot);
+                    self.sync_rotation_from(vp_idx, -90.0);
                     ui.close();
                 }
                 if ui.button(tr.rotate_cw).clicked() {
                     let next_rot = (self.viewports[vp_idx].rotation + 90.0).rem_euclid(360.0);
                     self.viewports[vp_idx].rotation = next_rot;
-                    self.sync_rotation_from(vp_idx, next_rot);
+                    self.sync_rotation_from(vp_idx, 90.0);
                     ui.close();
                 }
                 let mut xf = self.viewports[vp_idx].x_flipped;
@@ -2129,8 +2157,15 @@ impl ViewerApp {
                     && id == vp_idx {
                         let a1 = (now.y - center.y).atan2(now.x - center.x).to_degrees();
                         let next_rot = (init_rot + (a1 - a0)).rem_euclid(360.0);
+                        let prev_rot = self.viewports[vp_idx].rotation;
                         self.viewports[vp_idx].rotation = next_rot;
-                        self.sync_rotation_from(vp_idx, next_rot);
+                        // Ctrl (Cmd on Mac) turns this image alone, to correct for a patient
+                        // lying rolled on one date; otherwise linked images turn by the same amount.
+                        let alone = response.ctx.input(|i| i.modifiers.command);
+                        if !alone {
+                            let delta = (next_rot - prev_rot + 540.0).rem_euclid(360.0) - 180.0;
+                            self.sync_rotation_from(vp_idx, delta);
+                        }
                     }
                 if response.drag_stopped() {
                     self.rot_drag = None;
@@ -2163,6 +2198,7 @@ impl ViewerApp {
                     }
                 if delta.length_sq() > 0.0
                     && let Some(mut plane) = self.effective_mpr_plane(vp_idx) {
+                        let before = plane.clone();
                         let (shift, alt) = response
                             .ctx
                             .input(|i| (i.modifiers.shift, i.modifiers.alt));
@@ -2177,8 +2213,12 @@ impl ViewerApp {
                                 plane.offset_mm =
                                     dot3(sub3(anchor_lps, plane.center_lps), plane.normal);
                             }
+                        let turned = plane.rotation_since(&before);
                         self.set_viewport_mpr_plane(vp_idx, plane, true);
-                        self.sync_mpr_orientation_from(vp_idx);
+                        // Ctrl (Cmd on Mac) turns this image alone (see the Rotate tool).
+                        if !response.ctx.input(|i| i.modifiers.command) {
+                            self.sync_mpr_orientation_from(vp_idx, turned);
+                        }
                     }
                 if response.drag_stopped() {
                     self.orbit_drag = None;
