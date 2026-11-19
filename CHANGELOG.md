@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.1] - 2026-11-19
+
+### Changed: a tidier series list
+- **One card for the same reconstruction in several planes.** When a series exists as complete volumes in more than one plane (for example "CEREBRO PB Cabeza 1.000" axial, coronal and sagittal), it shows as a single card with the gold **MPR** badge (the axial volume); the tags in its corner read MPR-A, MPR-C, MPR-S (and AX/COR/SAG for any other reconstructions), and clicking them shows the other volumes, labelled MPR-C / MPR-S, first. Their own reconstructions move into the same card (`twin_volumes`, `twin_parent` in `src/dicom_index.rs`).
+- **Extras:** the "Single images / Scouts" group is now "Extras: scouts, dose and single images" (Spanish "Extras: localizadores, dosis e imágenes sueltas"), still folded by default. It now also takes scouts of two or three images (CT/MR/PET series too short to form a stack plane) and dose reports that cannot be placed, numbered 900 or above, of up to 20 pages (a Canon dose report had six).
+- **Tag letters centred:** badges and tags centre their letters on the letters' actual ink rather than on the text box, whose trailing spacing pushed them to the right.
+
 ## [0.6.0] - 2026-11-19
 
 ### Added: PET-CT Fusion and SUV (ported from IsiX)

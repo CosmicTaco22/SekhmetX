@@ -2,6 +2,18 @@ use super::*;
 use crate::ui::icons::{self, Icon};
 use crate::ui::theme;
 
+/// Size of a tag (badge) around `g`: its letters' ink plus `pad_x` on each side.
+fn tag_size(g: &egui::Galley, pad_x: f32) -> egui::Vec2 {
+    vec2(g.mesh_bounds.width() + 2.0 * pad_x, g.size().y + 3.0)
+}
+
+/// Paints `g` centred on the letters' ink in `r`. Centring the text box instead
+/// left the letters looking pushed to the right (the box carries trailing spacing).
+fn paint_tag_text(painter: &egui::Painter, r: Rect, g: std::sync::Arc<egui::Galley>, color: Color32) {
+    let pos = r.center() - g.mesh_bounds.center().to_vec2();
+    painter.galley(pos, g, color);
+}
+
 fn paint_series_drag_preview(ui: &egui::Ui, index: &crate::dicom_index::Index) {
     let Some(payload) = egui::DragAndDrop::payload::<(usize, usize)>(ui.ctx()) else {
         return;
@@ -510,7 +522,7 @@ impl ViewerApp {
                                     );
                                     let badge_rect = Rect::from_min_size(
                                         pos2(text_x, line_y),
-                                        badge_galley.size() + vec2(8.0, 3.0),
+                                        tag_size(&badge_galley, 4.0),
                                     );
                                     painter.rect_stroke(
                                         badge_rect,
@@ -518,11 +530,7 @@ impl ViewerApp {
                                         Stroke::new(1.0, badge_color.gamma_multiply(0.7)),
                                         egui::StrokeKind::Inside,
                                     );
-                                    painter.galley(
-                                        badge_rect.min + vec2(4.0, 1.5),
-                                        badge_galley,
-                                        badge_color,
-                                    );
+                                    paint_tag_text(painter, badge_rect, badge_galley, badge_color);
                                     let info = format!(
                                         "{} · #{} · {} {}{}",
                                         series.modality,
@@ -545,18 +553,33 @@ impl ViewerApp {
                                 if !kids.is_empty() {
                                     let open_id = egui::Id::unique(("reformats_open", &study.uid, ri));
                                     let open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+                                    // Complete volumes of the same reconstruction in other planes
+                                    // read MPR-A/C/S (this card's own plane included); other
+                                    // reconstructions read AX/COR/SAG.
                                     let mut planes: Vec<&'static str> = Vec::new();
+                                    let has_twins = kids.iter().any(|&k| study.series[k].is_full_volume());
+                                    if has_twins {
+                                        planes.push(crate::dicom_index::lettered_badge(series));
+                                    }
                                     for &k in kids {
-                                        let b = study.series[k].dominant_plane.badge();
+                                        let ks = &study.series[k];
+                                        let b = if ks.is_full_volume() {
+                                            crate::dicom_index::lettered_badge(ks)
+                                        } else {
+                                            ks.dominant_plane.badge()
+                                        };
                                         if !planes.contains(&b) {
                                             planes.push(b);
                                         }
                                     }
                                     planes.sort_by_key(|b| match *b {
-                                        "AX" => 0,
-                                        "COR" => 1,
-                                        "SAG" => 2,
-                                        _ => 3,
+                                        "MPR-A" => 0,
+                                        "MPR-C" => 1,
+                                        "MPR-S" => 2,
+                                        "AX" => 3,
+                                        "COR" => 4,
+                                        "SAG" => 5,
+                                        _ => 6,
                                     });
                                     let painter = ui.painter();
                                     // Bottom right of the card.
@@ -567,13 +590,13 @@ impl ViewerApp {
                                             (painter.layout_no_wrap(b.to_owned(), FontId::proportional(9.0), color), color)
                                         })
                                         .collect();
-                                    let total: f32 = galleys.iter().map(|(g, _)| g.size().x + 6.0).sum::<f32>()
+                                    let total: f32 = galleys.iter().map(|(g, _)| tag_size(g, 3.0).x).sum::<f32>()
                                         + 4.0 * galleys.len().saturating_sub(1) as f32;
                                     let mut x = row_rect.max.x - 7.0 - total;
                                     let y = row_rect.max.y - 18.0;
                                     let mut chips = Vec::new();
                                     for (g, color) in galleys {
-                                        let r = Rect::from_min_size(pos2(x, y), g.size() + vec2(6.0, 3.0));
+                                        let r = Rect::from_min_size(pos2(x, y), tag_size(&g, 3.0));
                                         x = r.max.x + 4.0;
                                         chips.push((r, g, color));
                                     }
@@ -600,7 +623,7 @@ impl ViewerApp {
                                                 Stroke::new(1.0, color.gamma_multiply(if lit { 0.9 } else { 0.5 })),
                                                 egui::StrokeKind::Inside,
                                             );
-                                            ui.painter().galley(r.min + vec2(3.0, 1.5), g, color);
+                                            paint_tag_text(ui.painter(), r, g, color);
                                         }
                                     }
                                 }
@@ -796,11 +819,11 @@ impl ViewerApp {
                             if !single_image_series.is_empty() {
                                 let single_lbl = match self.lang {
                                     crate::i18n::Lang::Es => format!(
-                                        "Imágenes únicas / Scouts ({})",
+                                        "Extras: localizadores, dosis e imágenes sueltas ({})",
                                         single_image_series.len()
                                     ),
                                     crate::i18n::Lang::En => format!(
-                                        "Single images / Scouts ({})",
+                                        "Extras: scouts, dose and single images ({})",
                                         single_image_series.len()
                                     ),
                                 };

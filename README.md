@@ -65,14 +65,13 @@ or Pixmeo. It does not use their names or icons in the application.
   thumbnails and a study details pane; search by patient, ID, accession, study
   or series.
 - Series are recognised the way a reader thinks of them: a complete thin-slice
-  volume is marked **MPR** (or MPR-A / MPR-C / MPR-S when the same
-  reconstruction exists in several planes); separate axial, coronal and
-  sagittal reconstructions made from it are tucked inside its card and shown by
-  clicking their AX/COR/SAG tags. This also works for reconstructions saved as
+  volume is marked **MPR**; the same reconstruction in other planes and the
+  separate axial, coronal and sagittal reconstructions made from it are tucked
+  inside its card and shown by clicking their MPR-A/C/S and AX/COR/SAG tags. This also works for reconstructions saved as
   plain pictures, matched by acquisition time, kernel (including Canon FC
   codes) and their place in the series list.
 - MIP series and different kernels are kept apart; dose reports, protocol pages
-  and scouts are gathered under "Single images / Scouts".
+  and scouts are gathered under a folded "Extras" group.
 
 **2D viewing**
 - GPU window/level with optional bilinear smoothing and a CPU fallback.

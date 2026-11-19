@@ -202,11 +202,20 @@ pub fn is_auxiliary(s: &Series) -> bool {
     if matches!(s.modality.as_str(), "SR" | "OT" | "PR" | "KO" | "DOC") {
         return true;
     }
-    // Pictures that cannot be placed and have no pixel size (dose pages), or a few
-    // pictures numbered 900 and above (where scanners put dose reports).
-    if s.slices.len() <= 5
-        && s.normal.is_none()
-        && (s.slices.first().is_none_or(|sl| sl.spacing.is_none()) || s.number >= 900)
+    // Pictures that cannot be placed and have no pixel size (dose pages), or
+    // pictures that cannot be placed numbered 900 and above (where scanners put
+    // dose reports; Canon's can run to several pages).
+    if s.normal.is_none()
+        && ((s.slices.len() <= 5 && s.slices.first().is_none_or(|sl| sl.spacing.is_none()))
+            || (s.number >= 900 && s.slices.len() <= 20))
+    {
+        return true;
+    }
+    // Scouts (topograms): a CT/MR/PET series of two or three images with no stack
+    // plane (too few slices to form one).
+    if matches!(s.modality.as_str(), "CT" | "MR" | "PT" | "NM")
+        && s.slices.len() <= 3
+        && s.dominant_plane == DominantPlane::Unknown
     {
         return true;
     }
@@ -275,24 +284,57 @@ pub fn study_cut_badge(series: &[Series], ri: usize) -> &'static str {
     if !s.is_full_volume() {
         return s.cut_badge();
     }
-    let key = series_name_key(&s.description);
-    let twin = series.iter().enumerate().any(|(j, o)| {
-        j != ri
-            && o.dominant_plane != s.dominant_plane
-            && o.modality == s.modality
-            && ((s.mpr_group_id.is_some() && o.mpr_group_id == s.mpr_group_id)
-                || series_name_key(&o.description) == key)
-            && o.is_full_volume()
-    });
-    if !twin {
+    let twins = twin_volumes(series, ri);
+    if twins.len() < 2 || twin_parent(series, &twins) == ri {
         return "MPR";
     }
+    lettered_badge(s)
+}
+
+/// `MPR-A`, `MPR-C` or `MPR-S` for a complete volume in that plane.
+pub fn lettered_badge(s: &Series) -> &'static str {
     match s.dominant_plane {
         DominantPlane::Axial => "MPR-A",
         DominantPlane::Coronal => "MPR-C",
         DominantPlane::Sagittal => "MPR-S",
         _ => "MPR",
     }
+}
+
+/// The same reconstruction as complete volumes in different planes: `ri` and every
+/// complete volume of another plane in its MPR group or with its name. Empty or one
+/// entry when there are none.
+pub fn twin_volumes(series: &[Series], ri: usize) -> Vec<usize> {
+    let s = &series[ri];
+    if !s.is_full_volume() {
+        return Vec::new();
+    }
+    let key = series_name_key(&s.description);
+    let mut out = vec![ri];
+    for (j, o) in series.iter().enumerate() {
+        if j != ri
+            && o.dominant_plane != s.dominant_plane
+            && !out.iter().any(|&k| series[k].dominant_plane == o.dominant_plane)
+            && o.modality == s.modality
+            && ((s.mpr_group_id.is_some() && o.mpr_group_id == s.mpr_group_id)
+                || series_name_key(&o.description) == key)
+            && o.is_full_volume()
+        {
+            out.push(j);
+        }
+    }
+    out
+}
+
+/// The twin that represents the set in the list: the axial one, else the lowest
+/// series number.
+pub fn twin_parent(series: &[Series], twins: &[usize]) -> usize {
+    twins
+        .iter()
+        .copied()
+        .find(|&t| series[t].dominant_plane == DominantPlane::Axial)
+        .or_else(|| twins.iter().copied().min_by_key(|&t| series[t].number))
+        .unwrap_or(twins[0])
 }
 
 /// Reconstructions made from a complete volume (for example separate coronal and
@@ -422,6 +464,38 @@ pub fn find_reconstructions(series: &[Series]) -> Vec<(usize, Vec<usize>)> {
                     None => out.push((v, vec![c])),
                 }
             }
+        }
+    }
+    // The same reconstruction as complete volumes in several planes is shown as one
+    // card (the axial one, badge MPR): the others go first among its folded series,
+    // and their own reconstructions move to it.
+    let mut condensed: Vec<usize> = Vec::new();
+    for &v in &volumes {
+        if condensed.contains(&v) {
+            continue;
+        }
+        let twins = twin_volumes(series, v);
+        if twins.len() < 2 {
+            continue;
+        }
+        let p = twin_parent(series, &twins);
+        condensed.extend(twins.iter().copied());
+        let mut moved: Vec<usize> = Vec::new();
+        let mut others: Vec<usize> = twins.iter().copied().filter(|&t| t != p).collect();
+        others.sort_by_key(|&t| series[t].dominant_plane as u8);
+        for &t in &others {
+            if let Some(pos) = out.iter().position(|(q, _)| *q == t) {
+                moved.extend(out.remove(pos).1);
+            }
+        }
+        let mut kids = others;
+        kids.extend(moved);
+        match out.iter_mut().find(|(q, _)| *q == p) {
+            Some((_, existing)) => {
+                kids.append(existing);
+                *existing = kids;
+            }
+            None => out.push((p, kids)),
         }
     }
     out
@@ -1634,8 +1708,11 @@ mod tests {
         assert!(is_auxiliary(&series[11]), "dose report goes with the scouts");
         assert!(!found.iter().any(|(_, k)| k.contains(&11)));
         assert_eq!(study_cut_badge(&series, 0), "MPR");
-        assert_eq!(study_cut_badge(&series, 12), "MPR-A");
+        // Twin volumes are one card: the axial one shows MPR, the sagittal one is
+        // folded into it and labelled MPR-S; the picture-only coronal goes there too.
+        assert_eq!(study_cut_badge(&series, 12), "MPR");
         assert_eq!(study_cut_badge(&series, 13), "MPR-S");
+        assert_eq!(kids_of(12).first(), Some(&13), "{found:?}");
         assert_eq!(study_cut_badge(&series, 10), "COR");
     }
 
