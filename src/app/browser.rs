@@ -21,7 +21,7 @@ fn paint_series_drag_preview(ui: &egui::Ui, index: &crate::dicom_index::Index) {
     let label = format!(
         "{} [{}] · {}",
         series.modality,
-        series.cut_badge(),
+        crate::dicom_index::study_cut_badge(&index.studies[si].series, ri),
         desc
     );
     egui::Area::new(egui::Id::unique("series_drag_preview"))
@@ -501,7 +501,7 @@ impl ViewerApp {
                                     // Second line: plane badge + "CT · #2 · 80 images".
                                     let line_y = (row_rect.min.y + if compact { 5.0 } else { 8.0 } + title_h)
                                         .min(row_rect.max.y - if compact { 17.0 } else if kids.is_empty() { 19.0 } else { 37.0 });
-                                    let badge = series.cut_badge();
+                                    let badge = crate::dicom_index::study_cut_badge(&study.series, ri);
                                     let badge_color = theme::plane_color(badge);
                                     let badge_galley = painter.layout_no_wrap(
                                         badge.to_owned(),
@@ -610,7 +610,7 @@ impl ViewerApp {
                                     tr.images,
                                     series.columns,
                                     series.rows,
-                                    series.cut_badge(),
+                                    crate::dicom_index::study_cut_badge(&study.series, ri),
                                     if series.is_full_volume() {
                                         tr.full_volume_hint
                                     } else if series.is_mpr_capable() {
@@ -687,7 +687,7 @@ impl ViewerApp {
                                             >= 2
                                     });
 
-                                if grp.is_none() && study.series[ri].slices.len() == 1 {
+                                if grp.is_none() && crate::dicom_index::is_auxiliary(&study.series[ri]) {
                                     rendered_series.insert(ri);
                                     single_image_series.push(ri);
                                     continue;
@@ -1065,7 +1065,7 @@ impl ViewerApp {
                             } else {
                                 series.description.as_str()
                             };
-                            let cut_badge = series.cut_badge();
+                            let cut_badge = crate::dicom_index::study_cut_badge(&study.series, ri);
                             let hover_txt = format!(
                                 "{} · {} ({cut_badge})\n{} im",
                                 series.modality,
@@ -1084,7 +1084,7 @@ impl ViewerApp {
                                 "AX" => Color32::from_rgb(110, 190, 255),
                                 "COR" => Color32::from_rgb(130, 225, 160),
                                 "SAG" => Color32::from_rgb(255, 195, 105),
-                                "MPR" => theme::plane_color("MPR"),
+                                b if b.starts_with("MPR") => theme::plane_color(b),
                                 _ => Color32::from_gray(175),
                             };
                             ui.label(

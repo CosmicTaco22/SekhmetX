@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.34] - 2026-11-19
+
+### Improved: recognising reconstructions in spine studies (from a real whole-spine CT)
+- **Series without image positions** (straightened or curved reconstructions saved as pictures, which showed as "2D") take their plane from the image orientation when it is recorded (`refine_plane`, also applied to studies already in the library), and are filed with the volume whose series carry exactly the same name, e.g. "BLANDO Columna 2.000" coronal with the "BLANDO Columna 2.000" axial and sagittal reconstructions.
+- **Spanish kernel names:** BLANDO / blandas count as soft tissue, OSEO / óseo / HUESO as bone, so soft-tissue and bone reconstructions go under the matching volume.
+- **Dose reports, protocol pages, topograms and localizers** (up to five images with such a name, or SR/OT/PR/KO/DOC series) go into "Single images / Scouts" (`is_auxiliary`).
+- **MPR A / MPR C / MPR S:** when the same reconstruction exists as complete volumes in several planes (same MPR group or same name), each badge names its plane, in the MPR gold leaning towards the plane's colour: coral for sagittal, olive-green for coronal, and a warm sky blue for axial (gold and blue mix to grey, so axial leans further towards blue). One complete volume alone keeps plain MPR (`study_cut_badge`).
+- Test built on the spine study's layout (bone and soft-tissue volumes, same-named reconstructions, position-less coronals, dose report, cervical volumes in two planes).
+
 ## [0.5.33] - 2026-11-19
 
 ### Changed

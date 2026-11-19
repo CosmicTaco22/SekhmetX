@@ -96,6 +96,12 @@ pub fn plane_color(badge: &str) -> Color32 {
         "SAG" => Color32::from_rgb(240, 110, 100),
         // A complete volume: every plane available.
         "MPR" => Color32::from_rgb(236, 178, 72),
+        // The same reconstruction as complete volumes in several planes: the gold of
+        // MPR leaning towards the plane's colour. Gold and blue are opposites (an even
+        // mix is grey), so the axial one is a soft sky blue with a warm cast.
+        "MPR A" => Color32::from_rgb(150, 178, 222),
+        "MPR C" => Color32::from_rgb(176, 202, 92),
+        "MPR S" => Color32::from_rgb(240, 146, 86),
         _ => Color32::from_rgb(170, 174, 182),
     }
 }

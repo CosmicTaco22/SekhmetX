@@ -463,6 +463,9 @@ impl Database {
                 let any_present = series_list
                     .iter()
                     .any(|se| se.slices.first().is_some_and(|s| s.path.exists()));
+                for se in &mut series_list {
+                    crate::dicom_index::refine_plane(se);
+                }
                 let mpr_groups = build_mpr_groups(&mut series_list, &description);
                 let reformats = crate::dicom_index::find_reconstructions(&series_list);
                 studies.push(Study {
