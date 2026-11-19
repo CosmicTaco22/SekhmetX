@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.33] - 2026-11-19
+
+### Changed
+- The reconstruction tags (AX, COR, SAG) sit in the bottom-right corner of the volume's card.
+
 ## [0.5.32] - 2026-11-19
 
 ### Changed

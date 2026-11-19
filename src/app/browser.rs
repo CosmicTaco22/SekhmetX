@@ -559,13 +559,20 @@ impl ViewerApp {
                                         _ => 3,
                                     });
                                     let painter = ui.painter();
-                                    let mut x = row_rect.min.x + 69.0;
-                                    // Right under the "CT · #4 · 300 images" line.
-                                    let y = row_rect.min.y + 41.0;
+                                    // Bottom right of the card.
+                                    let galleys: Vec<_> = planes
+                                        .into_iter()
+                                        .map(|b| {
+                                            let color = theme::plane_color(b);
+                                            (painter.layout_no_wrap(b.to_owned(), FontId::proportional(9.0), color), color)
+                                        })
+                                        .collect();
+                                    let total: f32 = galleys.iter().map(|(g, _)| g.size().x + 6.0).sum::<f32>()
+                                        + 4.0 * galleys.len().saturating_sub(1) as f32;
+                                    let mut x = row_rect.max.x - 7.0 - total;
+                                    let y = row_rect.max.y - 18.0;
                                     let mut chips = Vec::new();
-                                    for b in planes {
-                                        let color = theme::plane_color(b);
-                                        let g = painter.layout_no_wrap(b.to_owned(), FontId::proportional(9.0), color);
+                                    for (g, color) in galleys {
                                         let r = Rect::from_min_size(pos2(x, y), g.size() + vec2(6.0, 3.0));
                                         x = r.max.x + 4.0;
                                         chips.push((r, g, color));
