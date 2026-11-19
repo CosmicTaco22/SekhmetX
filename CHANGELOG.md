@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.32] - 2026-11-19
+
+### Changed
+- The reconstruction tags (AX, COR, SAG) sit directly under the "CT · #4 · 300 images" line, and the volume's card keeps its normal size (its title stays on one line).
+- Unfolded reconstructions are drawn in a lighter tint of the highlight colour, with a thin line in the indent tying them to their volume, so they read as derived from it.
+
 ## [0.5.31] - 2026-11-19
 
 ### Changed

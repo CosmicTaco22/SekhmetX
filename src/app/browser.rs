@@ -393,13 +393,7 @@ impl ViewerApp {
                                         .find(|(p, _)| *p == ri)
                                         .map_or(&[][..], |(_, k)| k.as_slice())
                                 };
-                                let card_h = if compact {
-                                    40.0
-                                } else if kids.is_empty() {
-                                    60.0
-                                } else {
-                                    76.0
-                                };
+                                let card_h = if compact { 40.0 } else { 60.0 };
                                 let (row_rect, resp) = ui.allocate_exact_size(
                                     vec2(row_w, card_h),
                                     Sense::click_and_drag(),
@@ -416,12 +410,23 @@ impl ViewerApp {
                                         theme::accent().gamma_multiply(if dark { 0.35 } else { 0.25 })
                                     } else if resp.hovered() {
                                         ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.5)
+                                    } else if compact {
+                                        // A reconstruction: a lighter tint of the volume's colour.
+                                        theme::accent().gamma_multiply(if dark { 0.14 } else { 0.10 })
                                     } else if highlight_3d {
                                         theme::accent().gamma_multiply(if dark { 0.08 } else { 0.06 })
                                     } else {
                                         Color32::TRANSPARENT
                                     };
                                     painter.rect_filled(row_rect, 6.0, bg);
+                                    if compact {
+                                        // Thin line in the indent tying it to the volume above.
+                                        let x = row_rect.min.x - 9.0;
+                                        painter.line_segment(
+                                            [pos2(x, row_rect.min.y - 2.0), pos2(x, row_rect.max.y + 2.0)],
+                                            Stroke::new(1.5, theme::accent().gamma_multiply(0.55)),
+                                        );
+                                    }
                                     if is_active || highlight_3d {
                                         painter.rect_filled(
                                             Rect::from_min_size(
@@ -481,7 +486,7 @@ impl ViewerApp {
                                     );
                                     job.wrap = egui::text::TextWrapping {
                                         max_width: text_w,
-                                        max_rows: if compact { 1 } else { 2 },
+                                        max_rows: if compact || !kids.is_empty() { 1 } else { 2 },
                                         break_anywhere: false,
                                         overflow_character: Some('…'),
                                     };
@@ -555,7 +560,8 @@ impl ViewerApp {
                                     });
                                     let painter = ui.painter();
                                     let mut x = row_rect.min.x + 69.0;
-                                    let y = row_rect.max.y - 18.0;
+                                    // Right under the "CT · #4 · 300 images" line.
+                                    let y = row_rect.min.y + 41.0;
                                     let mut chips = Vec::new();
                                     for b in planes {
                                         let color = theme::plane_color(b);
