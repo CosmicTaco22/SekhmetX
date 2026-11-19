@@ -49,8 +49,6 @@ pub struct Strings {
     pub remove_from_library: &'static str,
     pub compare: &'static str,
     pub images: &'static str,
-    /// Before the plane badges of the reconstructions folded under a volume.
-    pub includes: &'static str,
     pub reformats_hint: &'static str,
     /// Tooltip suffix for a complete volume (`MPR` badge).
     pub full_volume_hint: &'static str,
@@ -214,8 +212,7 @@ pub const EN: Strings = Strings {
     remove_from_library: "Remove from Library",
     compare: "Compare:",
     images: "images",
-    includes: "Includes",
-    reformats_hint: "Reconstructions made from this series (separate axial, coronal or sagittal images). Click to show or hide them.",
+    reformats_hint: "Also included as separate reconstructions (axial, coronal or sagittal series made from this volume). Click to show or hide them.",
     full_volume_hint: " · complete volume: axial, coronal and sagittal without losing detail",
     force_3d_title: "Low-Quality 3D Reconstruction Warning",
     force_3d_headline: "This acquisition does not have enough slices or 3D orientation data for standard multiplanar reconstruction.",
@@ -366,8 +363,7 @@ pub const ES: Strings = Strings {
     remove_from_library: "Quitar de la Biblioteca",
     compare: "Comparar:",
     images: "imágenes",
-    includes: "Incluye",
-    reformats_hint: "Reconstrucciones hechas a partir de esta serie (imágenes axiales, coronales o sagitales aparte). Haga clic para mostrarlas u ocultarlas.",
+    reformats_hint: "También incluidas como reconstrucciones aparte (series axiales, coronales o sagitales hechas de este volumen). Haga clic para mostrarlas u ocultarlas.",
     full_volume_hint: " · volumen completo: axial, coronal y sagital sin perder detalle",
     force_3d_title: "Advertencia de Reconstrucción 3D de Baja Calidad",
     force_3d_headline: "Esta adquisición no tiene suficientes cortes ni orientación 3D para una reconstrucción multiplanar estándar.",

@@ -67,7 +67,7 @@ or Pixmeo. It does not use their names or icons in the application.
 - Axial, coronal and sagittal reconstructions of one acquisition are grouped
   together, and MIP series are kept apart from their source stacks. A complete
   thin-slice volume is marked MPR; separate reconstructions made from it are
-  folded under it ("Includes AX COR SAG") and open with one click.
+  hidden inside its card, shown by clicking their AX/COR/SAG tags.
 
 **2D viewing**
 - GPU window/level with optional bilinear smoothing and a CPU fallback.

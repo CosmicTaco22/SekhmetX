@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.31] - 2026-11-19
+
+### Changed
+- **Reconstructions are hidden inside the volume's card.** The plane tags (AX, COR, SAG) of the reconstructions made from a complete volume now sit on a third line inside its card, and the separate "▸ Includes" line is gone. The reconstructions stay hidden at every start; clicking the tags shows or hides them as smaller cards (the tags light up while shown). Hover text in English and Spanish.
+
 ## [0.5.30] - 2026-11-19
 
 Numbered 0.5.30 because a local 0.5.29 build exists on the owner's PC that is not on GitHub yet.

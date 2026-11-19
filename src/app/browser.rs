@@ -383,8 +383,25 @@ impl ViewerApp {
 
                                 // Series card: thumbnail, description, then modality / image count / plane.
                                 let row_w = ui.available_width().max(140.0);
+                                // Reconstructions folded into this card (complete volumes only).
+                                let kids: &[usize] = if compact {
+                                    &[]
+                                } else {
+                                    study
+                                        .reformats
+                                        .iter()
+                                        .find(|(p, _)| *p == ri)
+                                        .map_or(&[][..], |(_, k)| k.as_slice())
+                                };
+                                let card_h = if compact {
+                                    40.0
+                                } else if kids.is_empty() {
+                                    60.0
+                                } else {
+                                    76.0
+                                };
                                 let (row_rect, resp) = ui.allocate_exact_size(
-                                    vec2(row_w, if compact { 40.0 } else { 60.0 }),
+                                    vec2(row_w, card_h),
                                     Sense::click_and_drag(),
                                 );
                                 let row_rect = if compact {
@@ -478,7 +495,7 @@ impl ViewerApp {
 
                                     // Second line: plane badge + "CT · #2 · 80 images".
                                     let line_y = (row_rect.min.y + if compact { 5.0 } else { 8.0 } + title_h)
-                                        .min(row_rect.max.y - if compact { 17.0 } else { 19.0 });
+                                        .min(row_rect.max.y - if compact { 17.0 } else if kids.is_empty() { 19.0 } else { 37.0 });
                                     let badge = series.cut_badge();
                                     let badge_color = theme::plane_color(badge);
                                     let badge_galley = painter.layout_no_wrap(
@@ -516,6 +533,63 @@ impl ViewerApp {
                                         FontId::proportional(10.5),
                                         theme::dim_text(ui),
                                     );
+                                }
+                                // Third line, inside the card: the planes of the reconstructions made
+                                // from this volume. Clicking them shows or hides those series
+                                // (hidden at every start).
+                                if !kids.is_empty() {
+                                    let open_id = egui::Id::unique(("reformats_open", &study.uid, ri));
+                                    let open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
+                                    let mut planes: Vec<&'static str> = Vec::new();
+                                    for &k in kids {
+                                        let b = study.series[k].dominant_plane.badge();
+                                        if !planes.contains(&b) {
+                                            planes.push(b);
+                                        }
+                                    }
+                                    planes.sort_by_key(|b| match *b {
+                                        "AX" => 0,
+                                        "COR" => 1,
+                                        "SAG" => 2,
+                                        _ => 3,
+                                    });
+                                    let painter = ui.painter();
+                                    let mut x = row_rect.min.x + 69.0;
+                                    let y = row_rect.max.y - 18.0;
+                                    let mut chips = Vec::new();
+                                    for b in planes {
+                                        let color = theme::plane_color(b);
+                                        let g = painter.layout_no_wrap(b.to_owned(), FontId::proportional(9.0), color);
+                                        let r = Rect::from_min_size(pos2(x, y), g.size() + vec2(6.0, 3.0));
+                                        x = r.max.x + 4.0;
+                                        chips.push((r, g, color));
+                                    }
+                                    let all = chips
+                                        .iter()
+                                        .fold(Rect::NOTHING, |acc, (r, _, _)| acc.union(*r))
+                                        .expand(2.0);
+                                    let chip_resp = ui
+                                        .interact(all, egui::Id::unique(("reformats_chips", &study.uid, ri)), Sense::click())
+                                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                        .on_hover_text(tr.reformats_hint);
+                                    if chip_resp.clicked() {
+                                        ui.data_mut(|d| d.insert_temp(open_id, !open));
+                                    }
+                                    if ui.is_rect_visible(all) {
+                                        let lit = open || chip_resp.hovered();
+                                        for (r, g, color) in chips {
+                                            if lit {
+                                                ui.painter().rect_filled(r, 3.0, color.gamma_multiply(0.18));
+                                            }
+                                            ui.painter().rect_stroke(
+                                                r,
+                                                3.0,
+                                                Stroke::new(1.0, color.gamma_multiply(if lit { 0.9 } else { 0.5 })),
+                                                egui::StrokeKind::Inside,
+                                            );
+                                            ui.painter().galley(r.min + vec2(3.0, 1.5), g, color);
+                                        }
+                                    }
                                 }
                                 let resp = resp.on_hover_text(format!(
                                     "{desc}\n{} {}, {}×{}, {}{}",
@@ -573,78 +647,8 @@ impl ViewerApp {
                                 let Some((_, kids)) = study.reformats.iter().find(|(p, _)| *p == ri) else {
                                     return;
                                 };
-                                let id = ui.make_persistent_id(("reformats_open", &study.uid, ri));
-                                let mut open = ui.data_mut(|d| *d.get_persisted_mut_or_default::<bool>(id));
-                                let (rect, resp) = ui.allocate_exact_size(
-                                    vec2(ui.available_width().max(140.0), 17.0),
-                                    Sense::click(),
-                                );
-                                let resp = resp
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .on_hover_text(tr.reformats_hint);
-                                if resp.clicked() {
-                                    open = !open;
-                                    ui.data_mut(|d| d.insert_persisted(id, open));
-                                }
-                                if ui.is_rect_visible(rect) {
-                                    let painter = ui.painter();
-                                    let dim = theme::dim_text(ui);
-                                    let ink = if resp.hovered() { ui.visuals().strong_text_color() } else { dim };
-                                    // Fold arrow: right when closed, down when open.
-                                    let c = pos2(rect.min.x + 73.0, rect.center().y);
-                                    let tri = if open {
-                                        vec![c + vec2(-3.5, -2.0), c + vec2(3.5, -2.0), c + vec2(0.0, 2.5)]
-                                    } else {
-                                        vec![c + vec2(-2.0, -3.5), c + vec2(-2.0, 3.5), c + vec2(2.5, 0.0)]
-                                    };
-                                    painter.add(egui::Shape::convex_polygon(tri, ink, Stroke::NONE));
-                                    let mut x = c.x + 8.0;
-                                    let lbl = painter.layout_no_wrap(
-                                        tr.includes.to_owned(),
-                                        FontId::proportional(10.5),
-                                        ink,
-                                    );
-                                    let w = lbl.size().x;
-                                    painter.galley(pos2(x, rect.center().y - lbl.size().y * 0.5), lbl, ink);
-                                    x += w + 5.0;
-                                    let mut planes: Vec<&'static str> = Vec::new();
-                                    for &k in kids {
-                                        let b = study.series[k].dominant_plane.badge();
-                                        if !planes.contains(&b) {
-                                            planes.push(b);
-                                        }
-                                    }
-                                    planes.sort_by_key(|b| match *b {
-                                        "AX" => 0,
-                                        "COR" => 1,
-                                        "SAG" => 2,
-                                        _ => 3,
-                                    });
-                                    for b in planes {
-                                        let color = theme::plane_color(b);
-                                        let g = painter.layout_no_wrap(b.to_owned(), FontId::proportional(9.0), color);
-                                        let r = Rect::from_min_size(
-                                            pos2(x, rect.center().y - g.size().y * 0.5 - 1.5),
-                                            g.size() + vec2(6.0, 3.0),
-                                        );
-                                        painter.rect_stroke(
-                                            r,
-                                            3.0,
-                                            Stroke::new(1.0, color.gamma_multiply(0.6)),
-                                            egui::StrokeKind::Inside,
-                                        );
-                                        painter.galley(r.min + vec2(3.0, 1.5), g, color);
-                                        x = r.max.x + 4.0;
-                                    }
-                                    painter.text(
-                                        pos2(x + 1.0, rect.center().y),
-                                        Align2::LEFT_CENTER,
-                                        format!("({})", kids.len()),
-                                        FontId::proportional(10.0),
-                                        dim,
-                                    );
-                                }
-                                if open {
+                                let open_id = egui::Id::unique(("reformats_open", &study.uid, ri));
+                                if ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false) {
                                     for &k in kids {
                                         draw_series_row(ui, k, false, true, clicked, thumb_jobs);
                                     }
