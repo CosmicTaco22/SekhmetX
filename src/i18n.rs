@@ -185,6 +185,15 @@ pub struct Strings {
     pub settings_storage_format: &'static str,
     pub settings_format_unzip: &'static str,
     pub settings_format_zip: &'static str,
+    // PET-CT / Multi-modality Fusion
+    pub fusion_btn: &'static str,
+    pub fusion_hover: &'static str,
+    pub fusion_enable: &'static str,
+    pub fusion_series: &'static str,
+    pub fusion_opacity: &'static str,
+    pub fusion_mode: &'static str,
+    pub fusion_clut: &'static str,
+    pub fusion_no_series: &'static str,
 }
 
 pub const EN: Strings = Strings {
@@ -336,6 +345,14 @@ pub const EN: Strings = Strings {
     settings_storage_format: "Library Storage Format:",
     settings_format_unzip: "Unzipped (DICOM files)",
     settings_format_zip: "Compressed (.zip)",
+    fusion_btn: "Fusion",
+    fusion_hover: "PET-CT / multi-modality 2D fusion overlay",
+    fusion_enable: "Enable Fusion Overlay",
+    fusion_series: "Overlay Series:",
+    fusion_opacity: "Opacity:",
+    fusion_mode: "Alpha Curve:",
+    fusion_clut: "Fusion CLUT:",
+    fusion_no_series: "No other series in this study",
 };
 
 pub const ES: Strings = Strings {
@@ -487,6 +504,14 @@ pub const ES: Strings = Strings {
     settings_storage_format: "Formato en Biblioteca:",
     settings_format_unzip: "Descomprimido (archivos DICOM)",
     settings_format_zip: "Comprimido (.zip)",
+    fusion_btn: "Fusión",
+    fusion_hover: "Fusión PET-CT / superposición multimodalidad 2D",
+    fusion_enable: "Activar Superposición de Fusión",
+    fusion_series: "Serie superpuesta:",
+    fusion_opacity: "Opacidad:",
+    fusion_mode: "Curva alfa:",
+    fusion_clut: "CLUT de Fusión:",
+    fusion_no_series: "No hay otras series en este estudio",
 };
 
 pub fn tr(lang: Lang) -> &'static Strings {
@@ -552,6 +577,8 @@ mod tests {
                 s.settings_policy_always, s.settings_policy_never,
                 s.settings_storage_format, s.settings_format_unzip,
                 s.settings_format_zip,
+                s.fusion_btn, s.fusion_hover, s.fusion_enable, s.fusion_series,
+                s.fusion_opacity, s.fusion_mode, s.fusion_clut, s.fusion_no_series,
                 ];
             for f in fields {
                 assert!(!f.trim().is_empty(), "empty i18n string found");

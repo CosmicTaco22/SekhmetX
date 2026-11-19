@@ -50,6 +50,7 @@ pub struct Volume3D {
     pub slope: f32,
     pub frame_of_reference_uid: Option<String>,
     pub value_unit: &'static str,
+    pub suv_factor: Option<f64>,
     /// Background air threshold estimated from the volume intensity distribution.
     pub foreground_threshold: f32,
     /// `true` when slice spacing, orientation, and dimensions passed validation without forcing.
@@ -518,6 +519,7 @@ impl Volume3D {
             slope: ref_frame.slope,
             frame_of_reference_uid: series.frame_of_reference_uid.clone(),
             value_unit: ref_frame.value_unit,
+            suv_factor: ref_frame.suv_factor,
             foreground_threshold: fg_thresh,
             geometry_verified,
             uncalibrated,
@@ -778,6 +780,7 @@ impl Volume3D {
             slice_thickness: Some(geom.eff_thickness),
             slice_location: geom.slice_location,
             value_unit: self.value_unit,
+            suv_factor: self.suv_factor,
         }
     }
 
@@ -2164,6 +2167,7 @@ mod tests {
             slice_thickness: Some(2.5),
             slice_location: Some(0.0),
             value_unit: "HU",
+            suv_factor: None,
         });
         let series = Series {
             uid: "1.2.3".into(),
@@ -2225,6 +2229,7 @@ mod tests {
             slice_thickness: Some(2.5),
             slice_location: Some(0.0),
             value_unit: "",
+            suv_factor: None,
         });
         let slice = crate::dicom_index::SliceRef {
             path: std::path::PathBuf::from("cine.dcm"),
@@ -2290,6 +2295,7 @@ mod tests {
                 slice_thickness: Some(1.5),
                 slice_location: Some(z as f64 * 1.5),
                 value_unit: "HU",
+                suv_factor: None,
             })
         };
         let frames: Vec<Arc<Frame>> = (0..4).map(|z| make_frame(z, 0.0)).collect();
@@ -2376,6 +2382,7 @@ mod tests {
                 slice_thickness: Some(1.0),
                 slice_location: None,
                 value_unit: "HU",
+                suv_factor: None,
             })
         };
         let make_series = |fs: &[Arc<Frame>], dp: crate::dicom_index::DominantPlane| Series {
@@ -2570,6 +2577,7 @@ mod tests {
                     slice_thickness: Some(5.0),
                     slice_location: None,
                     value_unit: "HU",
+                    suv_factor: None,
                 }));
                 slices.push(crate::dicom_index::SliceRef {
                     path: std::path::PathBuf::from(format!("b_{later}_{k}.dcm")),
@@ -2753,6 +2761,7 @@ mod tests {
                     slice_thickness: Some(sp),
                     slice_location: None,
                     value_unit: "HU",
+                    suv_factor: None,
                 }));
                 slices.push(crate::dicom_index::SliceRef {
                     path: std::path::PathBuf::from(format!("r_{z}.dcm")),
@@ -2832,6 +2841,7 @@ mod tests {
                 slice_thickness: Some(2.0),
                 slice_location: Some(orig[2]),
                 value_unit: "HU",
+                suv_factor: None,
             }));
             slices.push(crate::dicom_index::SliceRef {
                 path: std::path::PathBuf::from(format!("tilt_{i}.dcm")),

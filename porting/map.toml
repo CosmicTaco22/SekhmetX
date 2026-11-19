@@ -325,7 +325,10 @@ id = "fusion-pet"
 name = "PET-CT fusion and SUV"
 decision = "port"
 priority = 2
-progress = "todo"
+progress = "partial"
+ported_from = "087f2cd0f721"
+rdicom = "src/imaging/suv.rs, src/imaging/fusion.rs, src/frame.rs, src/app/viewport.rs, src/ui/toolbar.rs"
+notes = "Ported SUVParameters, SUVComputation, PETSUVConversion, PETWindowing, SUVWindowScaling, FusionBlend, FusionComparison, PETBlendingTable, and ViewTransform.alphaTable with unit tests; wired SUV cursor/ROI readouts and LPS-aligned 2D PET-CT fusion overlay + toolbar popover."
 paths = ['^Modules/IsiXImaging/(Sources|Tests)/ViewerFusion/', '^Modules/IsiXImaging/(Sources|Tests)/(BufferOperations/)?(PETSUV|SUV)[A-Za-z]*\.swift$']
 names = ['OrthogonalMPRPETCT.*', 'ViewerFusion', 'PETBlendingTables', 'OrthogonalFusionSliceExport']
 

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] - 2026-11-19
+
+### Added: PET-CT Fusion and SUV (ported from IsiX)
+- **PET SUV calculation** (`src/imaging/suv.rs`, `src/frame.rs`, `src/roi/mod.rs`): reads DICOM radiopharmaceutical tags (injected dose, half-life, decay correction, patient weight, injection/acquisition times, and Philips private SUV scale factor `7053,1000`) following IsiX's `SUVParameters`, `SUVComputation`, `PETSUVConversion`, `PETWindowing`, and `SUVWindowScaling` with translated unit tests. PET images display calibrated **SUV** under the cursor (2D and GPU MPR) and in ROI statistics, histograms, and line profiles.
+- **2D PET-CT / multi-modality fusion overlay** (`src/imaging/fusion.rs`, `src/app/viewport.rs`, `src/ui/toolbar.rs`, `src/ui/icons.rs`): ported IsiX's `FusionBlend`, `FusionComparison`, `PETBlendingTable`, and `ViewTransform.alphaTable` (6 alpha curves: Linear, High-Low-High, Low-High-Low, Logarithmic, Inverse Log, Flat). Added a **Fusion** toolbar button and popover (EN/ES) with one-click auto-selection of PET/NM series in the same study, opacity slider (0–100%), alpha curve picker, and fusion CLUT selector (`PET`, `HotIron`, `GEcolor`, `Spectrum`, etc.). Overlays align automatically in 3D patient (LPS) space across different matrix sizes and fields of view, and show the fused PET SUV value under the cursor.
+
 ## [0.5.37] - 2026-11-19
 
 ### Housekeeping and polish

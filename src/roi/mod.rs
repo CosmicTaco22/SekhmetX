@@ -258,7 +258,7 @@ pub fn evaluate_region_with_spacing(
             RoiPoint::ZERO,
             RoiPoint::new(frame.width as f64, frame.height as f64),
         );
-        let samples = match &frame.pixels {
+        let mut samples = match &frame.pixels {
             Pixels::Gray(gray) => {
                 RoiPolygonFill::sample_gray(&clipped, gray, frame.width as usize, frame.height as usize)
             }
@@ -266,6 +266,12 @@ pub fn evaluate_region_with_spacing(
                 RoiPolygonFill::sample_rgba(&clipped, rgba, frame.width as usize, frame.height as usize)
             }
         };
+        if let Some(suv_factor) = frame.suv_factor {
+            let f = suv_factor as f32;
+            for v in &mut samples {
+                *v *= f;
+            }
+        }
         Some(RoiPixelStatistics::compute(&samples, true, false))
     } else {
         None
@@ -416,14 +422,21 @@ pub fn sample_region_values(frame: &Frame, outline: &[RoiPoint]) -> Vec<f32> {
         RoiPoint::ZERO,
         RoiPoint::new(frame.width as f64, frame.height as f64),
     );
-    match &frame.pixels {
+    let mut vals = match &frame.pixels {
         Pixels::Gray(gray) => {
             RoiPolygonFill::sample_gray(&clipped, gray, frame.width as usize, frame.height as usize)
         }
         Pixels::Rgba(rgba) => {
             RoiPolygonFill::sample_rgba(&clipped, rgba, frame.width as usize, frame.height as usize)
         }
+    };
+    if let Some(suv_factor) = frame.suv_factor {
+        let f = suv_factor as f32;
+        for v in &mut vals {
+            *v *= f;
+        }
     }
+    vals
 }
 
 /// Samples `steps` evenly spaced intensity values along line segment `a -> b` on `frame`.
@@ -454,7 +467,12 @@ pub fn sample_line_profile(frame: &Frame, a: RoiPoint, b: RoiPoint, steps: usize
                 }
             };
             if val.is_finite() {
-                out.push(val);
+                let scaled = if let Some(suv_factor) = frame.suv_factor {
+                    val * (suv_factor as f32)
+                } else {
+                    val
+                };
+                out.push(scaled);
             }
         }
     }

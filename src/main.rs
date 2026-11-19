@@ -369,6 +369,7 @@ mod cli_tests {
             slice_thickness: None,
             slice_location: None,
             value_unit: "HU",
+            suv_factor: None,
         };
         let rect_out = evaluate_cli_roi(&f, "rect", 10.0, 10.0, 20.0, 20.0).unwrap();
         assert!(rect_out.contains("shape=rect"), "{rect_out}");

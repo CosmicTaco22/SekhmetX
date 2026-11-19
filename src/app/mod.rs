@@ -206,6 +206,39 @@ struct RenderKey {
     convolution_idx: Option<usize>,
 }
 
+/// Per-viewport PET-CT / multi-modality 2D fusion overlay state.
+pub(crate) struct FusionOverlayState {
+    pub(crate) enabled: bool,
+    /// `(study_idx, series_idx)` of the overlaid functional/secondary series.
+    pub(crate) series: Option<(usize, usize)>,
+    /// IsiX `FusionBlend` (alpha ramp mode `0..=5` and factor `-256..=256`).
+    pub(crate) blend: crate::imaging::fusion::FusionBlend,
+    /// Name of the CLUT in `ColourTableBook` (defaults to `"PET"`).
+    pub(crate) clut_name: String,
+    /// Optional window override for the fused series (`None` = frame default).
+    pub(crate) window: Option<Window>,
+    pub(crate) texture: Option<TextureHandle>,
+    pub(crate) tex_key: Option<(SliceKey, i32, i32, String, u32, u32)>,
+}
+
+impl Default for FusionOverlayState {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            series: None,
+            blend: crate::imaging::fusion::FusionBlend {
+                mode: 0,
+                factor: 0.0,
+                factor_at_drag_start: 0.0,
+            },
+            clut_name: "PET".to_string(),
+            window: None,
+            texture: None,
+            tex_key: None,
+        }
+    }
+}
+
 /// State of a single 2D comparison viewport cell.
 pub(crate) struct ViewportCell {
     pub(crate) selected: Option<(usize, usize)>,
@@ -243,6 +276,7 @@ pub(crate) struct ViewportCell {
     pub(crate) vr_clip_max: [f32; 3],
     pub(crate) vr_bg_color: [f32; 3],
     pub(crate) link_group: u8,
+    pub(crate) fusion: FusionOverlayState,
     mpr_seq: usize,
     texture: Option<TextureHandle>,
     rendered: Option<RenderKey>,
@@ -284,6 +318,7 @@ impl ViewportCell {
             vr_clip_max: [1.0, 1.0, 1.0],
             vr_bg_color: [0.02, 0.02, 0.03],
             link_group: 0,
+            fusion: FusionOverlayState::default(),
             mpr_seq: 0,
             texture: None,
             rendered: None,
@@ -315,6 +350,7 @@ impl ViewportCell {
         self.mpr_auto_applied = false;
         self.mpr_plane = None;
         self.mpr_cached = None;
+        self.fusion = FusionOverlayState::default();
         self.rendered = None;
         self.last_gpu = None;
         self.wheel_accum = 0.0;

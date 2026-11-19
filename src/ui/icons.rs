@@ -55,6 +55,7 @@ pub enum Icon {
     Trash,
     ChevronDown,
     Gear,
+    Fusion,
 }
 
 /// Maps unit coordinates (0..1, y down) into `rect`.
@@ -292,6 +293,11 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
             line(c.ellipse(0.5, 0.72, 0.5, 0.5, PI * 1.17, PI * 1.83));
             line(c.ellipse(0.5, 0.28, 0.5, 0.5, PI * 0.17, PI * 0.83));
             painter.circle_filled(c.p(0.5, 0.5), c.len(0.13), color);
+        }
+        Icon::Fusion => {
+            painter.circle_filled(c.p(0.62, 0.5), c.len(0.28), color.gamma_multiply(0.32));
+            closed(c.ellipse(0.38, 0.5, 0.28, 0.28, 0.0, TAU));
+            closed(c.ellipse(0.62, 0.5, 0.28, 0.28, 0.0, TAU));
         }
         Icon::Info => {
             closed(c.ellipse(0.5, 0.5, 0.4, 0.4, 0.0, TAU));

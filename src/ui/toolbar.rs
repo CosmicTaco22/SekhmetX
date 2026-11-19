@@ -59,7 +59,7 @@ impl ToolbarGroup {
             Self::MouseTools => 228.0,
             Self::RoiTools => 148.0,
             Self::Presentation => 286.0,
-            Self::ThreeDAndView => 316.0,
+            Self::ThreeDAndView => 372.0,
             Self::Cine => 88.0,
         }
     }
@@ -636,6 +636,151 @@ impl ViewerApp {
                             self.disable_viewport_mpr(vp_idx);
                         }
                     }
+
+                    // PET-CT / Multi-modality 2D Fusion popover
+                    let fusion_active = self.active_cell().fusion.enabled;
+                    let fusion_resp = icons::captioned_button(
+                        ui,
+                        Icon::Fusion,
+                        tr.fusion_btn,
+                        fusion_active,
+                        None,
+                        true,
+                    )
+                    .on_hover_text(tr.fusion_hover);
+                    egui::Popup::menu(&fusion_resp).show(|ui| {
+                        ui.set_min_width(240.0);
+                        let vp_idx = self.active_viewport;
+                        let mut enabled = self.viewports[vp_idx].fusion.enabled;
+                        if ui.checkbox(&mut enabled, tr.fusion_enable).changed() {
+                            self.viewports[vp_idx].fusion.enabled = enabled;
+                            if enabled && self.viewports[vp_idx].fusion.series.is_none() {
+                                self.viewports[vp_idx].fusion.series =
+                                    self.auto_pick_fusion_series(vp_idx);
+                            }
+                        }
+                        ui.separator();
+
+                        // Overlay series selector (other series in the active study)
+                        let candidates = self.fusion_candidate_series(vp_idx);
+
+                        if candidates.is_empty() {
+                            ui.label(
+                                egui::RichText::new(tr.fusion_no_series)
+                                    .small()
+                                    .color(theme::TEXT_DIM),
+                            );
+                        } else {
+                            let cur_sel = self.viewports[vp_idx].fusion.series;
+                            let cur_label = cur_sel
+                                .and_then(|k| {
+                                    candidates.iter().find(|(ck, _)| *ck == k).map(|(_, l)| l.as_str())
+                                })
+                                .unwrap_or("—");
+                            ui.label(
+                                egui::RichText::new(tr.fusion_series)
+                                    .small()
+                                    .color(theme::TEXT_DIM),
+                            );
+                            egui::ComboBox::from_id_salt("fusion_series_combo")
+                                .selected_text(cur_label)
+                                .width(220.0)
+                                .show_ui(ui, |ui| {
+                                    for (key, lbl) in &candidates {
+                                        if ui.selectable_label(cur_sel == Some(*key), lbl).clicked() {
+                                            let f = &mut self.viewports[vp_idx].fusion;
+                                            f.series = Some(*key);
+                                            f.enabled = true;
+                                            f.window = None;
+                                            f.tex_key = None;
+                                        }
+                                    }
+                                });
+                        }
+
+                        ui.add_space(4.0);
+                        // Opacity (0..100%)
+                        let mut pct = (self.viewports[vp_idx].fusion.blend.blend_fraction() * 100.0)
+                            .round() as f32;
+                        ui.horizontal(|ui| {
+                            ui.label(tr.fusion_opacity);
+                            if ui
+                                .add(
+                                    egui::Slider::new(&mut pct, 0.0..=100.0)
+                                        .suffix("%")
+                                        .fixed_decimals(0),
+                                )
+                                .changed()
+                            {
+                                self.viewports[vp_idx]
+                                    .fusion
+                                    .blend
+                                    .set_blend_fraction(pct as f64 / 100.0);
+                            }
+                        });
+
+                        // Alpha ramp mode (IsiX ViewTransform.alphaTable modes 0..=5)
+                        let mode_names: [&str; 6] = match self.lang {
+                            crate::i18n::Lang::En => [
+                                "Linear",
+                                "High-Low-High",
+                                "Low-High-Low",
+                                "Logarithmic",
+                                "Inverse Log",
+                                "Flat",
+                            ],
+                            crate::i18n::Lang::Es => [
+                                "Lineal",
+                                "Alto-Bajo-Alto",
+                                "Bajo-Alto-Bajo",
+                                "Logarítmica",
+                                "Log. inversa",
+                                "Plana",
+                            ],
+                        };
+                        let cur_mode = self.viewports[vp_idx].fusion.blend.mode.clamp(0, 5) as usize;
+                        ui.horizontal(|ui| {
+                            ui.label(tr.fusion_mode);
+                            egui::ComboBox::from_id_salt("fusion_mode_combo")
+                                .selected_text(mode_names[cur_mode])
+                                .show_ui(ui, |ui| {
+                                    for (m_idx, &m_name) in mode_names.iter().enumerate() {
+                                        if ui
+                                            .selectable_label(cur_mode == m_idx, m_name)
+                                            .clicked()
+                                        {
+                                            self.viewports[vp_idx].fusion.blend.mode = m_idx as i32;
+                                        }
+                                    }
+                                });
+                        });
+
+                        // Fusion CLUT quick selector
+                        const FUSION_CLUTS: &[&str] = &[
+                            "PET",
+                            "HotIron",
+                            "GEcolor",
+                            "Spectrum",
+                            "NIH",
+                            "Rainbow3",
+                            "BlackBody",
+                            "Flow",
+                        ];
+                        let cur_clut = self.viewports[vp_idx].fusion.clut_name.clone();
+                        ui.horizontal(|ui| {
+                            ui.label(tr.fusion_clut);
+                            egui::ComboBox::from_id_salt("fusion_clut_combo")
+                                .selected_text(&cur_clut)
+                                .show_ui(ui, |ui| {
+                                    for &cname in FUSION_CLUTS {
+                                        if ui.selectable_label(cur_clut == cname, cname).clicked() {
+                                            self.viewports[vp_idx].fusion.clut_name =
+                                                cname.to_string();
+                                        }
+                                    }
+                                });
+                        });
+                    });
                 });
 
                 let view_resp = icons::captioned_button(ui, Icon::Eye, tr.view, false, None, true)

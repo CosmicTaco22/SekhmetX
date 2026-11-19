@@ -360,7 +360,9 @@ impl ViewerApp {
             }
         }
 
-        // Live cursor readout with calibrated HU / pixel value and 3D patient coordinates.
+        let fused_frame_opt = self.draw_fusion_overlay(ui, &painter, vp_idx, view, img, &frame);
+
+        // Live cursor readout with calibrated HU / SUV / pixel value and 3D patient coordinates.
         if let Some(p) = response.hover_pos() {
             let px = self.screen_to_pixel(vp_idx, img, &frame, p);
             if vp_idx == self.active_viewport {
@@ -370,23 +372,52 @@ impl ViewerApp {
                 let (x, y) = (px.x as u32, px.y as u32);
                 let val_str_opt = if let Some((ref gpu_vol, ref gpu_geom, _)) = gpu_mpr {
                     gpu_vol.sample_plane_at(gpu_geom, px.x as f64, px.y as f64).map(|v| {
-                        let unit = gpu_vol.value_unit;
-                        if unit.is_empty() {
-                            format!("{v:.1}")
+                        if let Some(f) = gpu_vol.suv_factor {
+                            format!("{:.2} SUV", (v as f64) * f)
                         } else {
-                            format!("{v:.1} {unit}")
+                            let unit = gpu_vol.value_unit;
+                            if unit.is_empty() {
+                                format!("{v:.1}")
+                            } else {
+                                format!("{v:.1} {unit}")
+                            }
                         }
                     })
                 } else {
                     source_frame.value_at(x, y)
                 };
                 if let Some(val_str) = val_str_opt {
-                    let coords_3d = source_frame
-                        .patient_coords_at(px.x as f64, px.y as f64)
+                    let lps_opt = source_frame.patient_coords_at(px.x as f64, px.y as f64);
+                    let fused_str = fused_frame_opt
+                        .as_ref()
+                        .and_then(|ff| {
+                            let (fx, fy) = if let (Some(lps), Some(f_orig), Some((f_row, f_col))) =
+                                (lps_opt, ff.origin, ff.spacing)
+                                && ff.is_3d_plane
+                            {
+                                let rel = [lps[0] - f_orig[0], lps[1] - f_orig[1], lps[2] - f_orig[2]];
+                                let o = &ff.orientation;
+                                let u = (rel[0] * o[0] + rel[1] * o[1] + rel[2] * o[2]) / f_col;
+                                let v = (rel[0] * o[3] + rel[1] * o[4] + rel[2] * o[5]) / f_row;
+                                (u.round() as i32, v.round() as i32)
+                            } else {
+                                let u = (px.x as f64 / frame.width.max(1) as f64) * ff.width as f64;
+                                let v = (px.y as f64 / frame.height.max(1) as f64) * ff.height as f64;
+                                (u.round() as i32, v.round() as i32)
+                            };
+                            if fx >= 0 && fy >= 0 {
+                                ff.value_at(fx as u32, fy as u32)
+                                    .map(|v| format!("   Fusion: {v}"))
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or_default();
+                    let coords_3d = lps_opt
                         .map(|[cx, cy, cz]| format!("   XYZ: ({cx:.1}, {cy:.1}, {cz:.1}) mm"))
                         .unwrap_or_default();
                     self.cursor_info =
-                        Some(format!("X: {x}  Y: {y}   Val: {val_str}{coords_3d}"));
+                        Some(format!("X: {x}  Y: {y}   Val: {val_str}{fused_str}{coords_3d}"));
                 }
             }
         } else if vp_idx == self.active_viewport {
@@ -2822,4 +2853,238 @@ fn rotate_vec3_around_axis(v: [f64; 3], axis: [f64; 3], angle: f64) -> [f64; 3] 
         out[2] /= len;
     }
     out
+}
+
+impl ViewerApp {
+    /// Lists all other non-empty series in the active study for the Fusion overlay picker.
+    pub(crate) fn fusion_candidate_series(&self, vp_idx: usize) -> Vec<((usize, usize), String)> {
+        let Some((st_idx, cur_se)) = self.viewports.get(vp_idx).and_then(|v| v.selected) else {
+            return Vec::new();
+        };
+        let Some(study) = self.index.as_ref().and_then(|idx| idx.studies.get(st_idx)) else {
+            return Vec::new();
+        };
+        study
+            .series
+            .iter()
+            .enumerate()
+            .filter(|&(i, s)| i != cur_se && !s.slices.is_empty())
+            .map(|(i, s)| {
+                let desc = if s.description.is_empty() {
+                    format!("Series {}", s.number)
+                } else {
+                    s.description.clone()
+                };
+                (
+                    (st_idx, i),
+                    format!("[{}] {} ({})", s.modality, desc, s.slices.len()),
+                )
+            })
+            .collect()
+    }
+
+    /// Picks the best default overlay series in the same study for PET-CT / multi-modality fusion:
+    /// prefers `PT` or `NM` series first, else any other series in the same study.
+    pub(crate) fn auto_pick_fusion_series(&self, vp_idx: usize) -> Option<(usize, usize)> {
+        let (st_idx, cur_se) = self.viewports.get(vp_idx)?.selected?;
+        let study = self.index.as_ref()?.studies.get(st_idx)?;
+        // First look for a PET or NM series in the same study.
+        if let Some((se_idx, _)) = study.series.iter().enumerate().find(|&(i, s)| {
+            i != cur_se
+                && !s.slices.is_empty()
+                && (s.modality.eq_ignore_ascii_case("PT") || s.modality.eq_ignore_ascii_case("NM"))
+        }) {
+            return Some((st_idx, se_idx));
+        }
+        // Otherwise pick the first other multi-slice series in the same study.
+        study
+            .series
+            .iter()
+            .enumerate()
+            .find(|&(i, s)| i != cur_se && s.slices.len() > 1)
+            .map(|(i, _)| (st_idx, i))
+    }
+
+    /// Renders the 2D PET-CT / multi-modality fusion overlay on top of the base image in `vp_idx`,
+    /// aligned in 3D patient (LPS) space. Returns the overlaid `Arc<Frame>` if drawn, for cursor SUV readout.
+    fn draw_fusion_overlay(
+        &mut self,
+        ui: &egui::Ui,
+        painter: &egui::Painter,
+        vp_idx: usize,
+        view: Rect,
+        img: Rect,
+        base_frame: &Frame,
+    ) -> Option<Arc<Frame>> {
+        let (f_st, f_se) = {
+            let vp = self.viewports.get(vp_idx)?;
+            if !vp.fusion.enabled {
+                return None;
+            }
+            vp.fusion.series?
+        };
+
+        let (f_slice_idx, f_path, f_frame_num) = {
+            let index = self.index.as_ref()?;
+            let f_series = index.studies.get(f_st)?.series.get(f_se)?;
+            if f_series.slices.is_empty() {
+                return None;
+            }
+            // Match the fused slice nearest in 3D LPS normal distance to the base frame.
+            let mut best_idx = None;
+            if let Some(b_orig) = base_frame.origin
+                && base_frame.is_3d_plane
+            {
+                let n = [
+                    base_frame.orientation[6],
+                    base_frame.orientation[7],
+                    base_frame.orientation[8],
+                ];
+                let b_d = b_orig[0] * n[0] + b_orig[1] * n[1] + b_orig[2] * n[2];
+                let mut best_dist = f64::INFINITY;
+                for (i, s) in f_series.slices.iter().enumerate() {
+                    if let Some(pos) = s.position {
+                        let d = (pos[0] * n[0] + pos[1] * n[1] + pos[2] * n[2] - b_d).abs();
+                        if d < best_dist {
+                            best_dist = d;
+                            best_idx = Some(i);
+                        }
+                    }
+                }
+            }
+            if best_idx.is_none()
+                && let Some(b_loc) = base_frame.slice_location
+            {
+                let mut best_dist = f64::INFINITY;
+                for (i, s) in f_series.slices.iter().enumerate() {
+                    if let Some(loc) = s.slice_location {
+                        let d = (loc - b_loc).abs();
+                        if d < best_dist {
+                            best_dist = d;
+                            best_idx = Some(i);
+                        }
+                    }
+                }
+            }
+            let idx = best_idx.unwrap_or_else(|| {
+                let vp = &self.viewports[vp_idx];
+                let base_len = vp
+                    .selected
+                    .and_then(|(bs, br)| index.studies.get(bs)?.series.get(br))
+                    .map_or(1, |s| s.slices.len().max(1));
+                ((vp.slice * f_series.slices.len()) / base_len)
+                    .min(f_series.slices.len() - 1)
+            });
+            let sref = &f_series.slices[idx];
+            (idx, sref.path.clone(), sref.frame)
+        };
+
+        let f_key = SliceKey {
+            scan_gen: self.scan_gen,
+            study: f_st,
+            series: f_se,
+            slice: f_slice_idx,
+        };
+
+        let f_frame = if let Some(cached) = self.cache.get(&f_key) {
+            cached.clone()
+        } else {
+            self.loader.request(Job {
+                key: f_key,
+                path: f_path,
+                frame: f_frame_num,
+                urgent: true,
+                distance: 0,
+            });
+            return None;
+        };
+
+        let f_win = self.viewports[vp_idx]
+            .fusion
+            .window
+            .unwrap_or_else(|| f_frame.default_window());
+        let clut_name = self.viewports[vp_idx].fusion.clut_name.clone();
+        let blend = self.viewports[vp_idx].fusion.blend;
+        let desired_key = (
+            f_key,
+            blend.mode,
+            (blend.factor * 10.0).round() as i32,
+            clut_name.clone(),
+            f_win.level.to_bits(),
+            f_win.width.to_bits(),
+        );
+
+        if self.viewports[vp_idx].fusion.tex_key.as_ref() != Some(&desired_key)
+            || self.viewports[vp_idx].fusion.texture.is_none()
+        {
+            let clut = ColourTableBook::table_named(&clut_name);
+            let alpha = blend.current_alpha_table();
+            let rgba = f_frame.render_fusion_rgba(f_win, false, clut.as_ref(), &alpha);
+            let color_img = egui::ColorImage::from_rgba_unmultiplied(
+                [f_frame.width as usize, f_frame.height as usize],
+                &rgba,
+            );
+            let tex = ui.ctx().load_texture(
+                format!("fusion-{vp_idx}"),
+                color_img,
+                egui::TextureOptions::LINEAR,
+            );
+            self.viewports[vp_idx].fusion.texture = Some(tex);
+            self.viewports[vp_idx].fusion.tex_key = Some(desired_key);
+        }
+
+        let tex_id = self.viewports[vp_idx].fusion.texture.as_ref()?.id();
+
+        // Map the 4 corners of the fused frame into screen space via patient LPS coordinates
+        // when both frames have valid 3D planes, so different matrix sizes/FOVs align accurately.
+        let corners_px: [Pos2; 4] = if base_frame.is_3d_plane
+            && f_frame.is_3d_plane
+            && let (Some(b_orig), Some((b_row, b_col))) = (base_frame.origin, base_frame.spacing)
+        {
+            let fw = f_frame.width as f64;
+            let fh = f_frame.height as f64;
+            let bo = &base_frame.orientation;
+            let mut out = [Pos2::ZERO; 4];
+            let f_corners = [(0.0, 0.0), (fw, 0.0), (fw, fh), (0.0, fh)];
+            for (idx, &(cx, cy)) in f_corners.iter().enumerate() {
+                if let Some(lps) = f_frame.patient_coords_at(cx, cy) {
+                    let rel = [lps[0] - b_orig[0], lps[1] - b_orig[1], lps[2] - b_orig[2]];
+                    let bx = (rel[0] * bo[0] + rel[1] * bo[1] + rel[2] * bo[2]) / b_col;
+                    let by = (rel[0] * bo[3] + rel[1] * bo[4] + rel[2] * bo[5]) / b_row;
+                    out[idx] = pos2(bx as f32, by as f32);
+                }
+            }
+            out
+        } else {
+            let bw = base_frame.width as f32;
+            let bh = base_frame.height as f32;
+            [pos2(0.0, 0.0), pos2(bw, 0.0), pos2(bw, bh), pos2(0.0, bh)]
+        };
+
+        let scr = [
+            self.pixel_to_screen(vp_idx, img, base_frame, corners_px[0]),
+            self.pixel_to_screen(vp_idx, img, base_frame, corners_px[1]),
+            self.pixel_to_screen(vp_idx, img, base_frame, corners_px[2]),
+            self.pixel_to_screen(vp_idx, img, base_frame, corners_px[3]),
+        ];
+
+        let mut mesh = egui::Mesh::with_texture(tex_id);
+        let uvs = [
+            pos2(0.0, 0.0),
+            pos2(1.0, 0.0),
+            pos2(1.0, 1.0),
+            pos2(0.0, 1.0),
+        ];
+        for i in 0..4 {
+            mesh.vertices.push(egui::epaint::Vertex {
+                pos: scr[i],
+                uv: uvs[i],
+                color: Color32::WHITE,
+            });
+        }
+        mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+        painter.with_clip_rect(view).add(egui::Shape::mesh(mesh));
+
+        Some(f_frame)
+    }
 }

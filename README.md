@@ -84,6 +84,7 @@ or Pixmeo. It does not use their names or icons in the application.
   double-click a viewport to enlarge it and again to go back.
 - Right-click menu with a palette of every mouse and measurement tool.
 - Patient age shown beside the date of birth.
+- **PET-CT / multi-modality fusion and SUV:** 2D fusion overlay aligned in 3D patient space across different matrix sizes and fields of view, with opacity slider, six alpha curves and PET colour tables; calibrated SUV readouts under the cursor and in ROI statistics.
 
 **MPR and 3D**
 - In-place 3D MPR and a three-pane Ax·Cor·Sag view with linked crosshairs.

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Context, Result};
+use dicom_core::Tag;
 use dicom_dictionary_std::tags;
 use dicom_object::{DefaultDicomObject, OpenFileOptions};
 use dicom_pixeldata::{PhotometricInterpretation, PixelDecoder};
@@ -15,7 +16,8 @@ use dicom_pixeldata::{PhotometricInterpretation, PixelDecoder};
 use crate::dicom_index::{get_f64, get_f64s, get_int, get_str};
 use crate::geometry::{ImagePlaneCoordinates, ImagePlaneGeometry};
 use crate::imaging::{
-    clut::ColorLookupTable, defaults, photometry, voi_lut::VoiLut, window, Window,
+    clut::ColorLookupTable, defaults, photometry, suv::SuvParameters, voi_lut::VoiLut, window,
+    Window,
 };
 
 pub enum Pixels {
@@ -53,6 +55,8 @@ pub struct Frame {
     pub slice_thickness: Option<f64>,
     pub slice_location: Option<f64>,
     pub value_unit: &'static str,
+    /// PET-to-SUV multiplication factor (when the frame has valid SUV metadata).
+    pub suv_factor: Option<f64>,
 }
 
 impl Frame {
@@ -85,6 +89,10 @@ impl Frame {
         match &self.pixels {
             Pixels::Gray(v) => {
                 let val = *v.get(i)?;
+                if let Some(f) = self.suv_factor {
+                    let suv = (val as f64) * f;
+                    return Some(format!("{suv:.2} SUV"));
+                }
                 Some(if val.fract().abs() < 1e-3 {
                     format!("{:.0} {}", val, self.value_unit)
                 } else {
@@ -145,6 +153,56 @@ impl Frame {
         }
     }
 
+    /// RGBA8 pixels for 2D fusion overlay, using `clut` for RGB and `alpha_table` for A.
+    pub fn render_fusion_rgba(
+        &self,
+        w: Window,
+        invert: bool,
+        clut: Option<&ColorLookupTable>,
+        alpha_table: &[u8; 256],
+    ) -> Vec<u8> {
+        let flip = invert != self.inverts;
+        let low = w.low();
+        let inv_w = if w.width.abs() > 1e-6 {
+            255.0 / w.width
+        } else {
+            0.0
+        };
+        match &self.pixels {
+            Pixels::Gray(values) => {
+                let mut out = vec![0u8; values.len() * 4];
+                for (i, &val) in values.iter().enumerate() {
+                    let mut idx = ((val - low) * inv_w).clamp(0.0, 255.0) as u8;
+                    if flip {
+                        idx = 255 - idx;
+                    }
+                    let (r, g, b) = if let Some(c) = clut {
+                        (c.red[idx as usize], c.green[idx as usize], c.blue[idx as usize])
+                    } else {
+                        (idx, idx, idx)
+                    };
+                    let a = alpha_table[idx as usize];
+                    let o = i * 4;
+                    out[o] = r;
+                    out[o + 1] = g;
+                    out[o + 2] = b;
+                    out[o + 3] = a;
+                }
+                out
+            }
+            Pixels::Rgba(rgba) => {
+                let mut out = vec![0u8; rgba.len()];
+                window::colour_rgba(rgba, &mut out, &window::colour_table(w), flip);
+                for px in out.as_chunks_mut::<4>().0 {
+                    let lum = ((px[0] as u16 * 77 + px[1] as u16 * 150 + px[2] as u16 * 29) >> 8)
+                        as usize;
+                    px[3] = alpha_table[lum.min(255)];
+                }
+                out
+            }
+        }
+    }
+
     /// Returns a new `Frame` with 2D spatial convolution applied (`ImageConvolution`).
     pub fn with_convolution(&self, conv: &crate::imaging::convolution::ImageConvolution) -> Self {
         let w = self.width as usize;
@@ -172,6 +230,7 @@ impl Frame {
             slice_thickness: self.slice_thickness,
             slice_location: self.slice_location,
             value_unit: self.value_unit,
+            suv_factor: self.suv_factor,
         }
     }
 
@@ -197,6 +256,88 @@ impl Frame {
         }
         (tw, th, out)
     }
+}
+
+/// Reads PET SUV parameters from a DICOM object, following IsiX `SUVParameters.swift`.
+fn read_suv_parameters(obj: &DefaultDicomObject) -> Option<SuvParameters> {
+    let mut params = SuvParameters {
+        patients_weight: get_f64(obj, tags::PATIENT_WEIGHT).unwrap_or(0.0) as f32,
+        units: get_str(obj, tags::UNITS),
+        decay_correction: get_str(obj, tags::DECAY_CORRECTION),
+        decay_factor: 1.0,
+        philips_factor: obj
+            .element_opt(Tag(0x7053, 0x1000))
+            .ok()
+            .flatten()
+            .and_then(|e| e.to_float64().ok())
+            .unwrap_or(0.0) as f32,
+        ..Default::default()
+    };
+
+    if let Some(seq) = obj
+        .element_opt(tags::RADIOPHARMACEUTICAL_INFORMATION_SEQUENCE)
+        .ok()
+        .flatten()
+        && let Some(item) = seq.items().and_then(|items| items.first())
+    {
+        params.radionuclide_total_dose = item
+            .element_opt(tags::RADIONUCLIDE_TOTAL_DOSE)
+            .ok()
+            .flatten()
+            .and_then(|e| e.to_float64().ok())
+            .unwrap_or(0.0) as f32;
+        params.halflife = item
+            .element_opt(tags::RADIONUCLIDE_HALF_LIFE)
+            .ok()
+            .flatten()
+            .and_then(|e| e.to_float64().ok())
+            .unwrap_or(0.0) as f32;
+
+        // Date/time priority 0 (Horos default): Series -> Acquisition -> Content -> Study.
+        let date_tags = [
+            tags::SERIES_DATE,
+            tags::ACQUISITION_DATE,
+            tags::CONTENT_DATE,
+            tags::STUDY_DATE,
+        ];
+        let time_tags = [
+            tags::SERIES_TIME,
+            tags::ACQUISITION_TIME,
+            tags::CONTENT_TIME,
+            tags::STUDY_TIME,
+        ];
+        let preferred_date = date_tags
+            .iter()
+            .find_map(|&t| get_str(obj, t).filter(|s| !s.is_empty()));
+        let preferred_time = time_tags
+            .iter()
+            .find_map(|&t| get_str(obj, t).filter(|s| !s.is_empty()));
+
+        let inj_dt = item
+            .element_opt(tags::RADIOPHARMACEUTICAL_START_DATE_TIME)
+            .ok()
+            .flatten()
+            .and_then(|e| e.to_str().ok().map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty());
+        let inj_time = item
+            .element_opt(tags::RADIOPHARMACEUTICAL_START_TIME)
+            .ok()
+            .flatten()
+            .and_then(|e| e.to_str().ok().map(|s| s.trim().to_string()))
+            .filter(|s| !s.is_empty());
+
+        if let (Some(d), Some(t)) = (&preferred_date, &preferred_time) {
+            if let Some(full_inj) = inj_dt {
+                params.radiopharmaceutical_start_datetime = Some(full_inj);
+                params.acquisition_datetime = Some(format!("{d}{t}"));
+            } else if let Some(it) = inj_time {
+                params.radiopharmaceutical_start_datetime = Some(format!("{d}{it}"));
+                params.acquisition_datetime = Some(format!("{d}{t}"));
+            }
+        }
+    }
+
+    Some(params)
 }
 
 /// The first item of the VOI LUT Sequence as a table, if there is one usable.
@@ -364,6 +505,22 @@ pub fn load_frame(path: &Path, frame: u32) -> Result<Frame> {
         )
     };
 
+    let is_rgb = matches!(pixels, Pixels::Rgba(_));
+    let suv_factor = if modality == "PT" || modality == "NM" {
+        read_suv_parameters(&obj).and_then(|p| p.compute_factor(is_rgb))
+    } else {
+        None
+    };
+    let value_unit = if modality == "CT" {
+        "HU"
+    } else if suv_factor.is_some() {
+        "SUV"
+    } else if modality == "PT" && get_str(&obj, tags::UNITS).as_deref() == Some("BQML") {
+        "Bq/mL"
+    } else {
+        ""
+    };
+
     Ok(Frame {
         width,
         height,
@@ -382,7 +539,8 @@ pub fn load_frame(path: &Path, frame: u32) -> Result<Frame> {
         frame_of_reference_uid,
         slice_thickness: get_f64(&obj, tags::SLICE_THICKNESS),
         slice_location,
-        value_unit: if modality == "CT" { "HU" } else { "" },
+        value_unit,
+        suv_factor,
     })
 }
 
@@ -414,6 +572,7 @@ mod tests {
             slice_thickness: None,
             slice_location: None,
             value_unit: "HU",
+            suv_factor: None,
         };
         let conv = FACTORY_CONVOLUTIONS[0].to_convolution();
         let presentation = source.with_convolution(&conv);
