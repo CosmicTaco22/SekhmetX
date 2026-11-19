@@ -64,10 +64,15 @@ or Pixmeo. It does not use their names or icons in the application.
 - Full-window library view with modality albums, a sortable study table, series
   thumbnails and a study details pane; search by patient, ID, accession, study
   or series.
-- Axial, coronal and sagittal reconstructions of one acquisition are grouped
-  together, and MIP series are kept apart from their source stacks. A complete
-  thin-slice volume is marked MPR; separate reconstructions made from it are
-  hidden inside its card, shown by clicking their AX/COR/SAG tags.
+- Series are recognised the way a reader thinks of them: a complete thin-slice
+  volume is marked **MPR** (or MPR-A / MPR-C / MPR-S when the same
+  reconstruction exists in several planes); separate axial, coronal and
+  sagittal reconstructions made from it are tucked inside its card and shown by
+  clicking their AX/COR/SAG tags. This also works for reconstructions saved as
+  plain pictures, matched by acquisition time, kernel (including Canon FC
+  codes) and their place in the series list.
+- MIP series and different kernels are kept apart; dose reports, protocol pages
+  and scouts are gathered under "Single images / Scouts".
 
 **2D viewing**
 - GPU window/level with optional bilinear smoothing and a CPU fallback.
@@ -89,15 +94,15 @@ or Pixmeo. It does not use their names or icons in the application.
   gantry-tilt support and slice-spacing checks.
 - GPU volume rendering and 3D MIP with presets, shading, a transfer-function
   editor, clipping and an orientation cube.
-- Side-by-side comparison of studies from different dates with automatic 3D
-  alignment that matches the body outline (so a patient lying rolled, or a
-  scan covering a different stretch of the body, still lines up), refined
-  level by level for breathing and posture differences, and turns the
-  other images to match the viewport the comparison started from; or manual
-  alignment when the patient lay differently: hold
-  `Ctrl`/`Cmd` to move or turn one image alone and it stays linked with that
-  difference. Switching a link on makes the others match the viewport you are
-  in; "= mm" zoom shows both at the same physical scale.
+- Side-by-side comparison of studies from different dates:
+  - automatic 3D alignment that matches the body outline, so a patient lying
+    rolled, or a scan covering a different stretch of the body, still lines up;
+  - refined level by level along the body for breathing and posture
+    differences, followed smoothly while scrolling;
+  - the other images turn, centre and zoom to match the viewport the
+    comparison started from, at the same physical scale ("= mm");
+  - manual alignment when needed: hold `Ctrl`/`Cmd` to move or turn one image
+    alone, and it stays linked with that difference.
 
 **Measurements and key images**
 - Length, angle, Cobb angle, arrow with text, oval, rectangle, polygon, pencil
@@ -216,7 +221,7 @@ against Horos or IsiX.
 
 ## More screenshots
 
-| Comparing two series side by side | Library |
+| Two dates compared, the later one turned upright automatically | Library |
 |---|---|
 | ![Two linked viewports](docs/screenshots/compare.png) | ![Library view](docs/screenshots/library.png) |
 

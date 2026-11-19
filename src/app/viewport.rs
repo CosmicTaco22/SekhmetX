@@ -941,11 +941,11 @@ impl ViewerApp {
                 if resp.clicked() {
                     self.viewports[vp_idx].link_group = (raw_group + 1) % 5;
                 }
-                resp.on_hover_text("Click to cycle Link Group (1–4 or Off)");
+                resp.on_hover_text(if self.lang == crate::i18n::Lang::Es { "Clic para cambiar de grupo de vínculo (1–4 o ninguno)" } else { "Click to cycle Link Group (1–4 or Off)" });
             }
         } else if cell_count > 2 && any_link {
             let col = Color32::from_gray(145);
-            let label = "○ Link".to_string();
+            let label = if self.lang == crate::i18n::Lang::Es { "○ Vincular" } else { "○ Link" }.to_string();
             let font = FontId::proportional(10.5);
             let galley = painter.layout_no_wrap(label.clone(), font.clone(), col);
             let pill_size = galley.size() + vec2(12.0, 4.0);
@@ -964,7 +964,7 @@ impl ViewerApp {
             if resp.clicked() {
                 self.viewports[vp_idx].link_group = 1;
             }
-            resp.on_hover_text("Click to assign this viewport to a Link Group");
+            resp.on_hover_text(if self.lang == crate::i18n::Lang::Es { "Clic para asignar este visor a un grupo de vínculo" } else { "Click to assign this viewport to a Link Group" });
         }
     }
 

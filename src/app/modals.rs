@@ -1281,11 +1281,11 @@ impl ViewerApp {
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-14.0, -34.0))
             .show(ctx, |ui| {
                 let Some(k) = self.viewport_measure_key(vp_idx) else {
-                    ui.small("No active slice.");
+                    ui.small(if self.lang == crate::i18n::Lang::Es { "No hay imagen activa." } else { "No active slice." });
                     return;
                 };
                 let Some(frame) = self.viewport_frame(vp_idx) else {
-                    ui.small("Frame not loaded.");
+                    ui.small(if self.lang == crate::i18n::Lang::Es { "Imagen aún no cargada." } else { "Frame not loaded." });
                     return;
                 };
                 let list = self.measures.get(&k);
@@ -1327,7 +1327,7 @@ impl ViewerApp {
                             96,
                         );
                         if samples.len() < 2 {
-                            ui.small("No samples.");
+                            ui.small(if self.lang == crate::i18n::Lang::Es { "Sin muestras." } else { "No samples." });
                             return;
                         }
                         let (min_v, max_v, mean_v) = summarize_samples(&samples);
@@ -1369,14 +1369,14 @@ impl ViewerApp {
                         } else {
                             crate::roi::RoiPlanarGeometry::outline_of_rectangle(r).to_vec()
                         };
-                        draw_histogram_bars(ui, frame, &outline, unit);
+                        draw_histogram_bars(ui, frame, &outline, unit, self.lang);
                     }
                     crate::app::Measure::Polygon(pts) => {
                         let outline: Vec<crate::roi::RoiPoint> = pts
                             .iter()
                             .map(|p| crate::roi::RoiPoint::new(p.x as f64, p.y as f64))
                             .collect();
-                        draw_histogram_bars(ui, frame, &outline, unit);
+                        draw_histogram_bars(ui, frame, &outline, unit, self.lang);
                     }
                     crate::app::Measure::Pencil(pts) => {
                         let raw: Vec<crate::roi::RoiPoint> = pts
@@ -1385,10 +1385,10 @@ impl ViewerApp {
                             .collect();
                         let (smoothed, _) = crate::roi::RoiSpline::smooth(&raw, 1.5);
                         let outline = if smoothed.len() >= 3 { &smoothed } else { &raw };
-                        draw_histogram_bars(ui, frame, outline, unit);
+                        draw_histogram_bars(ui, frame, outline, unit, self.lang);
                     }
                     _ => {
-                        ui.small("Histogram available for Length / Area ROIs.");
+                        ui.small(if self.lang == crate::i18n::Lang::Es { "Histograma disponible para ROI de longitud o de área." } else { "Histogram available for Length / Area ROIs." });
                     }
                 }
             });
@@ -1557,10 +1557,11 @@ fn draw_histogram_bars(
     frame: &crate::frame::Frame,
     outline: &[crate::roi::RoiPoint],
     unit: &str,
+    lang: crate::i18n::Lang,
 ) {
     let samples = crate::roi::sample_region_values(frame, outline);
     if samples.is_empty() {
-        ui.small("No interior pixels.");
+        ui.small(if lang == crate::i18n::Lang::Es { "Sin píxeles dentro de la ROI." } else { "No interior pixels." });
         return;
     }
     let (min_v, max_v, mean_v) = summarize_samples(&samples);

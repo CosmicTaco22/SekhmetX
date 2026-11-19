@@ -1,4 +1,4 @@
-# Handoff: where the project stands (v0.5.18, 17 Nov 2026)
+# Handoff: where the project stands (v0.5.37, 19 Nov 2026)
 
 Written for whoever continues this, human or agent. It records what exists,
 the owner's standing rules, what was verified, what is unfinished, and what
@@ -70,7 +70,7 @@ These were set over the course of the project and are not all in `AGENTS.md`.
   file SekhmetX reads. Wait for the owner's design before starting it.
 - Dark theme is the default.
 
-## What exists (v0.5.18)
+## What exists (v0.5.37)
 
 - **2D viewer:** scroll, zoom, pan, rotate/flip, invert, cine, Horos window
   presets, 31 CLUTs, 22 convolution filters, GPU window/level with bilinear
@@ -91,9 +91,25 @@ These were set over the course of the project and are not all in `AGENTS.md`.
 - **3D volume rendering:** GPU ray-caster (VR and MIP), five presets, shading
   with ambient/diffuse/specular, histogram and transfer-function editor,
   clip box, background colour, orientation cube.
-- **Comparison:** layouts up to 4×4, colour-coded link groups (zoom, WL, cut),
-  two zoom-link modes, cross-study rigid registration on a worker thread,
-  Compare popover.
+- **Comparison of two dates** (`src/volume.rs` registration, `src/app/mpr_sync.rs`):
+  layouts up to 4×4, colour-coded link groups (zoom, WL, cut), Compare popover.
+  Registration runs on a worker thread: a whole-volume search and a
+  body-outline method (body mask per axial slice without the table, height
+  profiles, roll from the outline, refinement on body voxels), the better one
+  kept, then refined per level (8 cm stretches every 3 cm, `fit_local`) for
+  breathing, twist and pelvic tilt. The viewport where a link is switched on
+  is the master (`link_master`); followers are turned, centred on the matching
+  anatomy and zoomed "= mm" to it. `Ctrl`/`Cmd` adjusts one viewport alone and
+  relocks. `sekhmetx.log` records each registration ("Body registration",
+  "Local alignment", "Registration finished").
+- **Series recognition** (`src/dicom_index.rs`): complete volumes (≥30 slices,
+  ≤2 mm) get an MPR badge (MPR-A/C/S when one reconstruction exists as volumes
+  in several planes); reconstructions are folded into their volume's card
+  (`find_reconstructions`): by position for placeable series, and for
+  Secondary Capture pictures (no position/orientation, typical of Canon spine
+  coronals) by their run of same-named neighbouring series and acquisition
+  time, with the plane inferred from the run. Canon FC kernel codes, Spanish
+  kernel words, dose pages to "Single images / Scouts".
 - **Other:** PNG and anonymized DICOM export, anonymized `Ctrl+C` screenshot,
   right-click menu with a tool palette, maximise a viewport by double-click,
   drag-and-drop series, metadata inspector, EN/ES interface, OLED theme,
@@ -129,7 +145,12 @@ Local data lives in `%LOCALAPPDATA%\SekhmetX` (or beside the exe when a
 
 ## What was verified, and what was not
 
-Verified on Linux, 17 Nov 2026, at v0.5.18:
+Verified on Linux, 19 Nov 2026, at v0.5.37: clippy (Rust 1.97) clean, 124 tests
+pass, build succeeds; comparison, series badges and folding checked by eye on
+synthetic phantoms. The owner tested two-date comparison and series grouping
+on real chest-abdomen-pelvis and whole-spine CTs (Canon) up to v0.5.29.
+
+Earlier, at v0.5.18:
 - `cargo clippy --release -- -D warnings` (Rust 1.97): clean. GitHub's CI used
   an older Rust and passed v0.5.17 even though Rust 1.97 rejected it; expect
   newer lints to appear when CI updates.
@@ -180,7 +201,17 @@ Not verified:
 
 ## Next steps
 
-The owner was offered these after v0.5.1 and has not chosen yet. Ask him.
+Open threads from the latest work:
+- Check the per-level alignment and the new "= mm" / centring on more real
+  two-date studies; tune the per-level limits (30 mm height, 15 mm, 6°) from
+  `sekhmetx.log` if needed.
+- Reading a picture-only series' plane from the image itself (symmetry and
+  shape of the body), as a fallback when its block does not show the other
+  two planes. Not needed for the studies seen so far.
+- The blank first images of a turned (oblique) follower near the top of a
+  scan: the scroll range spans the plane's projected extent.
+
+Longer-term options offered after v0.5.1, not yet chosen. Ask the owner.
 
 1. Curved MPR and measurements in 3D MPR.
 2. PET-CT fusion with SUV (`fusion-pet`, P2, not started).
@@ -195,6 +226,14 @@ Smaller candidates the IsiX 6.0.4 review turned up: live length ratios
 (`RulerCalibration`), and ultrasound region calibration (`USRegion`).
 
 ## Working across sessions
+
+**State on 19 Nov 2026:** GitHub `master` holds everything up to v0.5.37. The
+owner's PC had a local, unpushed v0.5.29 made with Antigravity (it added a
+"Fusión" toolbar button); it was never on GitHub, so this line of work does
+not contain it. Before working on the PC again, save that local work on a
+branch and reset the PC's `master` to GitHub's (see the steps given to the
+owner), then re-apply anything from it that is still wanted.
+
 
 Work has moved between Antigravity (Gemini) on the owner's PC, a Claude Code
 cloud session, and a local Claude Code session in the same PC folder. Only one

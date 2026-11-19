@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.37] - 2026-11-19
+
+### Housekeeping and polish
+- Spanish for the last English-only texts: the library Clear button's hint, the grouped-reconstructions hint, the ROI histogram messages and the link-group badge and its hints.
+- The compact thumbnail strip takes its plane colours from the theme, so AX/COR/SAG/MPR match the series list (SAG was orange there, red elsewhere).
+- Project page: the comparison and series-recognition features rewritten as short points; the comparison screenshot replaced with a two-date comparison in which the later, rolled study is turned upright automatically (synthetic phantom).
+- `HANDOFF.md` brought up to v0.5.37 (comparison, series recognition, open threads, the state of the owner's unpushed local build); `BUGS.md` lists the comparison and series-filing fixes.
+
 ## [0.5.36] - 2026-11-19
 
 ### Improved: series recognition from the real spine study's DICOM tags

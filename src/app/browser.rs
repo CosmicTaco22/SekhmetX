@@ -168,7 +168,7 @@ impl ViewerApp {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .small_button(tr.clear)
-                    .on_hover_text("Clear studies from the local library (files on disk are untouched)")
+                    .on_hover_text(if self.lang == crate::i18n::Lang::Es { "Quitar los estudios de la biblioteca local (los archivos en el disco no se tocan)" } else { "Clear studies from the local library (files on disk are untouched)" })
                     .clicked()
                 {
                     clear_library = true;
@@ -747,9 +747,11 @@ impl ViewerApp {
                                                             .size(11.0)
                                                             .color(theme::accent_bright()),
                                                     )
-                                                    .on_hover_text(
-                                                        "Grouped Axial / Coronal / Sagittal reconstructions. Click to open in 3D MPR.",
-                                                    );
+                                                    .on_hover_text(if self.lang == crate::i18n::Lang::Es {
+                                                        "Reconstrucciones axial / coronal / sagital agrupadas. Clic para abrir en MPR 3D."
+                                                    } else {
+                                                        "Grouped Axial / Coronal / Sagittal reconstructions. Click to open in 3D MPR."
+                                                    });
                                                 if hdr.clicked() {
                                                     let target_ri = active_sel
                                                         .filter(|&(s_i, r_i)| {
@@ -1080,13 +1082,7 @@ impl ViewerApp {
                                 clicked = Some((self.active_viewport, (si, ri)));
                             }
 
-                            let badge_color = match cut_badge {
-                                "AX" => Color32::from_rgb(110, 190, 255),
-                                "COR" => Color32::from_rgb(130, 225, 160),
-                                "SAG" => Color32::from_rgb(255, 195, 105),
-                                b if b.starts_with("MPR") => theme::plane_color(b),
-                                _ => Color32::from_gray(175),
-                            };
+                            let badge_color = theme::plane_color(cut_badge);
                             ui.label(
                                 egui::RichText::new(format!(
                                     "{cut_badge} · {}",
