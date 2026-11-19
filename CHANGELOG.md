@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.36] - 2026-11-19
+
+### Improved: series recognition from the real spine study's DICOM tags
+The owner's files showed that the coronal reconstructions are Secondary Capture pictures with no position, orientation, frame of reference or slice thickness, and nothing naming their plane; they keep the acquisition time and the kernel.
+- **Canon / Toshiba kernel codes** are understood: FC01-FC29 soft tissue, FC30-FC49 and FC80+ bone, FC50-FC59 lung. The recorded kernel now counts before the series name when matching reconstructions to volumes.
+- **Acquisition-time cross-check** for pictures that cannot be placed: they keep the time of the acquisition they were made from, so a volume acquired at another moment is rejected and the volume of the same moment (same kernel family first) is used. Lumbar reconstructions (+112.5 s) go under the lumbar volume, thoracic ones under the thoracic volume.
+- **Canon dose pages** (a few pictures with no position and no pixel size, or numbered 900 and above, described only as "4") go into Single images / Scouts.
+- The plane of these pictures still comes from their block (AX and SAG present, so this one is COR); no tag names it. Reading the plane from the picture itself is left for later, as the block rule covers every case in this study.
+
 ## [0.5.35] - 2026-11-19
 
 ### Fixed

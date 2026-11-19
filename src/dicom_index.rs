@@ -202,6 +202,14 @@ pub fn is_auxiliary(s: &Series) -> bool {
     if matches!(s.modality.as_str(), "SR" | "OT" | "PR" | "KO" | "DOC") {
         return true;
     }
+    // Pictures that cannot be placed and have no pixel size (dose pages), or a few
+    // pictures numbered 900 and above (where scanners put dose reports).
+    if s.slices.len() <= 5
+        && s.normal.is_none()
+        && (s.slices.first().is_none_or(|sl| sl.spacing.is_none()) || s.number >= 900)
+    {
+        return true;
+    }
     let d = s.description.to_lowercase();
     let words = [
         "dose", "dosis", "protocol", "report", "informe", "topogram", "topograma", "scout",
@@ -302,8 +310,10 @@ pub fn find_reconstructions(series: &[Series]) -> Vec<(usize, Vec<usize>)> {
     let boxes: Vec<Option<([f64; 3], [f64; 3])>> = volumes.iter().map(|&v| series_box(&series[v])).collect();
     // Lung and bone reconstructions both use sharp kernels (Siemens B70 serves both).
     let kernel = |s: &Series| {
-        series_kernel_class(&s.description)
-            .or_else(|| s.convolution_kernel.as_deref().and_then(series_kernel_class))
+        s.convolution_kernel
+            .as_deref()
+            .and_then(series_kernel_class)
+            .or_else(|| series_kernel_class(&s.description))
             .map(|k| if matches!(k, "bone" | "lung") { "sharp" } else { k })
     };
     let mut out: Vec<(usize, Vec<usize>)> = Vec::new();
@@ -385,6 +395,27 @@ pub fn find_reconstructions(series: &[Series]) -> Vec<(usize, Vec<usize>)> {
                         .map(|(p, _)| *p)
                 })
                 .or_else(|| run.iter().copied().find(|&r| r != c && series[r].normal.is_some()));
+            // Cross-check with the acquisition time: a block's pictures keep the time
+            // of the acquisition they were made from. A volume of another moment is
+            // wrong; then take the volume acquired at the same moment (same kernel
+            // family first).
+            let at = |v: usize| match (series[v].acquisition_time_secs, child.acquisition_time_secs) {
+                (Some(a), Some(b)) => Some((a - b).abs()),
+                _ => None,
+            };
+            let parent = match parent {
+                Some(v) if series[v].is_full_volume() && at(v).is_some_and(|dt| dt > 20.0) => None,
+                other => other,
+            }
+            .or_else(|| {
+                let mut same_time: Vec<usize> = volumes
+                    .iter()
+                    .copied()
+                    .filter(|&v| series[v].modality == child.modality && at(v).is_some_and(|dt| dt <= 2.0))
+                    .collect();
+                same_time.sort_by_key(|&v| (kernel(&series[v]) != kernel(child)) as u8);
+                same_time.first().copied()
+            });
             if let Some(v) = parent {
                 match out.iter_mut().find(|(p, _)| *p == v) {
                     Some((_, kids)) => kids.push(c),
@@ -1072,6 +1103,19 @@ fn sort_slices(series: &mut Series) {
 /// are never merged into the same MPR group.
 fn series_kernel_class(desc: &str) -> Option<&'static str> {
     let lower = desc.to_ascii_lowercase();
+    // Canon / Toshiba kernel codes: FC01-FC29 body soft tissue, FC30-FC49 bone,
+    // FC50-FC59 lung, FC80 and above sharp bone.
+    if let Some(i) = lower.find("fc") {
+        let digits: String = lower[i + 2..].chars().take_while(|c| c.is_ascii_digit()).collect();
+        let starts_word = i == 0 || !lower.as_bytes()[i - 1].is_ascii_alphanumeric();
+        if starts_word && let Ok(n) = digits.parse::<u32>() {
+            return Some(match n {
+                0..=29 => "soft",
+                30..=49 | 80.. => "bone",
+                _ => "lung",
+            });
+        }
+    }
     let has_any = |kws: &[&str]| kws.iter().any(|k| lower.contains(k));
 
     if has_any(&[
@@ -1456,6 +1500,15 @@ mod tests {
     }
 
     #[test]
+    fn canon_kernel_codes_are_understood() {
+        assert_eq!(series_kernel_class("FC08"), Some("soft"));
+        assert_eq!(series_kernel_class("FC30"), Some("bone"));
+        assert_eq!(series_kernel_class("FC52"), Some("lung"));
+        assert_eq!(series_kernel_class("FC09"), Some("soft"));
+        assert_eq!(series_kernel_class("AFC"), None);
+    }
+
+    #[test]
     fn complete_volumes_get_the_mpr_badge_and_thick_series_keep_their_plane() {
         let ax = DominantPlane::Axial;
         let thin = placed_series(1, "TAP 1.0", ax, 300, 1.0, -300.0, None, "F");
@@ -1533,7 +1586,17 @@ mod tests {
         };
         let mut dose = placed_series(99, "Dose Report", ax, 2, 1.0, 0.0, None, "F");
         dose.normal = None;
+        // Canon dose page: three pictures, no position, no pixel size, number 9000.
+        let mut dose_pages = no_geometry(placed_series(9000, "4", ax, 3, 1.0, 0.0, None, "F"));
+        for sl in &mut dose_pages.slices {
+            sl.spacing = None;
+        }
+        let kernel = |mut s: Series, k: &str| {
+            s.convolution_kernel = Some(k.into());
+            s
+        };
         let t = Some(500.0);
+        let tl = Some(612.5); // the lumbar acquisition, 112.5 s later
         let mut series = vec![
             placed_series(12, "BLANDO Columna 2.0", ax, 300, 2.0, -600.0, t, "F"), // 0
             placed_series(13, "OSEO Hueso 2.0", ax, 300, 2.0, -600.0, t, "F"), // 1
@@ -1543,13 +1606,15 @@ mod tests {
             placed_series(31, "OSEO Hueso 2.000", ax, 159, 3.0, -500.0, t, "F"), // 5
             placed_series(32, "OSEO Hueso 2.000", sag, 45, 3.0, -65.0, t, "F"), // 6
             no_geometry(placed_series(33, "OSEO Hueso 2.000", cor, 57, 3.0, -90.0, t, "F")), // 7
-            // Lumbar block, below the thoracic volume, same names.
-            placed_series(34, "BLANDO Columna 2.000", ax, 80, 3.0, -900.0, t, "F"), // 8
-            lower(placed_series(35, "BLANDO Columna 2.000", sag, 50, 3.0, -75.0, t, "F"), -700.0), // 9
-            no_geometry(placed_series(36, "BLANDO Columna 2.000", cor, 69, 3.0, -90.0, t, "F")), // 10
+            // Lumbar block, below the thoracic volume, same names, later acquisition.
+            kernel(placed_series(34, "BLANDO Columna 2.000", ax, 80, 3.0, -1150.0, tl, "F"), "FC08"), // 8
+            kernel(lower(placed_series(35, "BLANDO Columna 2.000", sag, 50, 3.0, -75.0, tl, "F"), -700.0), "FC08"), // 9
+            kernel(no_geometry(placed_series(36, "BLANDO Columna 2.000", cor, 69, 3.0, -90.0, tl, "F")), "FC08"), // 10
             dose, // 11
             placed_series(22, "CERVICAL PB Columna 1.000", ax, 166, 1.0, 0.0, Some(400.0), "C"), // 12
             placed_series(23, "CERVICAL PB Columna 1.000", sag, 96, 1.0, -48.0, Some(400.0), "C"), // 13
+            kernel(placed_series(16, "OSEO Hueso 2.0", ax, 251, 2.0, -1196.0, tl, "F"), "FC30"), // 14
+            dose_pages, // 15
         ];
         infer_missing_planes(&mut series);
         for i in [4, 7, 10] {
@@ -1564,7 +1629,8 @@ mod tests {
         };
         assert_eq!(kids_of(0), vec![2, 3, 4], "thoracic soft tissue: {found:?}");
         assert_eq!(kids_of(1), vec![5, 6, 7], "thoracic bone: {found:?}");
-        assert_eq!(kids_of(8), vec![10], "lumbar coronal stays with the lumbar block: {found:?}");
+        assert_eq!(kids_of(14), vec![8, 9, 10], "lumbar block under the lumbar volume: {found:?}");
+        assert!(is_auxiliary(&series[15]), "Canon dose pages go with the scouts");
         assert!(is_auxiliary(&series[11]), "dose report goes with the scouts");
         assert!(!found.iter().any(|(_, k)| k.contains(&11)));
         assert_eq!(study_cut_badge(&series, 0), "MPR");
