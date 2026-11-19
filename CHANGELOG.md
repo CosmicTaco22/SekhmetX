@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.35] - 2026-11-19
+
+### Fixed
+- **Lumbar coronals were filed under the thoracic volume** because thoracic and lumbar reconstructions share names ("BLANDO Columna 2.000", "OSEO Hueso 2.000") and the coronals carry no image position. A series that cannot be placed in 3D now joins only its own block: the run of neighbouring same-named series in series-number order (`name_runs`), e.g. #28 AX, #29 SAG, #30 COR. It goes under the volume that block belongs to; a block with no volume keeps it under its first series that can be placed.
+- **The plane of those series:** when a block already has two planes (AX and SAG), its series without a recorded plane is the missing one (COR) and is tagged so (`infer_missing_planes`, also for studies already in the library). It still cannot be used for 3D.
+
+### Changed
+- Lettered volume badges read `MPR-A`, `MPR-C`, `MPR-S`.
+
 ## [0.5.34] - 2026-11-19
 
 ### Improved: recognising reconstructions in spine studies (from a real whole-spine CT)

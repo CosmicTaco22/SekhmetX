@@ -467,6 +467,7 @@ impl Database {
                     crate::dicom_index::refine_plane(se);
                 }
                 let mpr_groups = build_mpr_groups(&mut series_list, &description);
+                crate::dicom_index::infer_missing_planes(&mut series_list);
                 let reformats = crate::dicom_index::find_reconstructions(&series_list);
                 studies.push(Study {
                     uid,

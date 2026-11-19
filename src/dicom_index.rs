@@ -210,9 +210,58 @@ pub fn is_auxiliary(s: &Series) -> bool {
     s.slices.len() <= 5 && words.iter().any(|w| d.contains(w))
 }
 
+/// Runs of neighbouring series (in series-number order, scouts and reports left out)
+/// that carry the same name and modality. Scanners write each block of
+/// reconstructions in turn (thoracic soft-tissue AX, SAG, COR; then bone; then the
+/// lumbar ones), so a run is one block even when another block has the same name.
+fn name_runs(series: &[Series]) -> Vec<Vec<usize>> {
+    let mut order: Vec<usize> = (0..series.len()).filter(|&i| !is_auxiliary(&series[i])).collect();
+    order.sort_by_key(|&i| series[i].number);
+    let mut runs: Vec<Vec<usize>> = Vec::new();
+    for i in order {
+        let key = series_name_key(&series[i].description);
+        let joins = runs.last().is_some_and(|run| {
+            let last = &series[*run.last().unwrap_or(&i)];
+            !key.is_empty() && last.modality == series[i].modality && series_name_key(&last.description) == key
+        });
+        if joins {
+            if let Some(run) = runs.last_mut() {
+                run.push(i);
+            }
+        } else {
+            runs.push(vec![i]);
+        }
+    }
+    runs
+}
+
+/// A series with no recorded plane in a run that already has the other two planes
+/// (e.g. AX and SAG) is the missing one (COR): the plane is set for its badge; it
+/// still cannot be placed in 3D.
+pub fn infer_missing_planes(series: &mut [Series]) {
+    for run in name_runs(series) {
+        let unknown: Vec<usize> = run
+            .iter()
+            .copied()
+            .filter(|&i| series[i].normal.is_none() && series[i].dominant_plane == DominantPlane::Unknown && series[i].slices.len() >= 3)
+            .collect();
+        if unknown.len() != 1 {
+            continue;
+        }
+        let planes = [DominantPlane::Axial, DominantPlane::Coronal, DominantPlane::Sagittal];
+        let missing: Vec<DominantPlane> = planes
+            .into_iter()
+            .filter(|p| !run.iter().any(|&i| series[i].dominant_plane == *p))
+            .collect();
+        if missing.len() == 1 {
+            series[unknown[0]].dominant_plane = missing[0];
+        }
+    }
+}
+
 /// The badge for series `ri` of a study. A complete volume shows `MPR`; when the
 /// same reconstruction also exists as a complete volume in another plane (same MPR
-/// group or same name), the plane is added: `MPR A`, `MPR C`, `MPR S`.
+/// group or same name), the plane is added: `MPR-A`, `MPR-C`, `MPR-S`.
 pub fn study_cut_badge(series: &[Series], ri: usize) -> &'static str {
     let s = &series[ri];
     if !s.is_full_volume() {
@@ -231,9 +280,9 @@ pub fn study_cut_badge(series: &[Series], ri: usize) -> &'static str {
         return "MPR";
     }
     match s.dominant_plane {
-        DominantPlane::Axial => "MPR A",
-        DominantPlane::Coronal => "MPR C",
-        DominantPlane::Sagittal => "MPR S",
+        DominantPlane::Axial => "MPR-A",
+        DominantPlane::Coronal => "MPR-C",
+        DominantPlane::Sagittal => "MPR-S",
         _ => "MPR",
     }
 }
@@ -312,33 +361,35 @@ pub fn find_reconstructions(series: &[Series]) -> Vec<(usize, Vec<usize>)> {
         }
     }
     // Series that cannot be placed in 3D (no image position: straightened or curved
-    // reconstructions saved as pictures) join the volume whose own series carry the
-    // same name: the volume itself, or a reconstruction already filed under one.
-    for (c, child) in series.iter().enumerate() {
-        if child.normal.is_some() || child.slices.len() < 3 || is_auxiliary(child) {
-            continue;
-        }
-        if out.iter().any(|(_, kids)| kids.contains(&c)) {
-            continue;
-        }
-        let key = series_name_key(&child.description);
-        if key.is_empty() {
-            continue;
-        }
-        let same_name = |o: &Series| o.modality == child.modality && series_name_key(&o.description) == key;
-        let parent = volumes
-            .iter()
-            .copied()
-            .find(|&v| same_name(&series[v]))
-            .or_else(|| {
-                out.iter()
-                    .find(|(_, kids)| kids.iter().any(|&k| k != c && same_name(&series[k])))
-                    .map(|(p, _)| *p)
-            });
-        if let Some(v) = parent {
-            match out.iter_mut().find(|(p, _)| *p == v) {
-                Some((_, kids)) => kids.push(c),
-                None => out.push((v, vec![c])),
+    // reconstructions saved as pictures) join their own block: the run of
+    // neighbouring same-named series (`name_runs`). They go under the volume that
+    // block belongs to (a complete volume in the run, or the volume a run member is
+    // filed under); a block with no volume keeps them under its first series that can
+    // be placed. Name alone is not enough: thoracic and lumbar blocks share names.
+    for run in name_runs(series) {
+        for &c in &run {
+            let child = &series[c];
+            if child.normal.is_some() || child.slices.len() < 3 {
+                continue;
+            }
+            if out.iter().any(|(_, kids)| kids.contains(&c)) {
+                continue;
+            }
+            let parent = run
+                .iter()
+                .copied()
+                .find(|&r| series[r].is_full_volume())
+                .or_else(|| {
+                    out.iter()
+                        .find(|(_, kids)| kids.iter().any(|k| *k != c && run.contains(k)))
+                        .map(|(p, _)| *p)
+                })
+                .or_else(|| run.iter().copied().find(|&r| r != c && series[r].normal.is_some()));
+            if let Some(v) = parent {
+                match out.iter_mut().find(|(p, _)| *p == v) {
+                    Some((_, kids)) => kids.push(c),
+                    None => out.push((v, vec![c])),
+                }
             }
         }
     }
@@ -977,6 +1028,7 @@ fn build_index(headers: Vec<Header>) -> Index {
                 }
             }
             let mpr_groups = build_mpr_groups(&mut series, &study.description);
+            infer_missing_planes(&mut series);
             study.reformats = find_reconstructions(&series);
             study.series = series;
             study.mpr_groups = mpr_groups;
@@ -1450,18 +1502,20 @@ mod tests {
         assert!(!filed.contains(&8), "another moment was filed: {found:?}");
     }
 
-    /// The layout of a whole-spine study: thin bone and soft-tissue volumes,
-    /// same-named axial and sagittal reconstructions, coronal reconstructions saved
-    /// without image positions, and a dose report.
+    /// The layout of a whole-spine study: thin bone and soft-tissue volumes of the
+    /// thoracic spine, same-named thoracic and lumbar reconstruction blocks (AX,
+    /// SAG, and a coronal saved without position or orientation), a dose report,
+    /// and cervical volumes in two planes.
     #[test]
     fn spine_study_reconstructions_dose_report_and_twin_volumes() {
         let ax = DominantPlane::Axial;
         let sag = DominantPlane::Sagittal;
         let cor = DominantPlane::Coronal;
-        // Saved as pictures: coronal orientation, no position, so no normal.
-        let no_position = |mut s: Series| {
+        // Saved as pictures: no position and no orientation.
+        let no_geometry = |mut s: Series| {
             for sl in &mut s.slices {
                 sl.position = None;
+                sl.orientation = crate::geometry::image_plane::ImagePlaneGeometry::DEFAULT_ORIENTATION;
                 sl.is_3d_plane = false;
             }
             s.normal = None;
@@ -1469,38 +1523,54 @@ mod tests {
             refine_plane(&mut s);
             s
         };
+        let lower = |mut s: Series, dz: f64| {
+            for sl in &mut s.slices {
+                if let Some(p) = sl.position.as_mut() {
+                    p[2] += dz;
+                }
+            }
+            s
+        };
         let mut dose = placed_series(99, "Dose Report", ax, 2, 1.0, 0.0, None, "F");
         dose.normal = None;
-        let series = vec![
-            placed_series(12, "BLANDO Columna 2.0", ax, 300, 2.0, -600.0, Some(500.0), "F"), // 0
-            placed_series(13, "OSEO Hueso 2.0", ax, 300, 2.0, -600.0, Some(500.0), "F"), // 1
-            placed_series(28, "BLANDO Columna 2.000", ax, 160, 3.0, -500.0, Some(500.0), "F"), // 2
-            placed_series(29, "BLANDO Columna 2.000", sag, 52, 3.0, -75.0, Some(500.0), "F"), // 3
-            no_position(placed_series(30, "BLANDO Columna 2.000", cor, 60, 3.0, -90.0, Some(500.0), "F")), // 4
-            placed_series(31, "OSEO Hueso 2.000", ax, 159, 3.0, -500.0, Some(500.0), "F"), // 5
-            no_position(placed_series(33, "OSEO Hueso 2.000", cor, 57, 3.0, -90.0, Some(500.0), "F")), // 6
-            dose, // 7
-            placed_series(22, "CERVICAL PB Columna 1.000", ax, 166, 1.0, 0.0, Some(400.0), "C"), // 8
-            placed_series(23, "CERVICAL PB Columna 1.000", sag, 96, 1.0, -48.0, Some(400.0), "C"), // 9
+        let t = Some(500.0);
+        let mut series = vec![
+            placed_series(12, "BLANDO Columna 2.0", ax, 300, 2.0, -600.0, t, "F"), // 0
+            placed_series(13, "OSEO Hueso 2.0", ax, 300, 2.0, -600.0, t, "F"), // 1
+            placed_series(28, "BLANDO Columna 2.000", ax, 160, 3.0, -500.0, t, "F"), // 2
+            placed_series(29, "BLANDO Columna 2.000", sag, 52, 3.0, -75.0, t, "F"), // 3
+            no_geometry(placed_series(30, "BLANDO Columna 2.000", cor, 60, 3.0, -90.0, t, "F")), // 4
+            placed_series(31, "OSEO Hueso 2.000", ax, 159, 3.0, -500.0, t, "F"), // 5
+            placed_series(32, "OSEO Hueso 2.000", sag, 45, 3.0, -65.0, t, "F"), // 6
+            no_geometry(placed_series(33, "OSEO Hueso 2.000", cor, 57, 3.0, -90.0, t, "F")), // 7
+            // Lumbar block, below the thoracic volume, same names.
+            placed_series(34, "BLANDO Columna 2.000", ax, 80, 3.0, -900.0, t, "F"), // 8
+            lower(placed_series(35, "BLANDO Columna 2.000", sag, 50, 3.0, -75.0, t, "F"), -700.0), // 9
+            no_geometry(placed_series(36, "BLANDO Columna 2.000", cor, 69, 3.0, -90.0, t, "F")), // 10
+            dose, // 11
+            placed_series(22, "CERVICAL PB Columna 1.000", ax, 166, 1.0, 0.0, Some(400.0), "C"), // 12
+            placed_series(23, "CERVICAL PB Columna 1.000", sag, 96, 1.0, -48.0, Some(400.0), "C"), // 13
         ];
-        assert_eq!(series[4].dominant_plane, DominantPlane::Coronal, "plane from orientation alone");
-        assert!(series[4].normal.is_none());
+        infer_missing_planes(&mut series);
+        for i in [4, 7, 10] {
+            assert_eq!(series[i].dominant_plane, DominantPlane::Coronal, "series {i}: the plane its block lacks");
+            assert!(series[i].normal.is_none());
+        }
         let found = find_reconstructions(&series);
         let kids_of = |v: usize| -> Vec<usize> {
             let mut k = found.iter().find(|(p, _)| *p == v).map(|(_, k)| k.clone()).unwrap_or_default();
             k.sort();
             k
         };
-        assert_eq!(kids_of(0), vec![2, 3, 4], "soft tissue: {found:?}");
-        assert_eq!(kids_of(1), vec![5, 6], "bone: {found:?}");
-        assert!(is_auxiliary(&series[7]), "dose report goes with the scouts");
-        assert!(!is_auxiliary(&series[4]));
-        assert!(!found.iter().any(|(_, k)| k.contains(&7)));
-        // One volume per plane: plain MPR; the same reconstruction in two planes: lettered.
+        assert_eq!(kids_of(0), vec![2, 3, 4], "thoracic soft tissue: {found:?}");
+        assert_eq!(kids_of(1), vec![5, 6, 7], "thoracic bone: {found:?}");
+        assert_eq!(kids_of(8), vec![10], "lumbar coronal stays with the lumbar block: {found:?}");
+        assert!(is_auxiliary(&series[11]), "dose report goes with the scouts");
+        assert!(!found.iter().any(|(_, k)| k.contains(&11)));
         assert_eq!(study_cut_badge(&series, 0), "MPR");
-        assert_eq!(study_cut_badge(&series, 8), "MPR A");
-        assert_eq!(study_cut_badge(&series, 9), "MPR S");
-        assert_eq!(study_cut_badge(&series, 4), "COR");
+        assert_eq!(study_cut_badge(&series, 12), "MPR-A");
+        assert_eq!(study_cut_badge(&series, 13), "MPR-S");
+        assert_eq!(study_cut_badge(&series, 10), "COR");
     }
 
     #[test]
