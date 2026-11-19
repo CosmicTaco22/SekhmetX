@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.30] - 2026-11-19
+
+Numbered 0.5.30 because a local 0.5.29 build exists on the owner's PC that is not on GitHub yet.
+
+### Fixed: comparison starts at different sizes and positions
+- **"= mm" zoom matched against the old image size** when a comparison turned the other study: the turned image is resliced at another size (for example 512 → 667 px), but the zoom was matched before it was drawn. The match now waits until every linked viewport has been drawn with its current image (`pending_zoom_match`, `finish_pending_zoom_match` in `src/app/mpr_sync.rs`). On the test phantom the turned image now opens at 125 % instead of 100 %, the same physical size as the reference.
+- **Matching anatomy is now at the same place on screen.** A turned image was centred on the middle of its own scan (for a chest-abdomen-pelvis scan compared with an abdomen scan, a different part of the body). It is now centred on the point that matches the reference image's centre, and kept there while scrolling (`recenter_in_plane`); the pan is copied too. The scroll range is unchanged.
+
+### Added: MPR badge and folded reconstructions in the series list
+- A series that is a **complete volume** (at least 30 slices, at most 2 mm apart and at most four pixels apart) shows an amber **MPR** badge instead of AX/COR/SAG: it can be viewed in any plane without losing detail. Thicker or single-plane series keep AX, COR or SAG (`Series::is_full_volume`, `cut_badge` in `src/dicom_index.rs`). Also in the compact thumbnail strip, drag preview and search.
+- **Reconstructions are folded under the volume they were made from** (`find_reconstructions`): separate axial, coronal or sagittal series that lie inside a complete volume's space, with the same modality and frame of reference, and not acquired at another moment (another contrast phase stays apart). When several volumes qualify, the same kernel family wins (soft tissue; lung and bone count as one sharp family, as Siemens B70 serves both), then the closest acquisition time and the most similar name. The volume's card shows "▸ Includes AX COR SAG (n)" (Spanish "Incluye"); clicking it unfolds smaller cards for the reconstructions.
+- Tests: badges for 1, 2 and 5 mm series and short stacks; filing of soft-tissue, lung and later-phase reconstructions, and nothing from another frame of reference or moment.
+
 ## [0.5.28] - 2026-11-18
 
 ### Added

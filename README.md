@@ -65,7 +65,9 @@ or Pixmeo. It does not use their names or icons in the application.
   thumbnails and a study details pane; search by patient, ID, accession, study
   or series.
 - Axial, coronal and sagittal reconstructions of one acquisition are grouped
-  together, and MIP series are kept apart from their source stacks.
+  together, and MIP series are kept apart from their source stacks. A complete
+  thin-slice volume is marked MPR; separate reconstructions made from it are
+  folded under it ("Includes AX COR SAG") and open with one click.
 
 **2D viewing**
 - GPU window/level with optional bilinear smoothing and a CPU fallback.

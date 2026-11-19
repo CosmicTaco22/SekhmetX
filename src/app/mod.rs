@@ -444,6 +444,9 @@ pub(crate) struct ViewerApp {
     /// measured when it is drawn (the resliced image of a turned MPR plane differs
     /// in size from the source slices). Used by the "= mm" zoom link.
     pub(crate) viewport_mm_per_px: Vec<Option<f32>>,
+    /// "= mm" zoom to match again from this viewport once every linked viewport has
+    /// been drawn with its current image (a turned plane changes the image size).
+    pub(crate) pending_zoom_match: Option<usize>,
     /// Ctrl (Cmd on Mac) held this frame: changes apply to the touched viewport only.
     pub(crate) solo_adjust: bool,
     /// A viewport moved or turned alone while Cut was linked; its new relation to
@@ -699,6 +702,7 @@ impl ViewerApp {
             copy_anonymize_frame: false,
             viewport_rects: vec![Rect::NOTHING; 16],
             viewport_mm_per_px: vec![None; 16],
+            pending_zoom_match: None,
             solo_adjust: false,
             pending_relock: None,
             link_master: None,
@@ -2231,6 +2235,7 @@ impl eframe::App for ViewerApp {
                     .show(ui, |ui| self.metadata_inspector_panel(ui));
             }
             egui::CentralPanel::no_frame().show(ui, |ui| self.viewport_grid(ui));
+            self.finish_pending_zoom_match(&ctx);
         }
         self.draw_force_mpr_modal(&ctx);
         self.draw_update_modal(&ctx);

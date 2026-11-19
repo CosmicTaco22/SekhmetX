@@ -1,5 +1,18 @@
 use super::*;
 
+/// Moves the plane's centre sideways (within the plane, never along its normal, so
+/// the scroll range is unchanged) so that `target_lps` shows at the image centre:
+/// the matching anatomy then sits where it does in the reference viewport. Only for
+/// turned planes; a native plane shows the source slice as stored.
+fn recenter_in_plane(plane: &mut MprPlane3D, vol: &crate::volume::Volume3D, target_lps: [f64; 3]) {
+    let mut moved = plane.clone();
+    let d = sub3(target_lps, vol.center_lps);
+    moved.center_lps = sub3(target_lps, scale3(plane.normal, dot3(d, plane.normal)));
+    if !vol.mpr_plane_geometry(&moved).native_aligned && !vol.mpr_plane_geometry(plane).native_aligned {
+        plane.center_lps = moved.center_lps;
+    }
+}
+
 impl ViewerApp {
     pub(crate) fn disable_viewport_mpr(&mut self, vp_idx: usize) {
         if let (Some(vol), Some(plane)) = (
@@ -560,6 +573,9 @@ impl ViewerApp {
                         );
                         other_plane.rotate_axes(turn);
                     }
+                    if let Some(vol) = self.volumes.get(&other_sel) {
+                        recenter_in_plane(&mut other_plane, vol, target_lps);
+                    }
                     other_plane.offset_mm =
                         dot3(sub3(target_lps, other_plane.center_lps), other_plane.normal);
                     updates.push((other_idx, other_plane));
@@ -701,6 +717,14 @@ impl ViewerApp {
         self.viewports[other_idx].rotation = self.viewports[leader_idx].rotation;
         self.viewports[other_idx].x_flipped = self.viewports[leader_idx].x_flipped;
         self.viewports[other_idx].y_flipped = self.viewports[leader_idx].y_flipped;
+        self.viewports[other_idx].pan = self.viewports[leader_idx].pan;
+        // Its image changes size when turned: match "= mm" again once it is drawn.
+        if let Some(slot) = self.viewport_mm_per_px.get_mut(other_idx) {
+            *slot = None;
+        }
+        if self.link_zoom && self.link_zoom_same_size {
+            self.pending_zoom_match = Some(leader_idx);
+        }
         let Some(lp) = self.effective_mpr_plane(leader_idx) else {
             return;
         };
@@ -722,6 +746,9 @@ impl ViewerApp {
             op.u_axis = crate::volume::mat3_mul_vec(rotation, lp.u_axis);
             op.v_axis = crate::volume::mat3_mul_vec(rotation, lp.v_axis);
             op.normal = crate::volume::mat3_mul_vec(rotation, lp.normal);
+            if let Some(vol) = self.volumes.get(&other_sel) {
+                recenter_in_plane(&mut op, vol, target_lps);
+            }
             op.offset_mm = dot3(sub3(target_lps, op.center_lps), op.normal);
         } else {
             op.u_axis = lp.u_axis;
@@ -738,6 +765,32 @@ impl ViewerApp {
         self.viewports[other_idx].mpr_plane = Some(op);
         self.viewports[other_idx].mpr_cached = None;
         self.sync_slice_index_from_mpr_plane(other_idx);
+    }
+
+    /// Matches "= mm" zoom from the viewport set by `pending_zoom_match` once every
+    /// viewport linked to it has been drawn and measured with its current image.
+    pub(super) fn finish_pending_zoom_match(&mut self, ctx: &egui::Context) {
+        let Some(leader) = self.pending_zoom_match else {
+            return;
+        };
+        let count = self.tiling.cell_count();
+        if leader >= count || !self.link_zoom || !self.link_zoom_same_size {
+            self.pending_zoom_match = None;
+            return;
+        }
+        let measured = |i: usize| self.viewport_mm_per_px.get(i).copied().flatten().is_some();
+        let ready = measured(leader)
+            && (0..count).all(|i| {
+                i == leader
+                    || self.viewports[i].selected.is_none()
+                    || !self.are_viewports_linked(leader, i)
+                    || measured(i)
+            });
+        if ready {
+            self.pending_zoom_match = None;
+            self.apply_same_size_zoom_from(leader);
+        }
+        ctx.request_repaint();
     }
 
     /// When a link is switched on, the viewport being worked in (`leader_idx`) is the

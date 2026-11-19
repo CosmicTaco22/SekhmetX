@@ -464,6 +464,7 @@ impl Database {
                     .iter()
                     .any(|se| se.slices.first().is_some_and(|s| s.path.exists()));
                 let mpr_groups = build_mpr_groups(&mut series_list, &description);
+                let reformats = crate::dicom_index::find_reconstructions(&series_list);
                 studies.push(Study {
                     uid,
                     patient_name,
@@ -473,6 +474,7 @@ impl Database {
                     description,
                     accession,
                     series: series_list,
+                    reformats,
                     mpr_groups,
                     files_missing: !any_present,
                 });
@@ -890,6 +892,7 @@ mod tests {
                 description: "CT ABDOMEN".into(),
                 accession: "ACC1".into(),
                 mpr_groups: Vec::new(),
+                reformats: Vec::new(),
                 files_missing: false,
                 series: vec![Series {
                     uid: "1.2.840.100.1".into(),

@@ -21,7 +21,7 @@ fn paint_series_drag_preview(ui: &egui::Ui, index: &crate::dicom_index::Index) {
     let label = format!(
         "{} [{}] · {}",
         series.modality,
-        series.dominant_plane.badge(),
+        series.cut_badge(),
         desc
     );
     egui::Area::new(egui::Id::unique("series_drag_preview"))
@@ -229,6 +229,7 @@ impl ViewerApp {
                             .badge()
                             .to_ascii_lowercase()
                             .contains(&query)
+                        || s.cut_badge().to_ascii_lowercase().contains(&query)
                 })
                 .map(|(ri, _)| ri)
                 .collect();
@@ -342,9 +343,12 @@ impl ViewerApp {
                             }
 
                             // Helper closure to render a single series row (with 38x38 thumbnail & click/context menu).
+                            // `compact`: a smaller, indented card, for reconstructions listed
+                            // under the complete volume they were made from.
                             let draw_series_row = |ui: &mut egui::Ui,
                                                    ri: usize,
                                                    highlight_3d: bool,
+                                                   compact: bool,
                                                    clicked: &mut Option<(usize, (usize, usize), bool)>,
                                                    thumb_jobs: &mut Vec<Job>| {
                                 let series = &study.series[ri];
@@ -380,9 +384,14 @@ impl ViewerApp {
                                 // Series card: thumbnail, description, then modality / image count / plane.
                                 let row_w = ui.available_width().max(140.0);
                                 let (row_rect, resp) = ui.allocate_exact_size(
-                                    vec2(row_w, 60.0),
+                                    vec2(row_w, if compact { 40.0 } else { 60.0 }),
                                     Sense::click_and_drag(),
                                 );
+                                let row_rect = if compact {
+                                    row_rect.with_min_x(row_rect.min.x + 18.0)
+                                } else {
+                                    row_rect
+                                };
                                 if ui.is_rect_visible(row_rect) {
                                     let painter = ui.painter();
                                     let dark = ui.visuals().dark_mode;
@@ -410,9 +419,10 @@ impl ViewerApp {
                                             },
                                         );
                                     }
+                                    let thumb_side = if compact { 32.0 } else { 52.0 };
                                     let thumb_rect = Rect::from_min_size(
                                         row_rect.min + vec2(8.0, 4.0),
-                                        vec2(52.0, 52.0),
+                                        vec2(thumb_side, thumb_side),
                                     );
                                     painter.rect_filled(thumb_rect, 4.0, Color32::BLACK);
                                     if let Some(tex) = self.thumbnails.get(&tkey) {
@@ -449,26 +459,27 @@ impl ViewerApp {
                                     };
                                     let mut job = egui::text::LayoutJob::simple_singleline(
                                         desc.to_owned(),
-                                        FontId::proportional(12.5),
+                                        FontId::proportional(if compact { 11.5 } else { 12.5 }),
                                         title_color,
                                     );
                                     job.wrap = egui::text::TextWrapping {
                                         max_width: text_w,
-                                        max_rows: 2,
+                                        max_rows: if compact { 1 } else { 2 },
                                         break_anywhere: false,
                                         overflow_character: Some('…'),
                                     };
                                     let galley = painter.layout_job(job);
                                     let title_h = galley.size().y;
                                     painter.galley(
-                                        pos2(text_x, row_rect.min.y + 6.0),
+                                        pos2(text_x, row_rect.min.y + if compact { 3.0 } else { 6.0 }),
                                         galley,
                                         title_color,
                                     );
 
                                     // Second line: plane badge + "CT · #2 · 80 images".
-                                    let line_y = (row_rect.min.y + 8.0 + title_h).min(row_rect.max.y - 19.0);
-                                    let badge = series.dominant_plane.badge();
+                                    let line_y = (row_rect.min.y + if compact { 5.0 } else { 8.0 } + title_h)
+                                        .min(row_rect.max.y - if compact { 17.0 } else { 19.0 });
+                                    let badge = series.cut_badge();
                                     let badge_color = theme::plane_color(badge);
                                     let badge_galley = painter.layout_no_wrap(
                                         badge.to_owned(),
@@ -512,8 +523,14 @@ impl ViewerApp {
                                     tr.images,
                                     series.columns,
                                     series.rows,
-                                    series.dominant_plane.badge(),
-                                    if series.is_mpr_capable() { " · 3D MPR" } else { "" }
+                                    series.cut_badge(),
+                                    if series.is_full_volume() {
+                                        tr.full_volume_hint
+                                    } else if series.is_mpr_capable() {
+                                        " · 3D MPR"
+                                    } else {
+                                        ""
+                                    }
                                 ));
                                 if resp.drag_started() {
                                     egui::DragAndDrop::set_payload(ui.ctx(), (si, ri));
@@ -533,6 +550,105 @@ impl ViewerApp {
                                         }
                                     }
                                 });
+                            };
+
+                            // Reconstructions are listed under the complete volume they were made
+                            // from (folded away by default), not on their own.
+                            let folded: std::collections::HashSet<usize> = study
+                                .reformats
+                                .iter()
+                                .filter(|(parent, _)| matching_series.contains(parent))
+                                .flat_map(|(_, kids)| kids.iter().copied())
+                                .collect();
+                            let visible_series: Vec<usize> = matching_series
+                                .iter()
+                                .copied()
+                                .filter(|ri| !folded.contains(ri))
+                                .collect();
+                            let matching_series = &visible_series;
+                            let draw_reformats = |ui: &mut egui::Ui,
+                                                  ri: usize,
+                                                  clicked: &mut Option<(usize, (usize, usize), bool)>,
+                                                  thumb_jobs: &mut Vec<Job>| {
+                                let Some((_, kids)) = study.reformats.iter().find(|(p, _)| *p == ri) else {
+                                    return;
+                                };
+                                let id = ui.make_persistent_id(("reformats_open", &study.uid, ri));
+                                let mut open = ui.data_mut(|d| *d.get_persisted_mut_or_default::<bool>(id));
+                                let (rect, resp) = ui.allocate_exact_size(
+                                    vec2(ui.available_width().max(140.0), 17.0),
+                                    Sense::click(),
+                                );
+                                let resp = resp
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text(tr.reformats_hint);
+                                if resp.clicked() {
+                                    open = !open;
+                                    ui.data_mut(|d| d.insert_persisted(id, open));
+                                }
+                                if ui.is_rect_visible(rect) {
+                                    let painter = ui.painter();
+                                    let dim = theme::dim_text(ui);
+                                    let ink = if resp.hovered() { ui.visuals().strong_text_color() } else { dim };
+                                    // Fold arrow: right when closed, down when open.
+                                    let c = pos2(rect.min.x + 73.0, rect.center().y);
+                                    let tri = if open {
+                                        vec![c + vec2(-3.5, -2.0), c + vec2(3.5, -2.0), c + vec2(0.0, 2.5)]
+                                    } else {
+                                        vec![c + vec2(-2.0, -3.5), c + vec2(-2.0, 3.5), c + vec2(2.5, 0.0)]
+                                    };
+                                    painter.add(egui::Shape::convex_polygon(tri, ink, Stroke::NONE));
+                                    let mut x = c.x + 8.0;
+                                    let lbl = painter.layout_no_wrap(
+                                        tr.includes.to_owned(),
+                                        FontId::proportional(10.5),
+                                        ink,
+                                    );
+                                    let w = lbl.size().x;
+                                    painter.galley(pos2(x, rect.center().y - lbl.size().y * 0.5), lbl, ink);
+                                    x += w + 5.0;
+                                    let mut planes: Vec<&'static str> = Vec::new();
+                                    for &k in kids {
+                                        let b = study.series[k].dominant_plane.badge();
+                                        if !planes.contains(&b) {
+                                            planes.push(b);
+                                        }
+                                    }
+                                    planes.sort_by_key(|b| match *b {
+                                        "AX" => 0,
+                                        "COR" => 1,
+                                        "SAG" => 2,
+                                        _ => 3,
+                                    });
+                                    for b in planes {
+                                        let color = theme::plane_color(b);
+                                        let g = painter.layout_no_wrap(b.to_owned(), FontId::proportional(9.0), color);
+                                        let r = Rect::from_min_size(
+                                            pos2(x, rect.center().y - g.size().y * 0.5 - 1.5),
+                                            g.size() + vec2(6.0, 3.0),
+                                        );
+                                        painter.rect_stroke(
+                                            r,
+                                            3.0,
+                                            Stroke::new(1.0, color.gamma_multiply(0.6)),
+                                            egui::StrokeKind::Inside,
+                                        );
+                                        painter.galley(r.min + vec2(3.0, 1.5), g, color);
+                                        x = r.max.x + 4.0;
+                                    }
+                                    painter.text(
+                                        pos2(x + 1.0, rect.center().y),
+                                        Align2::LEFT_CENTER,
+                                        format!("({})", kids.len()),
+                                        FontId::proportional(10.0),
+                                        dim,
+                                    );
+                                }
+                                if open {
+                                    for &k in kids {
+                                        draw_series_row(ui, k, false, true, clicked, thumb_jobs);
+                                    }
+                                }
                             };
 
                             // Render series in list order, grouping multi-plane AX/COR/SAG reconstructions
@@ -636,9 +752,11 @@ impl ViewerApp {
                                                         ui,
                                                         pri,
                                                         false,
+                                                        false,
                                                         &mut clicked,
                                                         &mut thumb_jobs,
                                                     );
+                                                    draw_reformats(ui, pri, &mut clicked, &mut thumb_jobs);
                                                 }
                                             });
                                     });
@@ -649,9 +767,11 @@ impl ViewerApp {
                                         ui,
                                         ri,
                                         is_3d_standalone,
+                                        false,
                                         &mut clicked,
                                         &mut thumb_jobs,
                                     );
+                                    draw_reformats(ui, ri, &mut clicked, &mut thumb_jobs);
                                 }
                             }
                             if !single_image_series.is_empty() {
@@ -677,6 +797,7 @@ impl ViewerApp {
                                         draw_series_row(
                                             ui,
                                             s_ri,
+                                            false,
                                             false,
                                             &mut clicked,
                                             &mut thumb_jobs,
@@ -927,7 +1048,7 @@ impl ViewerApp {
                             } else {
                                 series.description.as_str()
                             };
-                            let cut_badge = series.dominant_plane.badge();
+                            let cut_badge = series.cut_badge();
                             let hover_txt = format!(
                                 "{} · {} ({cut_badge})\n{} im",
                                 series.modality,
@@ -946,6 +1067,7 @@ impl ViewerApp {
                                 "AX" => Color32::from_rgb(110, 190, 255),
                                 "COR" => Color32::from_rgb(130, 225, 160),
                                 "SAG" => Color32::from_rgb(255, 195, 105),
+                                "MPR" => theme::plane_color("MPR"),
                                 _ => Color32::from_gray(175),
                             };
                             ui.label(

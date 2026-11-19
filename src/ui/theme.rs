@@ -94,6 +94,8 @@ pub fn plane_color(badge: &str) -> Color32 {
         "AX" => Color32::from_rgb(90, 160, 255),
         "COR" => Color32::from_rgb(95, 200, 120),
         "SAG" => Color32::from_rgb(240, 110, 100),
+        // A complete volume: every plane available.
+        "MPR" => Color32::from_rgb(236, 178, 72),
         _ => Color32::from_rgb(170, 174, 182),
     }
 }

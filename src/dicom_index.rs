@@ -106,10 +106,187 @@ pub struct Series {
     pub slices: Vec<SliceRef>,
 }
 
+/// Largest gap between slices (mm) for a series to count as a complete volume that
+/// shows axial, coronal and sagittal planes without losing detail.
+pub const FULL_VOLUME_MAX_GAP_MM: f64 = 2.0;
+/// Fewest slices for a complete volume.
+pub const FULL_VOLUME_MIN_SLICES: usize = 30;
+
 impl Series {
     pub fn is_mpr_capable(&self) -> bool {
         (self.slices.len() >= 6 && self.normal.is_some()) || self.mpr_group_id.is_some()
     }
+
+    /// Typical distance between neighbouring slices along the slice normal, mm
+    /// (the median gap, so one missing slice does not change it).
+    pub fn slice_gap_mm(&self) -> Option<f64> {
+        let n = self.normal?;
+        let mut d: Vec<f64> = self
+            .slices
+            .iter()
+            .filter_map(|s| s.position)
+            .map(|p| p[0] * n[0] + p[1] * n[1] + p[2] * n[2])
+            .collect();
+        if d.len() < 3 {
+            return None;
+        }
+        d.sort_by(|a, b| a.total_cmp(b));
+        let mut gaps: Vec<f64> = d.windows(2).map(|w| w[1] - w[0]).filter(|g| *g > 1e-3).collect();
+        if gaps.is_empty() {
+            return None;
+        }
+        gaps.sort_by(|a, b| a.total_cmp(b));
+        Some(gaps[gaps.len() / 2])
+    }
+
+    /// A complete volume: enough slices, close enough together (at most 2 mm, and
+    /// not more than four pixels apart), to show any plane without losing detail.
+    pub fn is_full_volume(&self) -> bool {
+        if self.slices.len() < FULL_VOLUME_MIN_SLICES {
+            return false;
+        }
+        let Some(gap) = self.slice_gap_mm() else {
+            return false;
+        };
+        let pixel = self
+            .slices
+            .first()
+            .and_then(|s| s.spacing)
+            .map_or(1.0, |(r, c)| r.min(c));
+        gap <= FULL_VOLUME_MAX_GAP_MM + 0.05 && gap <= 4.0 * pixel + 0.05
+    }
+
+    /// The badge shown on the series: `MPR` for a complete volume, otherwise its
+    /// plane (`AX`, `COR`, `SAG`, `OBL`, `2D`).
+    pub fn cut_badge(&self) -> &'static str {
+        if self.is_full_volume() {
+            "MPR"
+        } else {
+            self.dominant_plane.badge()
+        }
+    }
+}
+
+/// Reconstructions made from a complete volume (for example separate coronal and
+/// sagittal series, or thicker axial ones): for each complete volume, the series
+/// that lie inside its space, are not complete volumes themselves, have the same
+/// modality and frame of reference, and were not acquired at another moment (a
+/// separate contrast phase). When several volumes qualify, the one with the same
+/// kernel (soft tissue, or sharp for lung and bone), the closest acquisition time
+/// and the most similar name wins. Returns `(volume, reconstructions)` pairs.
+pub fn find_reconstructions(series: &[Series]) -> Vec<(usize, Vec<usize>)> {
+    let volumes: Vec<usize> = (0..series.len()).filter(|&i| series[i].is_full_volume()).collect();
+    if volumes.is_empty() {
+        return Vec::new();
+    }
+    let boxes: Vec<Option<([f64; 3], [f64; 3])>> = volumes.iter().map(|&v| series_box(&series[v])).collect();
+    // Lung and bone reconstructions both use sharp kernels (Siemens B70 serves both).
+    let kernel = |s: &Series| {
+        series_kernel_class(&s.description)
+            .or_else(|| s.convolution_kernel.as_deref().and_then(series_kernel_class))
+            .map(|k| if matches!(k, "bone" | "lung") { "sharp" } else { k })
+    };
+    let mut out: Vec<(usize, Vec<usize>)> = Vec::new();
+    for (c, child) in series.iter().enumerate() {
+        if child.is_full_volume() || child.slices.len() < 3 || child.normal.is_none() {
+            continue;
+        }
+        let mut best: Option<(f64, usize)> = None;
+        for (k, &v) in volumes.iter().enumerate() {
+            let vol = &series[v];
+            if vol.modality != child.modality {
+                continue;
+            }
+            match (&vol.frame_of_reference_uid, &child.frame_of_reference_uid) {
+                (Some(a), Some(b)) if a != b => continue,
+                _ => {}
+            }
+            let dt = match (vol.acquisition_time_secs, child.acquisition_time_secs) {
+                (Some(a), Some(b)) => Some((a - b).abs()),
+                _ => None,
+            };
+            if dt.is_some_and(|dt| dt > 20.0) {
+                continue; // another moment: a separate phase
+            }
+            let Some((lo, hi)) = boxes[k] else {
+                continue;
+            };
+            if inside_fraction(child, lo, hi, 15.0) < 0.8 {
+                continue;
+            }
+            let mut score = 0.0;
+            match (kernel(vol), kernel(child)) {
+                (Some(a), Some(b)) if a == b => score += 4.0,
+                (Some(_), Some(_)) => score -= 2.0,
+                _ => {}
+            }
+            if let Some(dt) = dt {
+                score += 3.0 - dt / 10.0;
+            }
+            if series_base_name(&vol.description) == series_base_name(&child.description)
+                && !series_base_name(&vol.description).is_empty()
+            {
+                score += 1.0;
+            }
+            score += vol.slices.len() as f64 * 1e-6;
+            if best.is_none_or(|(b, _)| score > b) {
+                best = Some((score, v));
+            }
+        }
+        if let Some((_, v)) = best {
+            match out.iter_mut().find(|(p, _)| *p == v) {
+                Some((_, kids)) => kids.push(c),
+                None => out.push((v, vec![c])),
+            }
+        }
+    }
+    out
+}
+
+/// Corners of each slice image of `s`, in patient coordinates (LPS, mm).
+fn slice_corners(s: &Series, slice: &SliceRef) -> Option<[[f64; 3]; 4]> {
+    let p = slice.position?;
+    let (rs, cs) = slice.spacing.unwrap_or((1.0, 1.0));
+    let o = slice.orientation;
+    let w = s.columns.max(1) as f64 - 1.0;
+    let h = s.rows.max(1) as f64 - 1.0;
+    let along = |base: [f64; 3], d: [f64; 3], len: f64| [base[0] + d[0] * len, base[1] + d[1] * len, base[2] + d[2] * len];
+    let row = [o[0], o[1], o[2]];
+    let col = [o[3], o[4], o[5]];
+    let a = along(p, row, w * cs);
+    Some([p, a, along(p, col, h * rs), along(a, col, h * rs)])
+}
+
+/// The box (minimum and maximum corner, LPS mm) holding every image of `s`.
+fn series_box(s: &Series) -> Option<([f64; 3], [f64; 3])> {
+    let mut lo = [f64::INFINITY; 3];
+    let mut hi = [f64::NEG_INFINITY; 3];
+    for slice in [s.slices.first()?, s.slices.last()?] {
+        for c in slice_corners(s, slice)? {
+            for k in 0..3 {
+                lo[k] = lo[k].min(c[k]);
+                hi[k] = hi[k].max(c[k]);
+            }
+        }
+    }
+    Some((lo, hi))
+}
+
+/// Share of `s`'s image centres that lie within the box `lo`…`hi` grown by `margin` mm.
+fn inside_fraction(s: &Series, lo: [f64; 3], hi: [f64; 3], margin: f64) -> f64 {
+    let mut n = 0usize;
+    let mut inside = 0usize;
+    for slice in &s.slices {
+        let Some(c) = slice_corners(s, slice) else {
+            continue;
+        };
+        let centre: [f64; 3] = std::array::from_fn(|k| 0.5 * (c[0][k] + c[3][k]));
+        n += 1;
+        if (0..3).all(|k| centre[k] >= lo[k] - margin && centre[k] <= hi[k] + margin) {
+            inside += 1;
+        }
+    }
+    if n == 0 { 0.0 } else { inside as f64 / n as f64 }
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +300,8 @@ pub struct Study {
     pub accession: String,
     pub series: Vec<Series>,
     pub mpr_groups: Vec<MprGroup>,
+    /// `(complete volume, reconstructions made from it)`, from `find_reconstructions`.
+    pub reformats: Vec<(usize, Vec<usize>)>,
     pub files_missing: bool,
 }
 
@@ -576,6 +755,7 @@ fn build_index(headers: Vec<Header>) -> Index {
                     accession: h.accession.clone(),
                     series: Vec::new(),
                     mpr_groups: Vec::new(),
+                    reformats: Vec::new(),
                     files_missing: false,
                 },
                 HashMap::new(),
@@ -694,6 +874,7 @@ fn build_index(headers: Vec<Header>) -> Index {
                 }
             }
             let mpr_groups = build_mpr_groups(&mut series, &study.description);
+            study.reformats = find_reconstructions(&series);
             study.series = series;
             study.mpr_groups = mpr_groups;
             study
@@ -1054,6 +1235,114 @@ mod tests {
             mpr_group_id: None,
             slices,
         }
+    }
+
+    /// A series with real geometry: 512×512 images of 0.78 mm pixels (400 mm across),
+    /// `count` slices `gap` mm apart starting at `start` mm along the plane's normal.
+    /// Axial slices start at the bottom; coronal and sagittal images hang down from
+    /// height 0.
+    #[allow(clippy::too_many_arguments)]
+    fn placed_series(
+        number: i64,
+        description: &str,
+        plane: DominantPlane,
+        count: usize,
+        gap: f64,
+        start: f64,
+        time: Option<f64>,
+        frame_of_reference: &str,
+    ) -> Series {
+        let (orientation, normal): ([f64; 9], [f64; 3]) = match plane {
+            DominantPlane::Coronal => ([1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 0.0], [0.0, 1.0, 0.0]),
+            DominantPlane::Sagittal => ([0.0, 1.0, 0.0, 0.0, 0.0, -1.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0]),
+            _ => ([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0], [0.0, 0.0, 1.0]),
+        };
+        let slices = (0..count)
+            .map(|i| {
+                let t = start + i as f64 * gap;
+                let position = match plane {
+                    DominantPlane::Coronal => [-200.0, t, 0.0],
+                    DominantPlane::Sagittal => [t, -200.0, 0.0],
+                    _ => [-200.0, -200.0, t],
+                };
+                SliceRef {
+                    path: PathBuf::from(format!("placed_{number}_{i}.dcm")),
+                    frame: 0,
+                    instance: i as i64 + 1,
+                    position: Some(position),
+                    orientation,
+                    is_3d_plane: true,
+                    spacing: Some((0.78, 0.78)),
+                    slice_location: Some(t),
+                    frame_of_reference_uid: Some(frame_of_reference.into()),
+                }
+            })
+            .collect();
+        Series {
+            uid: format!("2.25.{number}"),
+            number,
+            description: description.into(),
+            modality: "CT".into(),
+            rows: 512,
+            columns: 512,
+            normal: Some(normal),
+            dominant_plane: plane,
+            frame_of_reference_uid: Some(frame_of_reference.into()),
+            acquisition_time_secs: time,
+            acquisition_number: Some(1),
+            convolution_kernel: None,
+            window_center: None,
+            window_width: None,
+            mpr_group_id: None,
+            slices,
+        }
+    }
+
+    #[test]
+    fn complete_volumes_get_the_mpr_badge_and_thick_series_keep_their_plane() {
+        let ax = DominantPlane::Axial;
+        let thin = placed_series(1, "TAP 1.0", ax, 300, 1.0, -300.0, None, "F");
+        let two = placed_series(2, "TAP 2.0", ax, 200, 2.0, -400.0, None, "F");
+        let thick = placed_series(3, "TAP 5.0", ax, 80, 5.0, -400.0, None, "F");
+        let few = placed_series(4, "Short 1.0", ax, 12, 1.0, 0.0, None, "F");
+        let cor = placed_series(5, "COR 3.0", DominantPlane::Coronal, 60, 3.0, -90.0, None, "F");
+        assert_eq!(thin.cut_badge(), "MPR");
+        assert_eq!(two.cut_badge(), "MPR");
+        assert_eq!(thick.cut_badge(), "AX");
+        assert_eq!(few.cut_badge(), "AX");
+        assert_eq!(cor.cut_badge(), "COR");
+        assert!((thick.slice_gap_mm().unwrap() - 5.0).abs() < 1e-9);
+    }
+
+    /// Coronal and sagittal reconstructions go under the volume they were made from:
+    /// the lung one under the lung-kernel volume, a later phase's under that phase,
+    /// and nothing from another scan (frame of reference) or another moment.
+    #[test]
+    fn reconstructions_are_filed_under_their_source_volume() {
+        let ax = DominantPlane::Axial;
+        let cor = DominantPlane::Coronal;
+        let sag = DominantPlane::Sagittal;
+        let series = vec![
+            placed_series(4, "TAP+C 2.0 B31s", ax, 280, 2.0, -560.0, Some(1000.0), "F"), // 0
+            placed_series(6, "TAP 2.0 B70s lung", ax, 280, 2.0, -560.0, Some(1000.0), "F"), // 1
+            placed_series(602, "COR CC", cor, 110, 3.0, -160.0, Some(1000.0), "F"), // 2
+            placed_series(603, "COR LUNG", cor, 90, 3.0, -130.0, Some(1000.0), "F"), // 3
+            placed_series(604, "SAG CC", sag, 80, 3.0, -120.0, Some(1001.0), "F"), // 4
+            placed_series(7, "Arterial 1.0", ax, 400, 1.0, -400.0, Some(900.0), "F"), // 5
+            placed_series(605, "COR arterial", cor, 70, 3.0, -100.0, Some(901.0), "F"), // 6
+            placed_series(8, "Other scan", cor, 50, 3.0, -75.0, None, "G"), // 7
+            placed_series(9, "Delayed COR", cor, 50, 3.0, -75.0, Some(1300.0), "F"), // 8
+        ];
+        let found = find_reconstructions(&series);
+        let kids_of = |v: usize| -> Vec<usize> {
+            found.iter().find(|(p, _)| *p == v).map(|(_, k)| k.clone()).unwrap_or_default()
+        };
+        assert_eq!(kids_of(0), vec![2, 4], "{found:?}");
+        assert_eq!(kids_of(1), vec![3], "{found:?}");
+        assert_eq!(kids_of(5), vec![6], "{found:?}");
+        let filed: Vec<usize> = found.iter().flat_map(|(_, k)| k.clone()).collect();
+        assert!(!filed.contains(&7), "another frame of reference was filed: {found:?}");
+        assert!(!filed.contains(&8), "another moment was filed: {found:?}");
     }
 
     #[test]
