@@ -4,6 +4,7 @@
 //! orientation edge markers in the center.
 
 mod browser;
+mod cpr_view;
 mod metadata;
 mod modals;
 mod mpr_sync;
@@ -74,6 +75,8 @@ pub(crate) enum Tool {
     Polygon,
     Pencil,
     Point,
+    /// Curved MPR: click points along a structure, then Enter or double-click.
+    CurvedPath,
 }
 
 #[derive(Clone)]
@@ -477,6 +480,8 @@ pub(crate) struct ViewerApp {
     pub(crate) show_database_view: bool,
     copy_shot: CopyShotState,
     shot_purpose: ShotPurpose,
+    /// The open curved MPR, if any.
+    pub(crate) cpr: Option<cpr_view::CprView>,
     /// The measurement callout texts drawn in each viewport on the last frame.
     pub(crate) viewport_callouts: Vec<Vec<String>>,
     copy_shot_tx: std::sync::mpsc::Sender<Arc<egui::ColorImage>>,
@@ -751,6 +756,7 @@ impl ViewerApp {
             show_database_view: false,
             copy_shot: CopyShotState::Idle,
             shot_purpose: ShotPurpose::Clipboard,
+            cpr: None,
             viewport_callouts: vec![Vec::new(); 16],
             copy_shot_tx,
             copy_shot_rx,
@@ -1610,6 +1616,7 @@ impl ViewerApp {
             Key::F,
             Key::T,
             Key::Y,
+            Key::U,
             Key::Z,
             Key::OpenBracket,
             Key::CloseBracket,
@@ -1657,7 +1664,11 @@ impl ViewerApp {
                     self.dragging_roi_body = None;
                 }
                 Key::Enter => {
-                    if self.tool == Tool::Polygon && self.drawing.len() >= 3 {
+                    if self.tool == Tool::CurvedPath && self.drawing.len() >= 3 {
+                        if let Some(f) = self.viewport_frame(vp).cloned() {
+                            self.finish_curved_path(vp, &f);
+                        }
+                    } else if self.tool == Tool::Polygon && self.drawing.len() >= 3 {
                         let pts = std::mem::take(&mut self.drawing);
                         if let Some(k) = self.viewport_measure_key(vp) {
                             self.measures
@@ -1720,6 +1731,10 @@ impl ViewerApp {
                     self.drawing.clear();
                     self.angle_pending = None;
                     self.cobb_pending = None;
+                }
+                Key::U => {
+                    self.tool = Tool::CurvedPath;
+                    self.drawing.clear();
                 }
                 Key::Y => {
                     self.tool = Tool::Arrow;
@@ -2408,6 +2423,7 @@ impl eframe::App for ViewerApp {
         self.draw_force_mpr_modal(&ctx);
         self.draw_update_modal(&ctx);
         self.draw_settings_modal(&ctx);
+        self.draw_cpr_window(&ctx);
         self.draw_calibrate_modal(&ctx);
         self.draw_remove_study_modal(&ctx);
         self.draw_clear_library_modal(&ctx);

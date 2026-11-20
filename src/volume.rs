@@ -2746,6 +2746,28 @@ mod tests {
         }
     }
 
+    /// A path down the middle of the phantom's spine straightens into an image whose
+    /// centre row is spine all along, with soft tissue 30 mm to either side.
+    #[test]
+    fn curved_mpr_follows_the_spine() {
+        let (earlier, _, _, _) = two_date_phantoms(0.0, 0.0, 0.0);
+        // Spine: x = 0, y = 70 (front-back), along the body; a gentle S in x.
+        let nodes = [[0.0, 70.0, 20.0], [6.0, 70.0, 80.0], [-6.0, 70.0, 150.0], [0.0, 70.0, 220.0]];
+        let out = crate::imaging::cpr::straighten(&earlier, &nodes, [1.0, 0.0, 0.0], 0.0, 40.0)
+            .expect("path accepted");
+        let f = &out.frame;
+        let (w, h) = (f.width as usize, f.height as usize);
+        assert!((out.length_mm - 202.0).abs() < 8.0, "length {:.1}", out.length_mm);
+        assert_eq!(h % 2, 1);
+        let crate::frame::Pixels::Gray(px) = &f.pixels else { panic!("grey image") };
+        let mid = h / 2;
+        let side = mid + (30.0 / out.spacing).round() as usize;
+        let spine_cols = (w / 10..w * 9 / 10).filter(|&c| px[mid * w + c] > 300.0).count();
+        assert!(spine_cols as f64 > 0.95 * (w * 8 / 10) as f64, "spine in {spine_cols} of {} columns", w * 8 / 10);
+        let side_spine = (w / 10..w * 9 / 10).filter(|&c| px[side * w + c] > 300.0).count();
+        assert_eq!(side_spine, 0, "30 mm to the side is not spine");
+    }
+
     #[test]
     fn outline_is_trusted_only_when_profiles_and_roll_agree() {
         assert!(outline_is_trustworthy(0.85, 20, 3.0));

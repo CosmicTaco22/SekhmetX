@@ -880,6 +880,20 @@ impl ViewerApp {
             }
         }
 
+        if vp_idx == self.active_viewport && self.tool == Tool::CurvedPath && !self.drawing.is_empty() {
+            let col = crate::ui::theme::accent_bright();
+            let mut scr_pts: Vec<Pos2> = self.drawing.iter().copied().map(&s).collect();
+            for &pt in &self.drawing {
+                painter.circle_filled(s(pt), 3.0, col);
+            }
+            if let Some(hp) = self.hover_px {
+                scr_pts.push(s(hp));
+            }
+            if scr_pts.len() >= 2 {
+                painter.add(egui::Shape::line(scr_pts, Stroke::new(1.6, col)));
+            }
+        }
+
         if vp_idx == self.active_viewport && self.tool == Tool::Polygon && !self.drawing.is_empty()
         {
             let mut scr_pts: Vec<Pos2> = self.drawing.iter().copied().map(&s).collect();

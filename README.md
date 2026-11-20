@@ -92,6 +92,8 @@ or Pixmeo. It does not use their names or icons in the application.
   reconstruction.
 - Thick-slab MIP, MinIP and mean; oblique planes with a 3D rotate tool;
   gantry-tilt support and slice-spacing checks.
+- Curved MPR: click along the spine or a vessel and see it straightened, turn
+  the cut about the path, and measure on it.
 - GPU volume rendering and 3D MIP with presets, shading, a transfer-function
   editor, clipping and an orientation cube.
 - Side-by-side comparison of studies from different dates:
@@ -177,6 +179,7 @@ the window; they are added to the library and open instantly afterwards.
 | Window presets | `1`–`9`, `0` for the default |
 | Invert | `I` |
 | Measurements | `L`/`M` length · `E` oval · `B` rectangle · `G` polygon (`Enter` closes) · `F` pencil · `T` point · `Y` arrow; angle and Cobb angle from the ROI menu or right-click palette |
+| Curved MPR | `U`, click along the structure, `Enter` or double-click to straighten |
 | Delete selected (or last) measurement | `Delete` / `Backspace` |
 | Mark / unmark key image | `K` |
 | Cine | `P` or `Space` |

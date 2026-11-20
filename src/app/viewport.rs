@@ -563,6 +563,7 @@ impl ViewerApp {
             source_frame.clone()
         };
         self.draw_measures(&painter, vp_idx, view, img, &stats_frame);
+        self.draw_cpr_path(&painter, vp_idx, img, &stats_frame);
         if self.show_annotations {
             self.draw_scale_bar(&painter, vp_idx, view, img, &frame);
             self.draw_orientation_letters(&painter, vp_idx, view, &frame);
@@ -1360,7 +1361,7 @@ impl ViewerApp {
                     (Icon::Rotate, Tool::Rotate, tr.rot_hover),
                     (Icon::Orbit, Tool::Orbit3D, tr.orbit_3d_hover),
                 ];
-                let roi_tools: [(Icon, Tool, &str); 9] = [
+                let roi_tools: [(Icon, Tool, &str); 10] = [
                     (Icon::Length, Tool::Length, tr.roi_length),
                     (Icon::Angle, Tool::Angle, tr.roi_angle),
                     (Icon::Cobb, Tool::CobbAngle, tr.roi_cobb),
@@ -1370,6 +1371,7 @@ impl ViewerApp {
                     (Icon::Polygon, Tool::Polygon, tr.roi_polygon),
                     (Icon::Pencil, Tool::Pencil, tr.roi_pencil),
                     (Icon::Point, Tool::Point, tr.roi_point),
+                    (Icon::Curve, Tool::CurvedPath, tr.roi_curve),
                 ];
                 for row in [&nav_tools[..], &roi_tools[..]] {
                     ui.horizontal(|ui| {
@@ -1870,7 +1872,9 @@ impl ViewerApp {
         frame: &Frame,
     ) {
         if response.double_clicked() {
-            if self.tool == Tool::Polygon && self.drawing.len() >= 3 {
+            if self.tool == Tool::CurvedPath && self.drawing.len() >= 3 {
+                self.finish_curved_path(vp_idx, frame);
+            } else if self.tool == Tool::Polygon && self.drawing.len() >= 3 {
                 let pts = std::mem::take(&mut self.drawing);
                 if let Some(k) = self.viewport_measure_key(vp_idx) {
                     self.measures
@@ -2559,6 +2563,12 @@ impl ViewerApp {
                             self.drawing.truncate(1);
                         }
                     }
+                }
+            }
+            Tool::CurvedPath => {
+                let cur_px = pointer_px.or(self.hover_px);
+                if is_click && let Some(px) = cur_px {
+                    self.drawing.push(px);
                 }
             }
             Tool::Polygon => {

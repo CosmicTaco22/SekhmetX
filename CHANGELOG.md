@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.5] - 2026-11-20
+
+### Added: curved MPR (straightened view along a path)
+- **Curved MPR path tool** (`U`, ROI menu and right-click palette, own icon): click points along a structure (spine, vessel, ureter) on any 3D MPR view, then `Enter` or double-click. A **Curved MPR** window opens with the structure straightened: columns follow the path, rows step across it, the path runs along the middle row. **Turn** (−90°…90°, with 0° and 90° buttons) turns the cut about the path, 0° across the plane drawn on and 90° within it; **Width** sets how far it reaches to each side (10–120 mm). Drag on the image to measure a length in mm; hovering shows the value and the position along and across the path. The path stays drawn on the view it was made on until the window is closed.
+- Ported from IsiX (`src/imaging/cpr.rs`): the path checks of `CPRStraightenedGeneration.swift` (at least three points, no degenerate segment, at least 1 mm; a path that crosses itself is reported, not refused) and the sampling of `CPRStraightenedOperation.swift` (one column per step along the curve, rows along a normal kept at right angles to it). The path is a centripetal Catmull-Rom spline through every clicked point (IsiX smooths a Bézier path), sampled at the volume's finest spacing.
+- Tests: IsiX's path decisions, the smooth path passing through the points at even steps, and a path down the phantom's spine straightening into a band that is spine along the middle row and soft tissue 30 mm to the side. Checked in the app: the 30 mm spine measures 29.3 mm across the straightened band.
+- Lengths and ROIs already worked on 3D MPR planes (oblique included); the straightened image adds its own length measurement.
+
 ## [0.6.4] - 2026-11-20
 
 ### Added: key-images case report

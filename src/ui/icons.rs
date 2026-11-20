@@ -56,6 +56,7 @@ pub enum Icon {
     ChevronDown,
     Gear,
     Fusion,
+    Curve,
 }
 
 /// Maps unit coordinates (0..1, y down) into `rect`.
@@ -211,6 +212,23 @@ pub fn paint(painter: &egui::Painter, rect: Rect, icon: Icon, color: Color32) {
                 c.p(0.14, 0.66),
             ]);
             seg(c.p(0.58, 0.22), c.p(0.78, 0.42));
+        }
+        Icon::Curve => {
+            // An S-shaped path through three points, with a straight line below:
+            // a curve laid out flat.
+            line(vec![
+                c.p(0.1, 0.62),
+                c.p(0.22, 0.34),
+                c.p(0.38, 0.2),
+                c.p(0.52, 0.34),
+                c.p(0.6, 0.52),
+                c.p(0.74, 0.6),
+                c.p(0.9, 0.36),
+            ]);
+            for (x, y) in [(0.1, 0.62), (0.52, 0.34), (0.9, 0.36)] {
+                painter.circle_filled(c.p(x, y), c.len(0.07), color);
+            }
+            seg(c.p(0.1, 0.88), c.p(0.9, 0.88));
         }
         Icon::Point => {
             closed(c.ellipse(0.5, 0.5, 0.26, 0.26, 0.0, TAU));

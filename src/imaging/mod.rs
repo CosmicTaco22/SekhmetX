@@ -8,6 +8,7 @@
 pub mod clut;
 pub mod clut_tables;
 pub mod convolution;
+pub mod cpr;
 pub mod defaults;
 pub mod drag;
 pub mod fusion;

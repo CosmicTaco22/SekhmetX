@@ -321,6 +321,7 @@ impl ViewerApp {
                     Tool::Polygon => Icon::Polygon,
                     Tool::Pencil => Icon::Pencil,
                     Tool::Point => Icon::Point,
+                    Tool::CurvedPath => Icon::Curve,
                     _ => Icon::ChevronDown,
                 };
                 let menu_active = menu_icon != Icon::ChevronDown;
@@ -340,7 +341,7 @@ impl ViewerApp {
                     icons::tool_button(ui, menu_icon, menu_active).on_hover_text(tr.roi_menu_hover)
                 });
                 egui::Popup::menu(&roi_resp).show(|ui| {
-                    let items: [(Tool, &str, &str); 9] = [
+                    let items: [(Tool, &str, &str); 10] = [
                         (Tool::Length, tr.roi_length, "L"),
                         (Tool::Angle, tr.roi_angle, "—"),
                         (Tool::CobbAngle, tr.roi_cobb, "—"),
@@ -350,6 +351,7 @@ impl ViewerApp {
                         (Tool::Polygon, tr.roi_polygon, "G"),
                         (Tool::Pencil, tr.roi_pencil, "F"),
                         (Tool::Point, tr.roi_point, "T"),
+                        (Tool::CurvedPath, tr.roi_curve, "U"),
                     ];
                     let font_id = egui::TextStyle::Button.resolve(ui.style());
                     let max_label_w = items
