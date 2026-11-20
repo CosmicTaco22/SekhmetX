@@ -8,3 +8,5 @@ FULL_CONVERSATIONS_TRANSCRIPT.txt
 
 # Screenshots shown in the README (synthetic phantom only, no patient data)
 !/docs/screenshots/*.png
+# The app icon (an original drawing)
+!/assets/icon/*.png
