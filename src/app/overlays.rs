@@ -394,6 +394,8 @@ impl ViewerApp {
         let safe_bounds = view.shrink(6.0);
         let offsets = &self.roi_callout_offsets;
         let mut new_hit_rects: Vec<((PathBuf, u32, usize), Rect)> = Vec::new();
+        // The texts drawn here, kept for the case report's key-image snapshot.
+        let mut shown_texts: Vec<String> = Vec::new();
         let mut draw_callout =
             |anchor_scr: Pos2,
              lines: &[String],
@@ -402,6 +404,7 @@ impl ViewerApp {
                 if lines.is_empty() {
                     return;
                 }
+                shown_texts.push(lines.join("  ·  "));
                 let text = lines.join("\n");
                 let font = FontId::monospace(11.0);
                 let galley = painter.layout_no_wrap(text.clone(), font.clone(), Color32::WHITE);
@@ -979,6 +982,9 @@ impl ViewerApp {
             }
         }
         self.callout_hit_rects.extend(new_hit_rects);
+        if let Some(slot) = self.viewport_callouts.get_mut(vp_idx) {
+            *slot = shown_texts;
+        }
     }
 
     pub(super) fn draw_overlay(

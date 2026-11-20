@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.4] - 2026-11-20
+
+### Added: key-images case report
+- **Snapshot when marking a key image:** pressing `K` (or ★) now also keeps an anonymized snapshot of the image exactly as shown, with measurements, colour table, fusion and zoom, and records its series, image number and the measurement texts on screen (in the app's data folder, `key_images`). Unmarking removes it.
+- **"Export key images report…"** (right-click menu, Spanish "Exportar informe de imágenes clave…") writes, into a folder you choose: the key images (`key_01.png`…; rendered from the file when an image was marked before this version), **`report.html`** (opens in any browser: each image with its series, image number and measurement values, a findings box to type into, and a Print / save as PDF button, in English or Spanish), and `case_summary.txt`, now with the measurement values. No patient name, ID or dates.
+- The image's slice slider is left out of anonymized captures (copied images and key-image snapshots).
+
 ## [0.6.3] - 2026-11-20
 
 ### Fixed: empty images at the ends of a turned plane

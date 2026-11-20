@@ -476,6 +476,9 @@ pub(crate) struct ViewerApp {
     pub(crate) sidebar_compact: bool,
     pub(crate) show_database_view: bool,
     copy_shot: CopyShotState,
+    shot_purpose: ShotPurpose,
+    /// The measurement callout texts drawn in each viewport on the last frame.
+    pub(crate) viewport_callouts: Vec<Vec<String>>,
     copy_shot_tx: std::sync::mpsc::Sender<Arc<egui::ColorImage>>,
     copy_shot_rx: Receiver<Arc<egui::ColorImage>>,
     pub(crate) copy_anonymize_frame: bool,
@@ -579,6 +582,16 @@ enum CopyShotState {
     Idle,
     Armed(Rect),
     WaitingForImage(Rect),
+}
+
+/// What an anonymized viewport capture is for.
+pub(crate) enum ShotPurpose {
+    /// Copy to the clipboard (`Ctrl`/`Cmd`+`C`).
+    Clipboard,
+    /// Keep as the snapshot of a key image just marked in viewport `vp`, saved as
+    /// `<stem>.png` with a `<stem>.txt` beside it (series, image number and the
+    /// measurement texts shown), for the case report.
+    KeyImage { vp: usize, stem: String, label: String, image_no: usize },
 }
 
 #[derive(Clone, Copy)]
@@ -737,6 +750,8 @@ impl ViewerApp {
             sidebar_compact: false,
             show_database_view: false,
             copy_shot: CopyShotState::Idle,
+            shot_purpose: ShotPurpose::Clipboard,
+            viewport_callouts: vec![Vec::new(); 16],
             copy_shot_tx,
             copy_shot_rx,
             copy_anonymize_frame: false,
@@ -1923,6 +1938,26 @@ impl ViewerApp {
         if let Some(ref db) = self.db {
             let _ = db.set_key_image(&path, frame, now_key);
         }
+        let stem = key_image_stem(&path, frame);
+        let dir = key_image_dir();
+        if now_key {
+            // Keep the image as shown (measurements, colours, fusion), anonymized.
+            if let Some(&rect) = self.viewport_rects.get(vp_idx)
+                && rect.is_positive()
+                && matches!(self.copy_shot, CopyShotState::Idle)
+            {
+                let label = self.viewport_series_label(vp_idx);
+                let image_no = self.viewports[vp_idx].slice + 1;
+                if let Some(slot) = self.viewport_callouts.get_mut(vp_idx) {
+                    slot.clear();
+                }
+                self.shot_purpose = ShotPurpose::KeyImage { vp: vp_idx, stem, label, image_no };
+                self.copy_shot = CopyShotState::Armed(rect);
+            }
+        } else {
+            let _ = std::fs::remove_file(dir.join(format!("{stem}.png")));
+            let _ = std::fs::remove_file(dir.join(format!("{stem}.txt")));
+        }
         if self.key_images_only && !now_key && self.series_key_image_indices(vp_idx).is_empty() {
             self.key_images_only = false;
         }
@@ -2042,6 +2077,22 @@ impl ViewerApp {
             .or(f.spacing)
     }
 
+    /// "CT Se 2 (Axial 2.5mm)" for the series shown in `vp_idx`.
+    pub(crate) fn viewport_series_label(&self, vp_idx: usize) -> String {
+        self.viewports
+            .get(vp_idx)
+            .and_then(|v| v.selected)
+            .and_then(|sel| self.series_at(sel))
+            .map(series_label)
+            .unwrap_or_default()
+    }
+
+    /// Exports the active study's key images as a case report in a folder the user
+    /// picks: each key image as shown when it was marked (measurements included,
+    /// anonymized), or rendered from the file when no snapshot exists; `report.html`
+    /// with the images, their series, image numbers and measurement values, and a
+    /// findings box (opens in any browser, prints to PDF); and `case_summary.txt`.
+    /// No patient name, ID or dates.
     pub(crate) fn export_key_images_png(&mut self) {
         let vp_idx = self.active_viewport;
         let Some((si, _)) = self.viewports[vp_idx].selected else {
@@ -2050,60 +2101,104 @@ impl ViewerApp {
         let Some(st) = self.study_at(si) else {
             return;
         };
-        let mut key_slices: Vec<(SliceRef, String, usize)> = Vec::new();
+        let study_desc = st.description.clone();
+        let mut entries: Vec<ReportEntry> = Vec::new();
         for se in &st.series {
             for (slice_idx, s) in se.slices.iter().enumerate() {
                 if self.key_images.contains(&(s.path.clone(), s.frame)) {
-                    let se_label = if se.description.is_empty() {
-                        format!("{} Se {}", se.modality, se.number)
-                    } else {
-                        format!("{} Se {} ({})", se.modality, se.number, se.description)
-                    };
-                    key_slices.push((s.clone(), se_label, slice_idx + 1));
+                    entries.push(ReportEntry {
+                        slice: s.clone(),
+                        label: series_label(se),
+                        image_no: slice_idx + 1,
+                        measure_count: self.measures.get(&(s.path.clone(), s.frame)).map_or(0, Vec::len),
+                    });
                 }
             }
         }
-        if key_slices.is_empty() {
+        if entries.is_empty() {
             return;
         }
+        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        let es = self.lang == crate::i18n::Lang::Es;
         let vp = &self.viewports[vp_idx];
-        if let Some(dir) = rfd::FileDialog::new().pick_folder() {
-            let count = key_slices.len();
-            let refs: Vec<SliceRef> = key_slices.iter().map(|(s, _, _)| s.clone()).collect();
-            let _ = crate::export::export_series_png(
-                &refs,
-                vp.window,
-                vp.effective_invert(),
-                &vp.clut_name,
-                vp.convolution_idx,
-                &dir,
-            );
-            // Write anonymized clinical summary (no patient PHI)
-            let mut summary = String::from("SekhmetX — Anonymized Key Images Summary\n");
-            summary.push_str("========================================\n\n");
-            for (idx, (sref, se_label, slice_1based)) in key_slices.iter().enumerate() {
-                summary.push_str(&format!(
-                    "Key Image #{:02} | {} | Slice {}\n",
-                    idx + 1,
-                    se_label,
-                    slice_1based
-                ));
-                if let Some(ms) = self.measures.get(&(sref.path.clone(), sref.frame))
-                    && !ms.is_empty()
-                {
-                    summary.push_str(&format!("  Measurements/ROIs: {}\n", ms.len()));
-                }
+        let snap_dir = key_image_dir();
+        let mut cards = Vec::new();
+        let mut summary = String::from(if es {
+            "SekhmetX — Resumen anonimizado de imágenes clave\n"
+        } else {
+            "SekhmetX — Anonymized key images summary\n"
+        });
+        summary.push_str("========================================\n\n");
+        for (i, e) in entries.iter().enumerate() {
+            let file = format!("key_{:02}.png", i + 1);
+            let stem = key_image_stem(&e.slice.path, e.slice.frame);
+            let snap = snap_dir.join(format!("{stem}.png"));
+            // From the snapshot taken when it was marked: label, image number, then
+            // the measurement texts shown.
+            let meta: Vec<String> = std::fs::read_to_string(snap_dir.join(format!("{stem}.txt")))
+                .map(|t| t.lines().map(str::to_string).collect())
+                .unwrap_or_default();
+            let wrote = if snap.exists() {
+                std::fs::copy(&snap, dir.join(&file)).is_ok()
+            } else {
+                crate::frame::load_frame(&e.slice.path, e.slice.frame)
+                    .ok()
+                    .and_then(|f| {
+                        let w = match vp.window {
+                            Some(req) => f.requested(req).unwrap_or(f.full_window),
+                            None => f.default_window(),
+                        };
+                        crate::export::export_frame_png(
+                            &f,
+                            w,
+                            vp.effective_invert(),
+                            &vp.clut_name,
+                            vp.convolution_idx,
+                            &dir.join(&file),
+                        )
+                        .ok()
+                    })
+                    .is_some()
+            };
+            let measurements: Vec<String> = meta.iter().skip(2).cloned().collect();
+            summary.push_str(&format!(
+                "{} #{:02} | {} | {} {}\n",
+                if es { "Imagen clave" } else { "Key image" },
+                i + 1,
+                e.label,
+                if es { "Imagen" } else { "Image" },
+                e.image_no
+            ));
+            for m in &measurements {
+                summary.push_str(&format!("  {m}\n"));
             }
-            let _ = std::fs::write(dir.join("case_summary.txt"), summary);
-            self.message = Some(match self.lang {
-                crate::i18n::Lang::Es => {
-                    format!("Exportadas {count} imágenes clave + resumen anonimizado")
-                }
-                crate::i18n::Lang::En => {
-                    format!("Exported {count} Key Images + anonymized summary")
-                }
+            if measurements.is_empty() && e.measure_count > 0 {
+                summary.push_str(&format!(
+                    "  {}: {}\n",
+                    if es { "Mediciones" } else { "Measurements" },
+                    e.measure_count
+                ));
+            }
+            cards.push(ReportCard {
+                file: wrote.then_some(file),
+                label: e.label.clone(),
+                image_no: e.image_no,
+                measurements,
+                measure_count: e.measure_count,
             });
         }
+        let html = report_html(&study_desc, &cards, es);
+        let ok = std::fs::write(dir.join("report.html"), html).is_ok()
+            && std::fs::write(dir.join("case_summary.txt"), summary).is_ok();
+        let count = cards.len();
+        self.message = Some(match (es, ok) {
+            (true, true) => format!("Informe exportado: {count} imágenes clave (report.html)"),
+            (false, true) => format!("Report exported: {count} key images (report.html)"),
+            (true, false) => "No se pudo escribir el informe en esa carpeta".into(),
+            (false, false) => "Could not write the report to that folder".into(),
+        });
     }
 
     /// Arm an anonymized HD screenshot of the currently active viewport for clipboard copy.
@@ -2114,6 +2209,7 @@ impl ViewerApp {
         if !rect.is_positive() {
             return;
         }
+        self.shot_purpose = ShotPurpose::Clipboard;
         self.copy_shot = CopyShotState::Armed(rect);
         ctx.request_repaint();
     }
@@ -2142,6 +2238,26 @@ impl ViewerApp {
                         for px in &image.pixels[row_start..row_start + cw] {
                             bytes.extend_from_slice(&px.to_array());
                         }
+                    }
+                    if let ShotPurpose::KeyImage { vp, stem, label, image_no } =
+                        std::mem::replace(&mut self.shot_purpose, ShotPurpose::Clipboard)
+                    {
+                        let dir = key_image_dir();
+                        let _ = std::fs::create_dir_all(&dir);
+                        let _ = image::save_buffer(
+                            dir.join(format!("{stem}.png")),
+                            &bytes,
+                            cw as u32,
+                            ch as u32,
+                            image::ColorType::Rgba8,
+                        );
+                        let mut meta = format!("{label}\n{image_no}\n");
+                        for line in self.viewport_callouts.get(vp).map(Vec::as_slice).unwrap_or(&[]) {
+                            meta.push_str(line);
+                            meta.push('\n');
+                        }
+                        let _ = std::fs::write(dir.join(format!("{stem}.txt")), meta);
+                        return;
                     }
                     match arboard::Clipboard::new().and_then(|mut cb| {
                         cb.set_image(arboard::ImageData {
@@ -2243,6 +2359,9 @@ impl eframe::App for ViewerApp {
         self.poll_background(&ctx);
         self.handle_dropped_files(&ctx);
         self.handle_keys(&ctx);
+        if matches!(self.copy_shot, CopyShotState::Armed(_)) {
+            ctx.request_repaint();
+        }
 
         let chrome = crate::ui::theme::chrome_fill(&ctx);
         egui::Panel::top("toolbar")
@@ -2323,5 +2442,151 @@ mod measure_tests {
         assert!(Measure::Polygon(vec![pos2(0.0, 0.0), pos2(5.0, 0.0), pos2(10.0, 0.0)]).is_degenerate());
         assert!(!Measure::Polygon(vec![pos2(0.0, 0.0), pos2(10.0, 0.0), pos2(0.0, 10.0)]).is_degenerate());
         assert!(!Measure::Point(pos2(3.0, 3.0)).is_degenerate());
+    }
+}
+
+/// "CT Se 2 (Axial 2.5mm)".
+fn series_label(se: &Series) -> String {
+    if se.description.is_empty() {
+        format!("{} Se {}", se.modality, se.number)
+    } else {
+        format!("{} Se {} ({})", se.modality, se.number, se.description)
+    }
+}
+
+/// Where key-image snapshots are kept (in the app's data folder).
+fn key_image_dir() -> PathBuf {
+    crate::crash_log::app_data_dir().join("key_images")
+}
+
+/// A file name for a key image's snapshot, from its file and frame (no patient data).
+fn key_image_stem(path: &std::path::Path, frame: u32) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut h);
+    frame.hash(&mut h);
+    format!("{:016x}", h.finish())
+}
+
+struct ReportEntry {
+    slice: SliceRef,
+    label: String,
+    image_no: usize,
+    measure_count: usize,
+}
+
+/// One key image in the report.
+pub(crate) struct ReportCard {
+    /// Image file beside `report.html`, if it could be written.
+    pub(crate) file: Option<String>,
+    pub(crate) label: String,
+    pub(crate) image_no: usize,
+    pub(crate) measurements: Vec<String>,
+    pub(crate) measure_count: usize,
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// The case report page: the key images with their series, image numbers and
+/// measurement values, a findings box to type into, and a print button. No patient
+/// name, ID or dates.
+pub(crate) fn report_html(study_desc: &str, cards: &[ReportCard], es: bool) -> String {
+    let t = |en: &'static str, sp: &'static str| if es { sp } else { en };
+    let mut h = String::new();
+    h.push_str("<!doctype html>\n<html lang=\"");
+    h.push_str(if es { "es" } else { "en" });
+    h.push_str("\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>");
+    h.push_str(t("Key images report", "Informe de imágenes clave"));
+    h.push_str("</title>\n<style>\n\
+:root{color-scheme:light;--ink:#1d2330;--dim:#5b6475;--line:#d9dde5;--accent:#2f6fd6}\n\
+body{margin:0;background:#f4f5f8;color:var(--ink);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}\n\
+main{max-width:980px;margin:0 auto;padding:28px 16px 48px}\n\
+h1{font-size:22px;margin:0 0 4px}.sub{color:var(--dim);margin:0 0 20px}\n\
+.card{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px;margin:0 0 18px;break-inside:avoid}\n\
+.card img{display:block;max-width:100%;height:auto;border-radius:6px;background:#000;margin:0 auto}\n\
+.meta{font-weight:600;margin:10px 0 4px}.meta span{color:var(--dim);font-weight:400}\n\
+ul{margin:4px 0 0;padding-left:20px}li{font-family:ui-monospace,Consolas,monospace;font-size:13.5px}\n\
+.findings{min-height:120px;border:1px solid var(--line);border-radius:8px;padding:10px;background:#fff;white-space:pre-wrap}\n\
+.findings:empty:before{content:attr(data-placeholder);color:var(--dim)}\n\
+.bar{display:flex;gap:10px;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap}\n\
+button{font:inherit;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:7px;padding:6px 14px;cursor:pointer}\n\
+footer{color:var(--dim);font-size:12.5px;margin-top:24px}\n\
+@media print{body{background:#fff}button{display:none}.card{border-color:#bbb}}\n\
+</style></head><body><main>\n<div class=\"bar\"><div><h1>");
+    h.push_str(t("Key images report", "Informe de imágenes clave"));
+    h.push_str("</h1><p class=\"sub\">");
+    if !study_desc.is_empty() {
+        h.push_str(&html_escape(study_desc));
+        h.push_str(" · ");
+    }
+    h.push_str(&format!("{} {}", cards.len(), t("key images", "imágenes clave")));
+    h.push_str("</p></div><button onclick=\"window.print()\">");
+    h.push_str(t("Print / save as PDF", "Imprimir / guardar como PDF"));
+    h.push_str("</button></div>\n");
+    for (i, c) in cards.iter().enumerate() {
+        h.push_str("<section class=\"card\">");
+        if let Some(f) = &c.file {
+            h.push_str(&format!("<img src=\"{}\" alt=\"{} {}\">", html_escape(f), t("Key image", "Imagen clave"), i + 1));
+        }
+        h.push_str(&format!(
+            "<p class=\"meta\">{} {} — {} <span>· {} {}</span></p>",
+            t("Key image", "Imagen clave"),
+            i + 1,
+            html_escape(&c.label),
+            t("image", "imagen"),
+            c.image_no
+        ));
+        if !c.measurements.is_empty() {
+            h.push_str("<ul>");
+            for m in &c.measurements {
+                h.push_str(&format!("<li>{}</li>", html_escape(m)));
+            }
+            h.push_str("</ul>");
+        } else if c.measure_count > 0 {
+            h.push_str(&format!("<p>{}: {}</p>", t("Measurements", "Mediciones"), c.measure_count));
+        }
+        h.push_str("</section>\n");
+    }
+    h.push_str("<h2 style=\"font-size:17px\">");
+    h.push_str(t("Findings", "Hallazgos"));
+    h.push_str(&format!(
+        "</h2><div class=\"findings\" contenteditable=\"true\" data-placeholder=\"{}\"></div>\n",
+        t("Type your findings here before printing…", "Escriba aquí sus hallazgos antes de imprimir…")
+    ));
+    h.push_str("<footer>");
+    h.push_str(t(
+        "Made with SekhmetX. Anonymized: no patient name, ID or dates. Not a medical device; not for primary diagnosis.",
+        "Hecho con SekhmetX. Anonimizado: sin nombre, ID ni fechas del paciente. No es un dispositivo médico; no apto para diagnóstico primario.",
+    ));
+    h.push_str("</footer>\n</main></body></html>\n");
+    h
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    #[test]
+    fn report_lists_images_and_measurements_and_escapes_text() {
+        let cards = vec![
+            ReportCard {
+                file: Some("key_01.png".into()),
+                label: "CT Se 2 (Axial <2.5mm>)".into(),
+                image_no: 41,
+                measurements: vec!["2.31 cm (23.1 mm)".into(), "Mean: 45.2 HU  SD: 9.80".into()],
+                measure_count: 2,
+            },
+            ReportCard { file: None, label: "PT Se 50".into(), image_no: 7, measurements: vec![], measure_count: 1 },
+        ];
+        let html = report_html("CT TORAX", &cards, false);
+        assert!(html.contains("<img src=\"key_01.png\""));
+        assert!(html.contains("Axial &lt;2.5mm&gt;"), "names are escaped");
+        assert!(html.contains("<li>2.31 cm (23.1 mm)</li>"));
+        assert!(html.contains("Measurements: 1"));
+        assert!(html.contains("2 key images"));
+        let es = report_html("", &cards, true);
+        assert!(es.contains("Hallazgos") && es.contains("Imprimir"));
     }
 }

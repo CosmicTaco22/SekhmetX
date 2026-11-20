@@ -845,6 +845,10 @@ impl ViewerApp {
         vp_idx: usize,
         view: Rect,
     ) {
+        // Not part of an anonymized capture (copied image or key-image snapshot).
+        if self.copy_anonymize_frame {
+            return;
+        }
         let slice_count = self.viewport_slice_count(vp_idx);
         let Some((bar_rect, prev_rect, track_rect, next_rect)) =
             Self::viewport_scrubber_rects(view, slice_count)
@@ -1466,10 +1470,10 @@ impl ViewerApp {
                         ui.separator();
                         let exp_key_lbl = match self.lang {
                             crate::i18n::Lang::Es => {
-                                format!("★ Exportar imágenes clave ({key_cnt})…")
+                                format!("★ Exportar informe de imágenes clave ({key_cnt})…")
                             }
                             crate::i18n::Lang::En => {
-                                format!("★ Export Key Images ({key_cnt})…")
+                                format!("★ Export key images report ({key_cnt})…")
                             }
                         };
                         if ui.button(exp_key_lbl).clicked() {
