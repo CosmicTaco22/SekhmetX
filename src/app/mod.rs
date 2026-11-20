@@ -281,6 +281,9 @@ pub(crate) struct ViewportCell {
     pub(crate) vr_specular: f32,
     pub(crate) vr_clip_min: [f32; 3],
     pub(crate) vr_clip_max: [f32; 3],
+    /// Scissors: what has been cut away in 3D, and earlier states for Undo.
+    pub(crate) vr_sculpt: Option<Arc<crate::sculpt::SculptMask>>,
+    pub(crate) vr_sculpt_undo: Vec<Arc<crate::sculpt::SculptMask>>,
     pub(crate) vr_bg_color: [f32; 3],
     pub(crate) link_group: u8,
     pub(crate) fusion: FusionOverlayState,
@@ -323,6 +326,8 @@ impl ViewportCell {
             vr_specular: 0.35,
             vr_clip_min: [0.0, 0.0, 0.0],
             vr_clip_max: [1.0, 1.0, 1.0],
+            vr_sculpt: None,
+            vr_sculpt_undo: Vec::new(),
             vr_bg_color: [0.02, 0.02, 0.03],
             link_group: 0,
             fusion: FusionOverlayState::default(),
@@ -482,6 +487,10 @@ pub(crate) struct ViewerApp {
     shot_purpose: ShotPurpose,
     /// The open curved MPR, if any.
     pub(crate) cpr: Option<cpr_view::CprView>,
+    /// Scissors mode in the 3D view (which side of the drawn loop is cut), and the
+    /// loop being drawn (screen points).
+    pub(crate) sculpt_mode: Option<crate::sculpt::CutSide>,
+    pub(crate) sculpt_lasso: Vec<Pos2>,
     /// The measurement callout texts drawn in each viewport on the last frame.
     pub(crate) viewport_callouts: Vec<Vec<String>>,
     copy_shot_tx: std::sync::mpsc::Sender<Arc<egui::ColorImage>>,
@@ -757,6 +766,8 @@ impl ViewerApp {
             copy_shot: CopyShotState::Idle,
             shot_purpose: ShotPurpose::Clipboard,
             cpr: None,
+            sculpt_mode: None,
+            sculpt_lasso: Vec::new(),
             viewport_callouts: vec![Vec::new(); 16],
             copy_shot_tx,
             copy_shot_rx,
@@ -1617,6 +1628,7 @@ impl ViewerApp {
             Key::T,
             Key::Y,
             Key::U,
+            Key::X,
             Key::Z,
             Key::OpenBracket,
             Key::CloseBracket,
@@ -1656,6 +1668,8 @@ impl ViewerApp {
                     self.delete_selected_or_last_roi(vp);
                 }
                 Key::Escape => {
+                    self.sculpt_mode = None;
+                    self.sculpt_lasso.clear();
                     self.drawing.clear();
                     self.angle_pending = None;
                     self.cobb_pending = None;
@@ -1735,6 +1749,14 @@ impl ViewerApp {
                 Key::U => {
                     self.tool = Tool::CurvedPath;
                     self.drawing.clear();
+                }
+                Key::X if self.viewports[vp].vr_enabled => {
+                    // Scissors on (cut inside the loop) / off.
+                    self.sculpt_mode = match self.sculpt_mode {
+                        None => Some(crate::sculpt::CutSide::Inside),
+                        Some(_) => None,
+                    };
+                    self.sculpt_lasso.clear();
                 }
                 Key::Y => {
                     self.tool = Tool::Arrow;

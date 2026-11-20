@@ -2768,6 +2768,33 @@ mod tests {
         assert_eq!(side_spine, 0, "30 mm to the side is not spine");
     }
 
+    /// Scissors: a square drawn in the middle of the front view cuts the middle of
+    /// the volume through its whole depth (front to back) and leaves the edges;
+    /// cutting outside the same square removes exactly the rest.
+    #[test]
+    fn sculpt_cuts_through_the_depth_inside_or_outside_a_loop() {
+        use crate::sculpt::{vr_camera, CutSide, SculptMask};
+        let (vol, _, _, _) = two_date_phantoms(0.0, 0.0, 0.0);
+        let cam = vr_camera(&vol, 0.0, 0.0, 0.0, false, false);
+        // Looking from the front: fwd runs anterior to posterior (+y in LPS).
+        assert!(cam.fwd[1] > 0.99, "fwd {:?}", cam.fwd);
+        let square = [[0.4, 0.4], [0.6, 0.4], [0.6, 0.6], [0.4, 0.6]];
+        let mut inside = SculptMask::new(&vol);
+        let v0 = inside.version;
+        let n_in = inside.cut(&cam, 1.0, 1.0, &square, CutSide::Inside);
+        assert!(n_in > 0 && inside.version != v0);
+        let [mw, mh, md] = inside.dims;
+        let at = |m: &SculptMask, x: usize, y: usize, z: usize| m.data[(z * mh + y) * mw + x];
+        for y in 0..mh {
+            assert_eq!(at(&inside, mw / 2, y, md / 2), 0, "centre column cut at depth {y}");
+            assert_eq!(at(&inside, 0, y, 0), 255, "corner kept at depth {y}");
+        }
+        let mut outside = SculptMask::new(&vol);
+        let n_out = outside.cut(&cam, 1.0, 1.0, &square, CutSide::Outside);
+        assert_eq!(n_in + n_out, mw * mh * md);
+        assert_eq!(at(&outside, mw / 2, mh / 2, md / 2), 255);
+    }
+
     #[test]
     fn outline_is_trusted_only_when_profiles_and_roll_agree() {
         assert!(outline_is_trustworthy(0.85, 20, 3.0));

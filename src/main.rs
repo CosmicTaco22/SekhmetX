@@ -15,6 +15,7 @@ mod loader;
 mod navigation;
 mod legacy_cleanup;
 mod roi;
+mod sculpt;
 mod settings;
 mod ui;
 mod updater;

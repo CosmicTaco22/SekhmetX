@@ -1359,6 +1359,57 @@ impl ViewerApp {
                 })
                 .response
                 .on_hover_text(if es { "Recortar el volumen en X, Y y Z" } else { "Crop the volume along X, Y and Z" });
+                {
+                    use crate::sculpt::CutSide;
+                    let label = match (self.sculpt_mode, es) {
+                        (Some(_), true) => "Tijeras (activas) ▾",
+                        (Some(_), false) => "Scissors (on) ▾",
+                        (None, true) => "Tijeras ▾",
+                        (None, false) => "Scissors ▾",
+                    };
+                    ui.menu_button(label, |ui| {
+                        ui.set_min_width(240.0);
+                        for (side, en, sp) in [
+                            (Some(CutSide::Inside), "Cut inside the loop", "Cortar dentro del lazo"),
+                            (Some(CutSide::Outside), "Keep only inside the loop", "Conservar solo dentro del lazo"),
+                            (None, "Off (drag rotates)", "Apagadas (arrastrar gira)"),
+                        ] {
+                            if ui.selectable_label(self.sculpt_mode == side, if es { sp } else { en }).clicked() {
+                                self.sculpt_mode = side;
+                                self.sculpt_lasso.clear();
+                                ui.close();
+                            }
+                        }
+                        ui.separator();
+                        let vp = &mut self.viewports[vp_idx];
+                        if ui
+                            .add_enabled(!vp.vr_sculpt_undo.is_empty(), egui::Button::new(if es { "Deshacer último corte" } else { "Undo last cut" }))
+                            .clicked()
+                        {
+                            vp.vr_sculpt = vp.vr_sculpt_undo.pop();
+                        }
+                        if ui
+                            .add_enabled(vp.vr_sculpt.is_some(), egui::Button::new(if es { "Restaurar todo" } else { "Restore everything" }))
+                            .clicked()
+                        {
+                            vp.vr_sculpt = None;
+                            vp.vr_sculpt_undo.clear();
+                        }
+                        if let Some(m) = &vp.vr_sculpt {
+                            let pct = 100.0 * m.cut_count() as f32 / m.data.len().max(1) as f32;
+                            ui.label(
+                                egui::RichText::new(if es { format!("{pct:.0} % recortado") } else { format!("{pct:.0} % cut away") })
+                                    .small(),
+                            );
+                        }
+                    })
+                    .response
+                    .on_hover_text(if es {
+                        "Dibuje un lazo sobre la vista 3D para quitar lo que cubre, en toda la profundidad (Esc sale)"
+                    } else {
+                        "Draw a loop on the 3D view to remove what it covers, through the whole depth (Esc leaves)"
+                    });
+                }
                 ui.menu_button(if es { "Fondo ▾" } else { "Background ▾" }, |ui| {
                     ui.set_min_width(160.0);
                     let vp = &mut self.viewports[vp_idx];

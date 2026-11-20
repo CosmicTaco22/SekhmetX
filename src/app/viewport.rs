@@ -1061,6 +1061,29 @@ impl ViewerApp {
             }
         }
 
+        // Scissors: left-drag draws a loop; on release, cut inside or outside it.
+        if let Some(side) = self.sculpt_mode {
+            if response.drag_started_by(egui::PointerButton::Primary) {
+                self.active_viewport = vp_idx;
+                self.sculpt_lasso.clear();
+            }
+            if response.dragged_by(egui::PointerButton::Primary)
+                && let Some(p) = response.interact_pointer_pos()
+                && self.sculpt_lasso.last().is_none_or(|q| q.distance(p) > 2.0)
+            {
+                self.sculpt_lasso.push(p);
+            }
+            if response.drag_stopped_by(egui::PointerButton::Primary) {
+                let lasso = std::mem::take(&mut self.sculpt_lasso);
+                self.apply_sculpt(vp_idx, view, &lasso, side);
+            }
+            if response.dragged_by(egui::PointerButton::Primary)
+                || response.drag_stopped_by(egui::PointerButton::Primary)
+            {
+                return;
+            }
+        }
+
         // Left-drag orbits 3D camera; Right-drag adjusts WL/WW
         if response.dragged_by(egui::PointerButton::Primary) {
             let delta = response.drag_delta();
@@ -1126,8 +1149,16 @@ impl ViewerApp {
             rotation_deg: vp.rotation,
             x_flipped: vp.x_flipped,
             y_flipped: vp.y_flipped,
+            sculpt: vp.vr_sculpt.clone(),
         };
         painter.add(cb.into_shape(view));
+        // The scissors loop being drawn.
+        if self.sculpt_mode.is_some() && vp_idx == self.active_viewport && self.sculpt_lasso.len() >= 2 {
+            let col = crate::ui::theme::accent_bright();
+            let mut pts = self.sculpt_lasso.clone();
+            pts.push(pts[0]);
+            painter.add(egui::Shape::line(pts, Stroke::new(1.8, col)));
+        }
 
         // Clone `vol`? No, `vol` was moved into `cb`; read orientation from `self.viewport_volume(vp_idx)` for cube!
         if let Some(v_ref) = self.viewport_volume(vp_idx) {

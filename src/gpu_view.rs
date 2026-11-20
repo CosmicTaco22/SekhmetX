@@ -359,6 +359,14 @@ struct UniformsVr {
 @group(0) @binding(0) var vol_tex: texture_3d<i32>;
 @group(0) @binding(1) var<uniform> u: UniformsVr;
 @group(0) @binding(2) var clut_tex: texture_2d<f32>;
+// Scissors keep/cut map (1 = keep), coarser than the volume; 1x1x1 when unused.
+@group(0) @binding(3) var mask_tex: texture_3d<f32>;
+
+fn kept(uvw: vec3<f32>) -> bool {
+    let d = vec3<i32>(textureDimensions(mask_tex));
+    let c = clamp(vec3<i32>(uvw * vec3<f32>(d)), vec3<i32>(0), d - vec3<i32>(1));
+    return textureLoad(mask_tex, c, 0).r > 0.5;
+}
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
@@ -496,6 +504,9 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
             let t = t_start + (f32(i) + 0.5) * dt;
             let p = ro + rd * t;
             let uvw = (p + ext) * inv_two_ext;
+            if (!kept(uvw)) {
+                continue;
+            }
             let val = sample_trilinear(uvw);
             if (val > max_v) {
                 max_v = val;
@@ -515,6 +526,9 @@ fn fs_main(@builtin(position) frag_pos: vec4<f32>) -> @location(0) vec4<f32> {
         let t = t_start + (f32(i) + 0.5) * dt;
         let p = ro + rd * t;
         let uvw = (p + ext) * inv_two_ext;
+        if (!kept(uvw)) {
+            continue;
+        }
         let val = sample_trilinear(uvw);
         let norm = clamp((val - u.low) * u.inv_span, 0.0, 1.0);
         let tf = sample_tf(norm);
@@ -607,6 +621,9 @@ struct ViewportGpu3DSlot {
     uploaded_clut: Option<ColorLookupTable>,
     uploaded_vr_lut_hash: Option<u64>,
     uploaded_vr_mode: Option<bool>,
+    /// The scissors map on the GPU and which version it holds (0 = none).
+    mask: Option<(wgpu::Texture, wgpu::TextureView)>,
+    uploaded_mask: Option<u64>,
 }
 
 fn upload_clut_if_changed(
@@ -672,6 +689,7 @@ struct Resources {
     layout: wgpu::BindGroupLayout,
     pipeline_3d: wgpu::RenderPipeline,
     layout_3d: wgpu::BindGroupLayout,
+    layout_vr: wgpu::BindGroupLayout,
     pipeline_vr: wgpu::RenderPipeline,
     slices: Vec<UploadedSlice>,
     volumes: Vec<UploadedVolume>,
@@ -952,9 +970,41 @@ pub fn install(cc: &eframe::CreationContext<'_>) -> Option<GpuInfo> {
         label: Some("rdicom-volume-vr"),
         source: wgpu::ShaderSource::Wgsl(VR_SHADER.into()),
     });
+    // As the MPR layout, plus the scissors map.
+    let tex_entry = |binding: u32, sample_type: wgpu::TextureSampleType, dim: wgpu::TextureViewDimension| {
+        wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture { sample_type, view_dimension: dim, multisampled: false },
+            count: None,
+        }
+    };
+    let layout_vr = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("rdicom-volume-vr-bgl"),
+        entries: &[
+            tex_entry(0, wgpu::TextureSampleType::Sint, wgpu::TextureViewDimension::D3),
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            tex_entry(2, wgpu::TextureSampleType::Float { filterable: false }, wgpu::TextureViewDimension::D2),
+            tex_entry(3, wgpu::TextureSampleType::Float { filterable: false }, wgpu::TextureViewDimension::D3),
+        ],
+    });
+    let pipeline_layout_vr = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("rdicom-volume-vr-pl"),
+        bind_group_layouts: &[Some(&layout_vr)],
+        immediate_size: 0,
+    });
     let pipeline_vr = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("rdicom-volume-vr-rp"),
-        layout: Some(&pipeline_layout_3d),
+        layout: Some(&pipeline_layout_vr),
         vertex: wgpu::VertexState {
             module: &shader_vr,
             entry_point: Some("vs_main"),
@@ -986,6 +1036,7 @@ pub fn install(cc: &eframe::CreationContext<'_>) -> Option<GpuInfo> {
             layout,
             pipeline_3d,
             layout_3d,
+            layout_vr,
             pipeline_vr,
             slices: Vec::with_capacity(MAX_CACHED_TEXTURES),
             volumes: Vec::with_capacity(MAX_CACHED_VOLUMES),
@@ -1229,6 +1280,8 @@ impl egui_wgpu::CallbackTrait for VolumeMprCallback {
                 uploaded_clut: None,
                 uploaded_vr_lut_hash: None,
                 uploaded_vr_mode: None,
+                mask: None,
+                uploaded_mask: None,
             }
         });
 
@@ -1378,6 +1431,8 @@ pub struct VolumeVrCallback {
     pub rotation_deg: f32,
     pub x_flipped: bool,
     pub y_flipped: bool,
+    /// Scissors keep/cut map, when the user has cut something away.
+    pub sculpt: Option<Arc<crate::sculpt::SculptMask>>,
 }
 
 impl VolumeVrCallback {
@@ -1418,6 +1473,8 @@ impl egui_wgpu::CallbackTrait for VolumeVrCallback {
                 uploaded_clut: None,
                 uploaded_vr_lut_hash: None,
                 uploaded_vr_mode: None,
+                mask: None,
+                uploaded_mask: None,
             }
         });
 
@@ -1460,12 +1517,57 @@ impl egui_wgpu::CallbackTrait for VolumeVrCallback {
             }
         }
 
+        // Scissors map: the cut map for this volume, or a single "keep" cell.
+        let mask = self.sculpt.as_ref().filter(|m| m.volume_id == self.volume.gpu_id);
+        let mask_version = mask.map_or(0, |m| m.version);
+        if slot.uploaded_mask != Some(mask_version) || slot.mask.is_none() {
+            let (dims, data): ([usize; 3], &[u8]) = match mask {
+                Some(m) => (m.dims, &m.data),
+                None => ([1, 1, 1], &[255u8]),
+            };
+            let size = wgpu::Extent3d {
+                width: dims[0] as u32,
+                height: dims[1] as u32,
+                depth_or_array_layers: dims[2] as u32,
+            };
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("rdicom-vr-sculpt-mask"),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D3,
+                format: wgpu::TextureFormat::R8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tex,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(dims[0] as u32),
+                    rows_per_image: Some(dims[1] as u32),
+                },
+                size,
+            );
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            slot.mask = Some((tex, view));
+            slot.uploaded_mask = Some(mask_version);
+            slot.bind_group = None;
+        }
+
         if (slot.bound_volume != Some(self.volume.gpu_id) || slot.bind_group.is_none())
             && let Some(uploaded) = res.volumes.iter().find(|v| v.gpu_id == self.volume.gpu_id)
+            && let Some((_, mask_view)) = &slot.mask
         {
             let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("rdicom-volume-vr-bg"),
-                layout: &res.layout_3d,
+                layout: &res.layout_vr,
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
@@ -1479,84 +1581,26 @@ impl egui_wgpu::CallbackTrait for VolumeVrCallback {
                         binding: 2,
                         resource: wgpu::BindingResource::TextureView(&slot.clut_view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: wgpu::BindingResource::TextureView(mask_view),
+                    },
                 ],
             });
             slot.bind_group = Some(bg);
             slot.bound_volume = Some(self.volume.gpu_id);
         }
 
-        let phys_x = (self.volume.width as f32 * self.volume.spacing[0] as f32).max(1.0);
-        let phys_y = (self.volume.height as f32 * self.volume.spacing[1] as f32).max(1.0);
-        let phys_z = (self.volume.depth as f32 * self.volume.spacing[2] as f32).max(1.0);
-        let max_dim = phys_x.max(phys_y).max(phys_z);
-        let half_ext = [
-            0.5 * phys_x / max_dim,
-            0.5 * phys_y / max_dim,
-            0.5 * phys_z / max_dim,
-            0.0,
-        ];
-
-        // Build anatomical patient-LPS basis in voxel space:
-        // Patient Left (+X_lps), Anterior (-Y_lps), Superior (+Z_lps = head-up).
-        let norm3 = |v: [f32; 3]| -> [f32; 3] {
-            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-5);
-            [v[0] / l, v[1] / l, v[2] / l]
-        };
-        let cross3 = |a: [f32; 3], b: [f32; 3]| -> [f32; 3] {
-            [
-                a[1] * b[2] - a[2] * b[1],
-                a[2] * b[0] - a[0] * b[2],
-                a[0] * b[1] - a[1] * b[0],
-            ]
-        };
-        let v_left = norm3([
-            self.volume.row_dir[0] as f32,
-            self.volume.col_dir[0] as f32,
-            self.volume.slice_dir[0] as f32,
-        ]);
-        let v_sup = norm3([
-            self.volume.row_dir[2] as f32,
-            self.volume.col_dir[2] as f32,
-            self.volume.slice_dir[2] as f32,
-        ]);
-        let v_ant = norm3(cross3(v_left, v_sup));
-
-        // Orbit camera around volume center: yaw=0, pitch=0 looks from Anterior toward Posterior
-        // with Superior UP and Patient Left on the viewer's right (standard AP view).
-        let (sy, cy) = self.yaw.sin_cos();
-        let (sp, cp) = self.pitch.sin_cos();
-        let cam_dir = [
-            v_ant[0] * cy * cp + v_left[0] * sy * cp + v_sup[0] * sp,
-            v_ant[1] * cy * cp + v_left[1] * sy * cp + v_sup[1] * sp,
-            v_ant[2] * cy * cp + v_left[2] * sy * cp + v_sup[2] * sp,
-        ];
-        let fwd = norm3([-cam_dir[0], -cam_dir[1], -cam_dir[2]]);
-        let mut right = norm3(cross3(fwd, v_sup));
-        let mut up = norm3(cross3(right, fwd));
-
-        // Apply View menu in-plane rotation & flips
-        let rad = self.rotation_deg.to_radians();
-        let (sr, cr) = rad.sin_cos();
-        let r_rot = [
-            right[0] * cr + up[0] * sr,
-            right[1] * cr + up[1] * sr,
-            right[2] * cr + up[2] * sr,
-        ];
-        let u_rot = [
-            -right[0] * sr + up[0] * cr,
-            -right[1] * sr + up[1] * cr,
-            -right[2] * sr + up[2] * cr,
-        ];
-        right = if self.x_flipped {
-            [-r_rot[0], -r_rot[1], -r_rot[2]]
-        } else {
-            r_rot
-        };
-        up = if self.y_flipped {
-            [-u_rot[0], -u_rot[1], -u_rot[2]]
-        } else {
-            u_rot
-        };
+        let cam = crate::sculpt::vr_camera(
+            &self.volume,
+            self.yaw,
+            self.pitch,
+            self.rotation_deg,
+            self.x_flipped,
+            self.y_flipped,
+        );
+        let half_ext = [cam.half_ext[0], cam.half_ext[1], cam.half_ext[2], 0.0];
+        let (right, up, fwd) = (cam.right, cam.up, cam.fwd);
 
         let low = self.window.low();
         let high = self.window.high();

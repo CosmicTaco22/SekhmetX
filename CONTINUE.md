@@ -12,8 +12,8 @@ the owner says so; this cloud session cannot push tags, the owner tags from the 
 | Empty images at the ends of a turned plane | 0.6.3 | done: `Volume3D::content_span_mm` |
 | Key images case report | 0.6.4 | done: snapshot on `K`, `report.html` export |
 | Curved MPR (straightened view along a drawn path) and measurements on MPR planes | 0.6.5 | done: `U` tool, `src/imaging/cpr.rs`, `src/app/cpr_view.rs` |
-| 3D sculpting (scissors) in volume rendering | 0.6.6 | next |
-| App icon (own drawing), Windows installer, signing-ready release workflow; then 0.7.0 | 0.7.0 | pending |
+| 3D sculpting (scissors) in volume rendering | 0.6.6 | done: `src/sculpt.rs`, mask in the VR shader, Scissors menu, `X` |
+| App icon (own drawing), Windows installer, signing-ready release workflow; then 0.7.0 | 0.7.0 | next |
 
 Not in 0.7.0: PACS access waits for the owner's plugin design; code signing needs a
 certificate the owner must buy (prepare the workflow step so it activates when a
@@ -21,7 +21,7 @@ certificate secret exists).
 
 ## Last check
 
-v0.6.5: clippy (also `--tests`) clean, 142 tests pass, release build OK.
+v0.6.6: clippy (also `--tests`) clean, 143 tests pass, release build OK. Note: simulated drags on the software-rendered 3D view must be slow (about 1.5 s per point) or they register as clicks.
 
 ## Test data (scratchpad, regenerate if lost)
 

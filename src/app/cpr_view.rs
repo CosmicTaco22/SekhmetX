@@ -271,3 +271,47 @@ impl ViewerApp {
         }
     }
 }
+
+impl ViewerApp {
+    /// Cuts away, in the 3D view of `vp_idx`, everything inside (or outside) the loop
+    /// drawn on screen, through the whole depth; the earlier state is kept for Undo.
+    pub(super) fn apply_sculpt(&mut self, vp_idx: usize, view: Rect, lasso: &[Pos2], side: crate::sculpt::CutSide) {
+        if lasso.len() < 3 || view.width() < 1.0 || view.height() < 1.0 {
+            return;
+        }
+        let Some(vol) = self.viewport_volume(vp_idx).cloned() else {
+            return;
+        };
+        let vp = &self.viewports[vp_idx];
+        let cam = crate::sculpt::vr_camera(&vol, vp.vr_yaw, vp.vr_pitch, vp.rotation, vp.x_flipped, vp.y_flipped);
+        let pts: Vec<[f32; 2]> = lasso
+            .iter()
+            .map(|p| [(p.x - view.min.x) / view.width(), (p.y - view.min.y) / view.height()])
+            .collect();
+        let previous = vp.vr_sculpt.clone().filter(|m| m.volume_id == vol.gpu_id);
+        let mut mask = previous.as_deref().cloned().unwrap_or_else(|| crate::sculpt::SculptMask::new(&vol));
+        let cut = mask.cut(&cam, vp.zoom, view.width() / view.height(), &pts, side);
+        let es = self.lang == crate::i18n::Lang::Es;
+        if cut == 0 {
+            self.message = Some(if es { "Tijeras: el lazo no cubre el volumen" } else { "Scissors: the loop does not cover the volume" }.into());
+            return;
+        }
+        let pct = 100.0 * mask.cut_count() as f32 / mask.data.len().max(1) as f32;
+        self.message = Some(if es {
+            format!("Tijeras: {pct:.0} % del volumen recortado (Deshacer en el menú Tijeras)")
+        } else {
+            format!("Scissors: {pct:.0} % of the volume cut away (Undo in the Scissors menu)")
+        });
+        let vp = &mut self.viewports[vp_idx];
+        if let Some(prev) = previous {
+            vp.vr_sculpt_undo.push(prev);
+            if vp.vr_sculpt_undo.len() > 10 {
+                vp.vr_sculpt_undo.remove(0);
+            }
+        } else {
+            vp.vr_sculpt_undo.clear();
+            vp.vr_sculpt_undo.push(Arc::new(crate::sculpt::SculptMask::new(&vol)));
+        }
+        vp.vr_sculpt = Some(Arc::new(mask));
+    }
+}

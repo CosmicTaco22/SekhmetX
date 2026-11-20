@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.6] - 2026-11-20
+
+### Added: 3D sculpting (scissors) in volume rendering
+- **Scissors** menu in the 3D view's toolbar (Spanish "Tijeras"), or `X` in a 3D view: draw a loop on the 3D image and everything inside it is cut away through the whole depth (**Cut inside the loop**), or everything outside it (**Keep only inside the loop**), to clear the table, ribs or other structures off what you want to see. **Undo last cut** (up to ten steps) and **Restore everything**; the menu shows how much is cut away, and each cut reports it in the status bar. `Esc` leaves scissors mode. Rotating, zooming, window and colour all keep working on the sculpted volume.
+- How it works (`src/sculpt.rs`): a keep/cut map over the volume (up to 128 cells per side) is edited on the CPU by projecting each cell through the same camera the renderer uses (now one shared function, `sculpt::vr_camera`) and checking it against the drawn loop; the ray-caster in `src/gpu_view.rs` skips cut cells, in VR and MIP. IsiX does this in its VTK 3D window, which cannot be translated; this is a rebuild for the wgpu renderer.
+- Test: a square drawn in the middle of the front view cuts the middle of the volume through its whole depth and leaves the edges; cutting outside the same square removes exactly the rest. Checked in the app on the phantom.
+
 ## [0.6.5] - 2026-11-20
 
 ### Added: curved MPR (straightened view along a path)
