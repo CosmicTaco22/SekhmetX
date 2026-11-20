@@ -2833,6 +2833,46 @@ fn hit_test_roi_interior(
     }
 }
 
+/// A hash of the plane, position and grid of `f`, to know when a fused overlay must
+/// be resampled.
+fn base_plane_hash(f: &Frame) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    if let Some(o) = f.origin {
+        for v in o {
+            v.to_bits().hash(&mut h);
+        }
+    }
+    for v in f.orientation {
+        v.to_bits().hash(&mut h);
+    }
+    if let Some((r, c)) = f.spacing {
+        r.to_bits().hash(&mut h);
+        c.to_bits().hash(&mut h);
+    }
+    (f.width, f.height).hash(&mut h);
+    h.finish()
+}
+
+/// The MPR plane through `f` (its centre, row and column directions), to resample
+/// another volume along exactly the plane `f` shows.
+fn base_plane(f: &Frame) -> Option<crate::volume::MprPlane3D> {
+    let center = f.patient_coords_at(f.width as f64 * 0.5, f.height as f64 * 0.5)?;
+    let o = f.orientation;
+    let u = [o[0], o[1], o[2]];
+    let v = [o[3], o[4], o[5]];
+    let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+    Some(crate::volume::MprPlane3D {
+        center_lps: center,
+        u_axis: u,
+        v_axis: v,
+        normal: n,
+        offset_mm: 0.0,
+        slab_mode: crate::volume::SlabMode::Thin,
+        slab_thickness_mm: 0.0,
+    })
+}
+
 fn rotate_vec3_around_axis(v: [f64; 3], axis: [f64; 3], angle: f64) -> [f64; 3] {
     let (s, c) = angle.sin_cos();
     let k_dot_v = dot3(axis, v);
@@ -2986,7 +3026,32 @@ impl ViewerApp {
             slice: f_slice_idx,
         };
 
-        let f_frame = if let Some(cached) = self.cache.get(&f_key) {
+        // Once the fused series is built as a volume, sample it along exactly the plane
+        // shown here (axial, coronal, sagittal or turned); until then, the stored slice
+        // nearest to the plane stands in (right for native axial views only).
+        let plane_hash = base_plane_hash(base_frame);
+        let resliced = match (self.volumes.get(&(f_st, f_se)), base_frame.is_3d_plane) {
+            (Some(vol), true) => {
+                let cached = self.viewports[vp_idx]
+                    .fusion
+                    .resliced
+                    .as_ref()
+                    .filter(|(h, _)| *h == plane_hash)
+                    .map(|(_, f)| f.clone());
+                match cached {
+                    Some(f) => Some(f),
+                    None => base_plane(base_frame).map(|plane| {
+                        let f = vol.reslice_plane(&[], &plane);
+                        self.viewports[vp_idx].fusion.resliced = Some((plane_hash, f.clone()));
+                        f
+                    }),
+                }
+            }
+            _ => None,
+        };
+        let f_frame = if let Some(f) = resliced {
+            f
+        } else if let Some(cached) = self.cache.get(&f_key) {
             cached.clone()
         } else {
             self.loader.request(Job {
@@ -3007,6 +3072,7 @@ impl ViewerApp {
         let blend = self.viewports[vp_idx].fusion.blend;
         let desired_key = (
             f_key,
+            if self.volumes.contains_key(&(f_st, f_se)) { plane_hash } else { 0 },
             blend.mode,
             (blend.factor * 10.0).round() as i32,
             clut_name.clone(),
@@ -3049,8 +3115,10 @@ impl ViewerApp {
             for (idx, &(cx, cy)) in f_corners.iter().enumerate() {
                 if let Some(lps) = f_frame.patient_coords_at(cx, cy) {
                     let rel = [lps[0] - b_orig[0], lps[1] - b_orig[1], lps[2] - b_orig[2]];
-                    let bx = (rel[0] * bo[0] + rel[1] * bo[1] + rel[2] * bo[2]) / b_col;
-                    let by = (rel[0] * bo[3] + rel[1] * bo[4] + rel[2] * bo[5]) / b_row;
+                    // Distance from the first pixel's centre, in pixels; the screen
+                    // mapping counts from the image's edge, half a pixel earlier.
+                    let bx = (rel[0] * bo[0] + rel[1] * bo[1] + rel[2] * bo[2]) / b_col + 0.5;
+                    let by = (rel[0] * bo[3] + rel[1] * bo[4] + rel[2] * bo[5]) / b_row + 0.5;
                     out[idx] = pos2(bx as f32, by as f32);
                 }
             }

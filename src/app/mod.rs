@@ -218,7 +218,10 @@ pub(crate) struct FusionOverlayState {
     /// Optional window override for the fused series (`None` = frame default).
     pub(crate) window: Option<Window>,
     pub(crate) texture: Option<TextureHandle>,
-    pub(crate) tex_key: Option<(SliceKey, i32, i32, String, u32, u32)>,
+    /// Fused slice, view plane (hash), blend mode, factor, CLUT, window bits.
+    pub(crate) tex_key: Option<(SliceKey, u64, i32, i32, String, u32, u32)>,
+    /// The fused series resampled along the viewport's plane, by plane hash.
+    pub(crate) resliced: Option<(u64, Arc<Frame>)>,
 }
 
 impl Default for FusionOverlayState {
@@ -235,6 +238,7 @@ impl Default for FusionOverlayState {
             window: None,
             texture: None,
             tex_key: None,
+            resliced: None,
         }
     }
 }
@@ -1232,6 +1236,15 @@ impl ViewerApp {
                 let raw_len = self.series_at((st, se)).map_or(1, |s| s.slices.len());
                 let cur_s = self.viewports[vp_idx].slice.min(raw_len.saturating_sub(1));
                 focuses.push((st, se, cur_s));
+                // The fused (PET) series is loaded whole so it can be built as a volume
+                // and sampled along whatever plane this viewport shows.
+                if self.viewports[vp_idx].fusion.enabled
+                    && let Some((fst, fse)) = self.viewports[vp_idx].fusion.series
+                    && !focuses.iter().any(|&(a, b, _)| a == fst && b == fse)
+                {
+                    let mid = self.series_at((fst, fse)).map_or(0, |s| s.slices.len() / 2);
+                    focuses.push((fst, fse, mid));
+                }
                 if let Some(study) = self.study_at(st)
                     && let Some(gid) = study.series.get(se).and_then(|s| s.mpr_group_id)
                         && let Some(group) = study.mpr_groups.get(gid) {

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.2] - 2026-11-20
+
+### Reviewed and fixed: PET-CT fusion (0.6.0)
+Checked on a synthetic PET-CT phantom: a PET series (4 mm pixels, 3.27 mm slices, Bq/mL with decay correction to scan start, 70 kg, 370 MBq F-18 one hour before) whose body is SUV 1 and whose hot sphere (SUV 10) sits on the CT phantom's lesion.
+- **SUV is right:** the cursor reads 1.00 SUV in the body and 10.00 SUV in the sphere, so the IsiX-ported SUV maths and tag reading work.
+- **Fixed: fusion on coronal, sagittal, turned and 3D MPR planes.** The overlay took the stored PET slice nearest to the view and laid it flat over it, which is only right for an axial view. Once the PET series is loaded as a volume (it is now loaded whole when fusion is on), it is resampled along exactly the plane shown, so the overlay lines up on any plane; the sphere sits on the lesion in axial and coronal views, with the right SUV under the cursor. The resampled image is cached until the plane changes. Until the volume is ready, the nearest stored slice stands in as before.
+- **Fixed: half a CT pixel offset** in placing the overlay (about 0.35 mm on CT).
+
 ## [0.6.1] - 2026-11-19
 
 ### Changed: a tidier series list
