@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <!-- SekhmetX app icon (original drawing): an axial chest CT slice inside a golden
+       ring, the scanner's gantry and the sun disc of Sekhmet. LGPL-3.0-or-later. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#22325a"/>
+      <stop offset="1" stop-color="#0c1324"/>
+    </linearGradient>
+    <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffd98a"/>
+      <stop offset="0.55" stop-color="#eab04a"/>
+      <stop offset="1" stop-color="#c47f1c"/>
+    </linearGradient>
+    <radialGradient id="body" cx="0.5" cy="0.4" r="0.7">
+      <stop offset="0" stop-color="#cfdbe6"/>
+      <stop offset="1" stop-color="#8195ab"/>
+    </radialGradient>
+  </defs>
+  <rect x="48" y="48" width="928" height="928" rx="210" fill="url(#tile)"/>
+  <circle cx="512" cy="512" r="318" fill="none" stroke="url(#ring)" stroke-width="58"/>
+  <circle cx="512" cy="512" r="262" fill="none" stroke="#eab04a" stroke-opacity="0.3" stroke-width="6"/>
+  <!-- Body outline (front at the top). -->
+  <path d="M512 382 C640 382 728 430 732 520 C736 610 664 676 512 680 C360 676 288 610 292 520 C296 430 384 382 512 382 Z" fill="url(#body)"/>
+  <!-- Lungs: the patient's right on the image's left; the left lung is smaller beside the heart. -->
+  <path d="M488 430 C440 418 376 440 356 498 C340 548 352 606 392 630 C424 648 470 640 484 610 C496 580 494 520 492 470 Z" fill="#0c1324"/>
+  <path d="M536 430 C584 418 648 440 668 498 C684 548 672 606 632 630 C600 648 566 640 556 612 C584 590 590 548 566 520 C548 500 540 470 536 450 Z" fill="#0c1324"/>
+  <!-- Heart. -->
+  <ellipse cx="548" cy="548" rx="58" ry="48" fill="#e6edf3"/>
+  <!-- Vertebra and spinous process at the back. -->
+  <circle cx="512" cy="628" r="24" fill="#ffffff"/>
+  <path d="M500 646 L524 646 L516 672 L508 672 Z" fill="#ffffff"/>
+</svg>

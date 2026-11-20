@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] - 2026-11-20
+
+Milestone: PET-CT fusion (0.6.0, Antigravity) reviewed and completed, curved MPR, 3D scissors, key-images case report, and an installable, signing-ready app. Built in steps 0.6.2–0.6.6, described below.
+
+### Added: app icon and Windows installer
+- **App icon** (`assets/icon/sekhmetx.svg`, an original drawing: an axial chest CT slice inside a golden ring, the scanner's gantry and Sekhmet's sun disc). Shown on the window and taskbar, embedded in `sekhmetx.exe`, as the macOS app icon (`AppIcon.icns`, built in the release workflow) and in the Linux archive with a `sekhmetx.desktop` menu entry.
+- **Windows installer** (`packaging/windows/sekhmetx.iss`, Inno Setup): `sekhmetx-vX.Y.Z-windows-x86_64-setup.exe` (and ARM64) beside the `.zip` downloads. Installs for the current user without administrator rights into `%LOCALAPPDATA%\Programs\SekhmetX`, with a Start-menu entry, an optional desktop icon, the licence page and an uninstaller, in English or Spanish; the library and settings are kept on uninstall and the in-app updater keeps working. CI builds the installer on every push to catch problems before a release.
+- **Signing-ready releases:** the release workflow signs the Windows executable and installer, and signs and notarizes the macOS app, as soon as certificates are stored as repository secrets; until then builds are published unsigned, as before. `docs/SIGNING.md` explains the options and costs and how to add them.
+
 ## [0.6.6] - 2026-11-20
 
 ### Added: 3D sculpting (scissors) in volume rendering

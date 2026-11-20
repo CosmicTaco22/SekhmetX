@@ -1,4 +1,4 @@
-# Handoff: where the project stands (v0.5.37, 19 Nov 2026)
+# Handoff: where the project stands (v0.7.0, 20 Nov 2026)
 
 Written for whoever continues this, human or agent. It records what exists,
 the owner's standing rules, what was verified, what is unfinished, and what
@@ -70,7 +70,7 @@ These were set over the course of the project and are not all in `AGENTS.md`.
   file SekhmetX reads. Wait for the owner's design before starting it.
 - Dark theme is the default.
 
-## What exists (v0.5.37)
+## What exists (v0.7.0)
 
 - **2D viewer:** scroll, zoom, pan, rotate/flip, invert, cine, Horos window
   presets, 31 CLUTs, 22 convolution filters, GPU window/level with bilinear
@@ -110,6 +110,22 @@ These were set over the course of the project and are not all in `AGENTS.md`.
   coronals) by their run of same-named neighbouring series and acquisition
   time, with the plane inferred from the run. Canon FC kernel codes, Spanish
   kernel words, dose pages to "Single images / Scouts".
+- **PET-CT fusion and SUV** (0.6.0 by Antigravity, reviewed in 0.6.2): SUV from
+  the DICOM dose and timing tags (`src/imaging/suv.rs`), overlay resampled from
+  the PET volume along whatever plane is shown (`draw_fusion_overlay` in
+  `src/app/viewport.rs`). Checked on a synthetic PET phantom: SUV 1 and 10 read
+  exactly.
+- **Curved MPR** (`src/imaging/cpr.rs` ported from IsiX CPR, window in
+  `src/app/cpr_view.rs`): `U`, click a path, Enter; turn, width, measure.
+- **3D scissors** (`src/sculpt.rs`, mask in the VR shader): `X` or the Scissors
+  menu; cut inside/outside a drawn loop, undo, restore.
+- **Key-images case report:** `K` keeps an anonymized snapshot as shown; the
+  export writes `report.html` (images, measurement values, findings box, print
+  to PDF) and `case_summary.txt`.
+- **Packaging:** app icon (`assets/icon/`), Windows installer
+  (`packaging/windows/sekhmetx.iss`, built in CI and on release), Linux
+  `.desktop` entry, macOS `AppIcon.icns`; signing steps in the release workflow
+  wait for certificates (`docs/SIGNING.md`).
 - **Other:** PNG and anonymized DICOM export, anonymized `Ctrl+C` screenshot,
   right-click menu with a tool palette, maximise a viewport by double-click,
   drag-and-drop series, metadata inspector, EN/ES interface, OLED theme,
@@ -145,9 +161,12 @@ Local data lives in `%LOCALAPPDATA%\SekhmetX` (or beside the exe when a
 
 ## What was verified, and what was not
 
-Verified on Linux, 19 Nov 2026, at v0.5.37: clippy (Rust 1.97) clean, 124 tests
-pass, build succeeds; comparison, series badges and folding checked by eye on
-synthetic phantoms. The owner tested two-date comparison and series grouping
+Verified on Linux, 20 Nov 2026, at v0.7.0: clippy (Rust 1.97) clean, 144 tests
+pass, build succeeds; fusion, curved MPR, scissors, the key-image snapshot and
+report, and the icon checked on synthetic phantoms. Not verified here: the
+installer and signing steps (they need Windows/macOS runners; CI builds the
+installer on the next push), and the report's folder dialog. Earlier, at
+v0.5.37: comparison, series badges and folding checked by eye. The owner tested two-date comparison and series grouping
 on real chest-abdomen-pelvis and whole-spine CTs (Canon) up to v0.5.29.
 
 Earlier, at v0.5.18:
@@ -208,18 +227,16 @@ Open threads from the latest work:
 - Reading a picture-only series' plane from the image itself (symmetry and
   shape of the body), as a fallback when its block does not show the other
   two planes. Not needed for the studies seen so far.
-- The blank first images of a turned (oblique) follower near the top of a
-  scan: the scroll range spans the plane's projected extent.
+- Curved MPR: a thick-slab (MIP) option and saving paths, as IsiX has.
+- 3D scissors: the mask is at most 128 cells per side, so cut edges are coarse
+  on large volumes; a finer mask or a GPU-side cut would sharpen them.
 
-Longer-term options offered after v0.5.1, not yet chosen. Ask the owner.
+Longer-term options. Done in 0.6–0.7: curved MPR, PET-CT fusion with SUV, key
+images and report export, 3D scissors, app icon and installer. Still open:
 
-1. Curved MPR and measurements in 3D MPR.
-2. PET-CT fusion with SUV (`fusion-pet`, P2, not started).
-3. Key images and report/snapshot export (`annotations-sr`, P2, not started).
-4. Native DICOM query/retrieve or DICOMweb client (`network-pacs`, `dicomweb`,
-   P2, not started).
-5. 3D scissors/sculpting in volume rendering.
-6. App icon, code-signing and an installer.
+1. Native DICOM query/retrieve or DICOMweb client (`network-pacs`, `dicomweb`):
+   waits for the owner's plugin design (see "Behaviour the owner has decided").
+2. Buying code-signing certificates (`docs/SIGNING.md`); the workflow is ready.
 
 Smaller candidates the IsiX 6.0.4 review turned up: live length ratios
 (`ROILengthRatio`), calibrating spacing from a known length
@@ -227,12 +244,11 @@ Smaller candidates the IsiX 6.0.4 review turned up: live length ratios
 
 ## Working across sessions
 
-**State on 19 Nov 2026:** GitHub `master` holds everything up to v0.5.37. The
-owner's PC had a local, unpushed v0.5.29 made with Antigravity (it added a
-"Fusión" toolbar button); it was never on GitHub, so this line of work does
-not contain it. Before working on the PC again, save that local work on a
-branch and reset the PC's `master` to GitHub's (see the steps given to the
-owner), then re-apply anything from it that is still wanted.
+**State on 20 Nov 2026:** the fusion work from the owner's local v0.5.29 was
+redone by Antigravity on top of GitHub's master as v0.6.0; 0.6.1–0.7.0 followed
+in a Claude Code cloud session on branch `claude/fervent-johnson-ekq5ps`. Cloud
+sessions can push branches (and `master` when the owner asks) but not tags: the
+owner tags releases from the PC.
 
 
 Work has moved between Antigravity (Gemini) on the owner's PC, a Claude Code

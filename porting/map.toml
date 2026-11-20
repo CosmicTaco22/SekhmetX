@@ -406,7 +406,9 @@ id = "cpr"
 name = "Curved MPR (CPR) and straightened views"
 decision = "rebuild"
 priority = 3
-progress = "todo"
+progress = "partial"
+ported_from = "087f2cd0f721"
+rdicom = "src/imaging/cpr.rs (path checks and straightened sampling), src/app/cpr_view.rs (window)"
 names = ['CurvedMPRVesselTrace', 'CurvedPathLibrary', 'Stenosis(Capture|Summary)', 'CurvedMPR', 'Centerline',
          'CPR.*', 'CurvedMPRPath']
 

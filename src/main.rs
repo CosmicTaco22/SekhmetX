@@ -80,6 +80,7 @@ fn main() -> eframe::Result {
     let mut options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("SekhmetX")
+            .with_icon(app_icon())
             .with_inner_size([1440.0, 900.0])
             .with_min_inner_size([800.0, 500.0])
             .with_drag_and_drop(true),
@@ -337,6 +338,25 @@ fn cli_roi(args: &[String]) -> anyhow::Result<()> {
     let report = evaluate_cli_roi(&f, shape, x1, y1, x2, y2)?;
     println!("{report}");
     Ok(())
+}
+
+/// The window and taskbar icon (`assets/icon/sekhmetx.svg`, an original drawing).
+fn app_icon() -> egui::IconData {
+    let rgba = image::load_from_memory(include_bytes!("../assets/icon/sekhmetx-256.png"))
+        .map(|i| i.into_rgba8())
+        .unwrap_or_else(|_| image::RgbaImage::new(1, 1));
+    let (width, height) = rgba.dimensions();
+    egui::IconData { rgba: rgba.into_raw(), width, height }
+}
+
+#[cfg(test)]
+mod icon_tests {
+    #[test]
+    fn app_icon_decodes() {
+        let icon = super::app_icon();
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+    }
 }
 
 #[cfg(test)]

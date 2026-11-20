@@ -137,12 +137,15 @@ profile is separate.
 | `src/gpu_view.rs` | wgpu shaders: 2D window/level, 3D MPR, volume ray-caster |
 | `src/volume.rs` | Volume assembly, reslicing, slab modes, rigid registration |
 | `src/imaging/`, `src/geometry/`, `src/roi/` | Logic ported from IsiX, with its tests |
+| `src/imaging/cpr.rs`, `src/app/cpr_view.rs` | Curved MPR: path checks and straightening (from IsiX), its window |
+| `src/sculpt.rs` | 3D scissors: keep/cut map and the shared 3D camera |
 | `src/frame.rs`, `src/loader.rs` | Decoding one image; background decoding threads |
 | `src/dicom_index.rs` | Folder/zip scan, study/series grouping, slice sorting |
 | `src/db.rs`, `src/settings.rs` | SQLite library and typed settings |
 | `src/export.rs`, `src/updater.rs`, `src/crash_log.rs`, `src/i18n.rs` | Export/anonymize, updater, crash log and data folder, strings |
 | `src/legacy_cleanup.rs` | One-time removal of data left by the removed web-portal login |
 | `porting/` | Porting map, upstream review state, review reports |
+| `assets/icon/`, `packaging/` | App icon (own drawing); Windows installer script, Linux desktop entry |
 | `tools/` | Upstream tracker, map test, test-data generators |
 | `docs/` | UI spec, reference screenshots, README screenshots |
 | `.github/workflows/` | CI on three systems; release builds on `v*` tags |

@@ -1,3 +1,5 @@
+<img src="assets/icon/sekhmetx-256.png" alt="SekhmetX icon" width="96" align="right">
+
 # SekhmetX
 
 **A fast, native DICOM viewer for Windows, macOS and Linux — a Rust port of [IsiX DICOM Viewer](https://github.com/ThalesMMS/IsiX-DICOM-Viewer-macOS).**
@@ -83,7 +85,7 @@ or Pixmeo. It does not use their names or icons in the application.
   double-click a viewport to enlarge it and again to go back.
 - Right-click menu with a palette of every mouse and measurement tool.
 - Patient age shown beside the date of birth.
-- **PET-CT / multi-modality fusion and SUV:** 2D fusion overlay aligned in 3D patient space across different matrix sizes and fields of view, with opacity slider, six alpha curves and PET colour tables; calibrated SUV readouts under the cursor and in ROI statistics.
+- **PET-CT / multi-modality fusion and SUV:** fusion overlay aligned in 3D patient space across different matrix sizes and fields of view, on axial, coronal, sagittal and turned planes, with opacity slider, six alpha curves and PET colour tables; calibrated SUV readouts under the cursor and in ROI statistics.
 
 **MPR and 3D**
 - In-place 3D MPR and a three-pane Ax·Cor·Sag view with linked crosshairs.
@@ -148,14 +150,16 @@ Download the latest build from
 
 | System | File |
 |---|---|
-| Windows, x86-64 | `sekhmetx-vX.Y.Z-windows-x86_64.zip` |
-| Windows on ARM | `sekhmetx-vX.Y.Z-windows-arm64.zip` |
+| Windows, x86-64 | `sekhmetx-vX.Y.Z-windows-x86_64-setup.exe` (installer) or `.zip` |
+| Windows on ARM | `sekhmetx-vX.Y.Z-windows-arm64-setup.exe` (installer) or `.zip` |
 | macOS, Apple Silicon | `sekhmetx-vX.Y.Z-macos-arm64-app.zip` (app) or `.tar.gz` |
 | Linux, x86-64 | `sekhmetx-vX.Y.Z-linux-x86_64.tar.gz` |
 
-Each release has a `SHA256SUMS` file. Builds are not yet code-signed, so
-Windows SmartScreen and macOS Gatekeeper may ask for confirmation the first
-time. A graphics card with Direct3D 12, Metal or Vulkan is used when present.
+Each release has a `SHA256SUMS` file. The Windows installer needs no
+administrator rights and keeps your library when uninstalling. Builds are not
+yet code-signed (the release workflow is ready for it, see
+[`docs/SIGNING.md`](docs/SIGNING.md)), so Windows SmartScreen and macOS
+Gatekeeper may ask for confirmation the first time. A graphics card with Direct3D 12, Metal or Vulkan is used when present.
 
 ### Coming from Horos or IsiX
 

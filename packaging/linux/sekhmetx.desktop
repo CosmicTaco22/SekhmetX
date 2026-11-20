@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=SekhmetX
+GenericName=DICOM Viewer
+GenericName[es]=Visor DICOM
+Comment=View DICOM images: 2D, MPR, 3D, comparison of studies
+Comment[es]=Ver imágenes DICOM: 2D, MPR, 3D, comparación de estudios
+Exec=sekhmetx %F
+Icon=sekhmetx
+Terminal=false
+Categories=Graphics;MedicalSoftware;Science;
+MimeType=application/dicom;application/zip;

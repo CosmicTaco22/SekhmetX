@@ -3,6 +3,7 @@ use std::process::Command;
 fn main() {
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/refs/tags");
+    println!("cargo:rerun-if-changed=assets/icon/sekhmetx.ico");
 
     let pkg_version = env!("CARGO_PKG_VERSION");
     let commits_since_tag = Command::new("git")
@@ -37,6 +38,7 @@ fn main() {
         res.set("InternalName", "sekhmetx");
         res.set("FileVersion", pkg_version);
         res.set("ProductVersion", pkg_version);
+        res.set_icon("assets/icon/sekhmetx.ico");
         let _ = res.compile();
     }
 }

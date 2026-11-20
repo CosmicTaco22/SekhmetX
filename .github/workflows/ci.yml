@@ -80,6 +80,19 @@ jobs:
       - name: Build (release)
         run: cargo build --release --target ${{ matrix.target }}
 
+      # The release installer, checked on every push so a broken script shows before tagging.
+      - name: Check the Windows installer builds
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist/sekhmetx | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/sekhmetx.exe" dist/sekhmetx/
+          Copy-Item README.md, CHANGELOG.md, LICENSE, COPYING, NOTICE dist/sekhmetx/
+          choco install innosetup -y --no-progress | Out-Null
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $iscc "/DAppVersion=0.0.0" "/DArch=x64compatible" "/DRepoDir=$PWD" "/DSourceDir=$PWD\dist\sekhmetx" "/DOutputDir=$PWD\dist" "/DOutputName=sekhmetx-ci-setup" packaging\windows\sekhmetx.iss
+          if (-not (Test-Path dist/sekhmetx-ci-setup.exe)) { throw "installer not built" }
+
       - name: Self-test CLI
         if: ${{ !matrix.cross }}
         run: |
