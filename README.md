@@ -156,10 +156,11 @@ Download the latest build from
 | Linux, x86-64 | `sekhmetx-vX.Y.Z-linux-x86_64.tar.gz` |
 
 Each release has a `SHA256SUMS` file. The Windows installer needs no
-administrator rights and keeps your library when uninstalling. Builds are not
-yet code-signed (the release workflow is ready for it, see
-[`docs/SIGNING.md`](docs/SIGNING.md)), so Windows SmartScreen and macOS
-Gatekeeper may ask for confirmation the first time. A graphics card with Direct3D 12, Metal or Vulkan is used when present.
+administrator rights and keeps your library when uninstalling; the `.zip` needs
+no installing at all. Builds are not code-signed, so the first time Windows
+SmartScreen may say "Windows protected your PC" (click **More info**, then
+**Run anyway**) and macOS may refuse to open the app (right-click it, choose
+**Open**, then **Open** again). A graphics card with Direct3D 12, Metal or Vulkan is used when present.
 
 ### Coming from Horos or IsiX
 

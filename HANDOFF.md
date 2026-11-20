@@ -124,8 +124,8 @@ These were set over the course of the project and are not all in `AGENTS.md`.
   to PDF) and `case_summary.txt`.
 - **Packaging:** app icon (`assets/icon/`), Windows installer
   (`packaging/windows/sekhmetx.iss`, built in CI and on release), Linux
-  `.desktop` entry, macOS `AppIcon.icns`; signing steps in the release workflow
-  wait for certificates (`docs/SIGNING.md`).
+  `.desktop` entry, macOS `AppIcon.icns`. Unsigned: the owner decided (0.7.1)
+  not to buy signing certificates; the installer stays, unsigned.
 - **Other:** PNG and anonymized DICOM export, anonymized `Ctrl+C` screenshot,
   right-click menu with a tool palette, maximise a viewport by double-click,
   drag-and-drop series, metadata inspector, EN/ES interface, OLED theme,
@@ -164,8 +164,8 @@ Local data lives in `%LOCALAPPDATA%\SekhmetX` (or beside the exe when a
 Verified on Linux, 20 Nov 2026, at v0.7.0: clippy (Rust 1.97) clean, 144 tests
 pass, build succeeds; fusion, curved MPR, scissors, the key-image snapshot and
 report, and the icon checked on synthetic phantoms. Not verified here: the
-installer and signing steps (they need Windows/macOS runners; CI builds the
-installer on the next push), and the report's folder dialog. Earlier, at
+installer (it needs a Windows runner; CI builds it on every push), and the
+report's folder dialog. Earlier, at
 v0.5.37: comparison, series badges and folding checked by eye. The owner tested two-date comparison and series grouping
 on real chest-abdomen-pelvis and whole-spine CTs (Canon) up to v0.5.29.
 
@@ -236,7 +236,8 @@ images and report export, 3D scissors, app icon and installer. Still open:
 
 1. Native DICOM query/retrieve or DICOMweb client (`network-pacs`, `dicomweb`):
    waits for the owner's plugin design (see "Behaviour the owner has decided").
-2. Buying code-signing certificates (`docs/SIGNING.md`); the workflow is ready.
+2. No code signing: the owner will not pay for certificates (decided at 0.7.1).
+   Do not add signing back unless asked.
 
 Smaller candidates the IsiX 6.0.4 review turned up: live length ratios
 (`ROILengthRatio`), calibrating spacing from a known length

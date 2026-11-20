@@ -100,23 +100,6 @@ jobs:
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }}
 
-      # Code signing runs only when a certificate is stored in the repository
-      # secrets (see docs/SIGNING.md); otherwise builds stay unsigned, as before.
-      - name: Sign Windows executable (when a certificate is configured)
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
-        env:
-          CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-        run: |
-          if (-not $env:CERT_PFX_BASE64) { Write-Host "No signing certificate configured: the executable stays unsigned."; exit 0 }
-          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_PFX_BASE64))
-          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe | Where-Object { $_.FullName -like "*\x64\*" } | Select-Object -Last 1
-          & $signtool.FullName sign /f $pfx /p $env:CERT_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 "target/${{ matrix.target }}/release/sekhmetx.exe"
-          Remove-Item $pfx
-
       - name: Package Windows archive
         if: runner.os == 'Windows'
         shell: pwsh
@@ -142,32 +125,8 @@ jobs:
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
           & $iscc "/DAppVersion=$ver" "/DArch=$arch" "/DRepoDir=$PWD" "/DSourceDir=$PWD\dist\sekhmetx" "/DOutputDir=$PWD\dist" "/DOutputName=sekhmetx-${tag}-${{ matrix.artifact_slug }}-setup" packaging\windows\sekhmetx.iss
 
-      - name: Sign Windows installer (when a certificate is configured)
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        shell: pwsh
-        env:
-          CERT_PFX_BASE64: ${{ secrets.WINDOWS_CERT_PFX_BASE64 }}
-          CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
-        run: |
-          if (-not $env:CERT_PFX_BASE64) { Write-Host "No signing certificate configured: the installer stays unsigned."; exit 0 }
-          $pfx = Join-Path $env:RUNNER_TEMP "cert.pfx"
-          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:CERT_PFX_BASE64))
-          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Recurse -Filter signtool.exe | Where-Object { $_.FullName -like "*\x64\*" } | Select-Object -Last 1
-          Get-ChildItem dist -Filter *-setup.exe | ForEach-Object {
-            & $signtool.FullName sign /f $pfx /p $env:CERT_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 $_.FullName
-          }
-          Remove-Item $pfx
-
       - name: Package macOS .app & tar.gz
         if: runner.os == 'macOS'
-        env:
-          APPLE_CERT_P12_BASE64: ${{ secrets.APPLE_CERT_P12_BASE64 }}
-          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
         run: |
           TAG="${{ github.event.inputs.tag }}"
           if [ -z "$TAG" ]; then TAG="${{ github.ref_name }}"; fi
@@ -207,25 +166,6 @@ jobs:
           PLIST
           sed -i '' "s/VERSION_PLACEHOLDER/${VER}/" "$APP_DIR/Contents/Info.plist"
 
-          # Developer ID signing and notarization, only when configured (docs/SIGNING.md).
-          if [ -n "$APPLE_CERT_P12_BASE64" ]; then
-            KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
-            echo "$APPLE_CERT_P12_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
-            security create-keychain -p temp "$KEYCHAIN"
-            security set-keychain-settings -lut 21600 "$KEYCHAIN"
-            security unlock-keychain -p temp "$KEYCHAIN"
-            security import "$RUNNER_TEMP/cert.p12" -P "$APPLE_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN"
-            security list-keychain -d user -s "$KEYCHAIN"
-            codesign --force --deep --options runtime --timestamp --sign "$APPLE_SIGNING_IDENTITY" "$APP_DIR" || echo "codesign failed: the app stays unsigned"
-            if [ -n "$APPLE_ID" ]; then
-              ditto -c -k --keepParent "$APP_DIR" "$RUNNER_TEMP/notarize.zip"
-              xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" --apple-id "$APPLE_ID" --team-id "$APPLE_TEAM_ID" --password "$APPLE_APP_PASSWORD" --wait \
-                && xcrun stapler staple "$APP_DIR" || echo "notarization failed: the app is signed but not notarized"
-            fi
-            rm -f "$RUNNER_TEMP/cert.p12"
-          else
-            echo "No Apple signing certificate configured: the app stays unsigned."
-          fi
           ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "dist/sekhmetx-${TAG}-macos-arm64-app.zip"
 
       - name: Package Linux tar.gz

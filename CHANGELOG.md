@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.1] - 2026-11-20
+
+### Removed
+- **Code-signing steps.** The owner will not buy signing certificates, so the signing steps in the release workflow (Windows executable and installer, macOS app) and `docs/SIGNING.md` are gone. The **Windows installer stays**, unsigned like the `.zip`; the README explains how to open an unsigned build the first time.
+
 ## [0.7.0] - 2026-11-20
 
 Milestone: PET-CT fusion (0.6.0, Antigravity) reviewed and completed, curved MPR, 3D scissors, key-images case report, and an installable, signing-ready app. Built in steps 0.6.2–0.6.6, described below.
