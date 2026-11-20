@@ -476,8 +476,8 @@ impl ViewerApp {
             let frac = (vox[2] / (vol.depth - 1) as f64).clamp(0.0, 1.0);
             self.viewports[vp_idx].slice = (frac * (count - 1) as f64).round() as usize;
         } else {
-            let half = vol.projected_half_span_mm(plane.normal).max(1.0);
-            let mut t = ((plane.offset_mm / half) * 0.5 + 0.5).clamp(0.0, 1.0);
+            let (lo, hi) = vol.content_span_mm(plane.normal);
+            let mut t = ((plane.offset_mm - lo) / (hi - lo).max(1.0)).clamp(0.0, 1.0);
             if d < 0.0 {
                 t = 1.0 - t;
             }
@@ -1169,15 +1169,16 @@ impl ViewerApp {
                 self.viewport_volume(vp_idx).cloned(),
                 self.viewports[vp_idx].mpr_plane.clone(),
             ) {
-                let half = vol.projected_half_span_mm(plane.normal);
+                let (lo, hi) = vol.content_span_mm(plane.normal);
                 let t = if n > 1 {
                     new_slice as f64 / (n - 1) as f64
                 } else {
                     0.5
                 };
-                let delta_off = (t * 2.0 - 1.0) * half - plane.offset_mm;
+                let new_offset = lo + t * (hi - lo);
+                let delta_off = new_offset - plane.offset_mm;
                 delta_mm = delta_off;
-                plane.offset_mm = (t * 2.0 - 1.0) * half;
+                plane.offset_mm = new_offset;
                 let normal = plane.normal;
                 self.viewports[vp_idx].mpr_plane = Some(plane);
                 if self.ortho_mpr_active && vp_idx < 3

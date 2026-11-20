@@ -876,12 +876,12 @@ impl ViewerApp {
                     if dot3(plane.normal, vol.slice_dir).abs() > 0.99 && vol.depth > 0 {
                         return vol.depth;
                     }
-                    let half = vol.projected_half_span_mm(plane.normal);
+                    let (lo, hi) = vol.content_span_mm(plane.normal);
                     let step = vol.spacing[0]
                         .min(vol.spacing[1])
                         .min(vol.spacing[2])
                         .clamp(0.5, 2.0);
-                    return ((2.0 * half / step).round() as usize + 1).clamp(15, 2048);
+                    return (((hi - lo) / step).round() as usize + 1).clamp(15, 2048);
                 }
         self.viewport_series(vp_idx).map_or(0, |s| s.slices.len())
     }

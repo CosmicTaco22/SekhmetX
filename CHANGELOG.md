@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.3] - 2026-11-20
+
+### Fixed: empty images at the ends of a turned plane
+- A turned (oblique) plane scrolled over the volume's whole projected extent, which for a tilted plane includes the volume's empty corners, so the first and last images showed nothing (seen at the top of a turned chest-abdomen-pelvis study). Each volume now keeps a coarse map of where anatomy is (`foreground_points`), and a turned plane scrolls over the range in which it cuts anatomy (`Volume3D::content_span_mm`), padded by one grid cell and never wider than before, so no anatomy is cut off. On a phantom tilted 20° the range shrank from 298 to 268 mm, and the body edge appears within the first images.
+- Test: every voxel holding anatomy lies within the new range, which is narrower than the old one.
+
 ## [0.6.2] - 2026-11-20
 
 ### Reviewed and fixed: PET-CT fusion (0.6.0)

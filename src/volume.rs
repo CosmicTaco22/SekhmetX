@@ -53,6 +53,11 @@ pub struct Volume3D {
     pub suv_factor: Option<f64>,
     /// Background air threshold estimated from the volume intensity distribution.
     pub foreground_threshold: f32,
+    /// Points of a coarse grid where the volume holds anatomy (above the foreground
+    /// threshold), LPS mm, and the grid's cell size: where the scanned body is, so a
+    /// turned plane's scroll range covers it without running into empty corners.
+    pub foreground_points: Vec<[f64; 3]>,
+    pub foreground_cell_mm: f64,
     /// `true` when slice spacing, orientation, and dimensions passed validation without forcing.
     pub geometry_verified: bool,
     /// `true` when `PixelSpacing` was missing (measurements must use pixels, not mm).
@@ -439,6 +444,7 @@ impl Volume3D {
         let fg_thresh = min_val + 0.22 * (max_val - min_val);
         let mut sum_w = 0.0f64;
         let mut sum_pos = [0.0f64; 3];
+        let mut foreground_points: Vec<[f64; 3]> = Vec::new();
         let step_z = (d / 32).max(1);
         let step_y = (h / 64).max(1);
         let step_x = (w / 64).max(1);
@@ -463,10 +469,12 @@ impl Volume3D {
                         sum_pos[1] += pt[1] * weight;
                         sum_pos[2] += pt[2] * weight;
                         sum_w += weight;
+                        foreground_points.push(pt);
                     }
                 }
             }
         }
+        let foreground_cell_mm = (step_x as f64 * dx).max(step_y as f64 * dy).max(step_z as f64 * dz);
         let foreground_centroid_lps = if sum_w > 1e-3 {
             [
                 sum_pos[0] / sum_w,
@@ -521,6 +529,8 @@ impl Volume3D {
             value_unit: ref_frame.value_unit,
             suv_factor: ref_frame.suv_factor,
             foreground_threshold: fg_thresh,
+            foreground_points,
+            foreground_cell_mm,
             geometry_verified,
             uncalibrated,
         }))
@@ -642,6 +652,27 @@ impl Volume3D {
             + ey * dot3(self.col_dir, dir_lps).abs()
             + ez * dot3(self.slice_dir, dir_lps).abs())
         .max(10.0)
+    }
+
+    /// The range of plane offsets (mm from `center_lps` along unit `dir_lps`) over
+    /// which a plane with that normal cuts through anatomy, padded by one grid cell
+    /// and never wider than the volume's projected extent. A turned plane's scroll
+    /// range uses this instead of `±projected_half_span_mm`, which reaches past the
+    /// body into empty corners of the volume when the plane is tilted.
+    pub fn content_span_mm(&self, dir_lps: [f64; 3]) -> (f64, f64) {
+        let half = self.projected_half_span_mm(dir_lps);
+        let mut lo = f64::INFINITY;
+        let mut hi = f64::NEG_INFINITY;
+        for p in &self.foreground_points {
+            let t = dot3(sub3(*p, self.center_lps), dir_lps);
+            lo = lo.min(t);
+            hi = hi.max(t);
+        }
+        if !lo.is_finite() || hi - lo < 1.0 {
+            return (-half, half);
+        }
+        let pad = self.foreground_cell_mm;
+        ((lo - pad).max(-half), (hi + pad).min(half))
     }
 
     /// Precomputed 3D plane geometry and voxel-space affine mapping for CPU or GPU MPR reslicing.
@@ -2687,6 +2718,32 @@ mod tests {
         let p = [30.0, 20.0, 140.0];
         let back = inv.transform_point(reg.transform_point(p));
         assert!(len3(sub3(back, p)) < 1.5, "round trip off by {:.2} mm", len3(sub3(back, p)));
+    }
+
+    /// A tilted plane's scroll range covers all the anatomy but not the empty corners
+    /// of the volume that `±projected_half_span_mm` reached into.
+    #[test]
+    fn content_span_covers_the_body_and_skips_empty_corners() {
+        let (earlier, _, _, _) = two_date_phantoms(0.0, 0.0, 0.0);
+        let tilt = 20f64.to_radians();
+        let n = [0.0, tilt.sin(), tilt.cos()];
+        let half = earlier.projected_half_span_mm(n);
+        let (lo, hi) = earlier.content_span_mm(n);
+        assert!(hi - lo < 2.0 * half - 20.0, "span {lo:.0}..{hi:.0} vs ±{half:.0}");
+        // Every voxel holding anatomy lies inside the range.
+        let fg = earlier.foreground_threshold;
+        for z in 0..earlier.depth {
+            for y in (0..earlier.height).step_by(3) {
+                for x in (0..earlier.width).step_by(3) {
+                    let i = z * earlier.width * earlier.height + y * earlier.width + x;
+                    if earlier.voxel_at(i) > fg + 200.0 {
+                        let p = earlier.voxel_to_lps([x as f64, y as f64, z as f64]);
+                        let t = dot3(sub3(p, earlier.center_lps), n);
+                        assert!(t >= lo && t <= hi, "anatomy at {t:.1} outside {lo:.1}..{hi:.1}");
+                    }
+                }
+            }
+        }
     }
 
     #[test]
