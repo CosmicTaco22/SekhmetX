@@ -279,6 +279,31 @@ pub fn dim_text(ui: &egui::Ui) -> Color32 {
     }
 }
 
+/// Primary (bright) text colour for custom-coloured labels in panels.
+pub fn strong_text(ui: &egui::Ui) -> Color32 {
+    ui.visuals().strong_text_color()
+}
+
+/// Green used for "done / connected / up to date" messages.
+pub fn ok_color(ui: &egui::Ui) -> Color32 {
+    if is_dark(ui) { Color32::from_rgb(120, 225, 150) } else { Color32::from_rgb(20, 130, 60) }
+}
+
+/// Amber used for warnings and notices.
+pub fn warn_color(ui: &egui::Ui) -> Color32 {
+    if is_dark(ui) { Color32::from_rgb(255, 200, 80) } else { Color32::from_rgb(170, 105, 0) }
+}
+
+/// Red used for errors and destructive confirmations.
+pub fn error_color(ui: &egui::Ui) -> Color32 {
+    if is_dark(ui) { Color32::from_rgb(240, 115, 115) } else { Color32::from_rgb(190, 35, 35) }
+}
+
+/// Gold used for key-image stars and other "marked" highlights.
+pub fn star_color(ui: &egui::Ui) -> Color32 {
+    if is_dark(ui) { Color32::from_rgb(255, 205, 65) } else { Color32::from_rgb(200, 140, 0) }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

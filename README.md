@@ -58,12 +58,11 @@ or Pixmeo. It does not use their names or icons in the application.
 ## Features
 
 **Library**
-- Opens folders, single DICOM files and `.zip` / ZIP64 archives (streamed, with
-  path and size checks).
+- Opens folders, single DICOM files, `DICOMDIR` media records, and `.zip` / ZIP64 archives (streamed, up to 32 GB).
 - Local SQLite library that opens instantly on later launches; studies grouped
   by patient, with manual linking of the same patient under different name
   spellings.
-- Full-window library view with modality albums, a sortable study table, series
+- Full-window library view (and optional detached multi-monitor Library window) with modality albums, Smart Albums (Today, Last 7 Days, Last 30 Days, Key Images), a sortable study table, series
   thumbnails and a study details pane; search by patient, ID, accession, study
   or series.
 - Series are recognised the way a reader thinks of them: a complete thin-slice
@@ -123,13 +122,15 @@ or Pixmeo. It does not use their names or icons in the application.
   HTML page with the images, their measurement values and a findings box, ready
   to print or save as PDF, anonymized.
 
-**Export and privacy**
-- PNG export of an image or a whole series, animated GIF cine/stack export, and anonymized DICOM export (private
-  tags removed, identifiers scrubbed, UIDs remapped consistently).
+**Export, networking and privacy**
+- PNG export of an image or a whole series, animated GIF and MP4/AVI video export, 3D surface `.stl` mesh export, and anonymized DICOM export (private
+  tags removed, identifiers scrubbed, UIDs remapped consistently, with burned-in pixel text warnings).
+- Native **DICOMweb** (QIDO-RS study search, WADO-RS retrieve & open, STOW-RS send) and classic **DIMSE PACS** (C-ECHO, C-FIND, C-MOVE, C-STORE SCU, and a built-in local C-STORE SCP receiver).
 - Optional compressed `.zip` storage for studies copied into the local library.
 - `Ctrl+C` / `Cmd+C` copies the active viewport to the clipboard without
   patient details.
-- A DICOM metadata inspector beside the image.
+- A DICOM metadata inspector beside the image with inline tag editing.
+- Customizable per-modality Hanging Protocols, custom W/L presets, structured report templates, and custom keyboard shortcuts.
 
 **Library housekeeping**
 - Clearing the library only empties SekhmetX's own list and never touches your

@@ -201,7 +201,7 @@ impl ViewerApp {
                         if r.check.diagnosis == "self-intersecting loop" {
                             ui.label(
                                 egui::RichText::new(t("(the path crosses itself)", "(el trazado se cruza)"))
-                                    .color(Color32::from_rgb(240, 190, 90)),
+                                    .color(crate::ui::theme::warn_color(ui)),
                             );
                         }
                     }

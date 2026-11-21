@@ -4,7 +4,7 @@ use dicom_core::dictionary::DataDictionary;
 use dicom_core::value::Value;
 use dicom_dictionary_std::{tags, StandardDataDictionary};
 use dicom_object::{InMemDicomObject, OpenFileOptions};
-use eframe::egui::{self, Color32};
+use eframe::egui;
 
 use super::ViewerApp;
 
@@ -266,14 +266,14 @@ impl ViewerApp {
             ui.centered_and_justified(|ui| {
                 ui.label(
                     egui::RichText::new(if es { "Seleccione una imagen para ver sus etiquetas DICOM." } else { "Select an image to inspect its DICOM tags." })
-                        .color(Color32::from_gray(150)),
+                        .color(crate::ui::theme::dim_text(ui)),
                 );
             });
             return;
         };
 
         if let Some(err) = &cache.error {
-            ui.colored_label(Color32::from_rgb(240, 110, 110), err);
+            ui.colored_label(crate::ui::theme::error_color(ui), err);
             return;
         }
 
@@ -336,7 +336,7 @@ impl ViewerApp {
         ui.label(
             egui::RichText::new(format!("{} {}", filtered.len(), if es { "etiquetas" } else { "tags" }))
                 .size(10.5)
-                .color(Color32::from_gray(145)),
+                .color(crate::ui::theme::dim_text(ui)),
         );
 
         egui::ScrollArea::both()
@@ -353,17 +353,18 @@ impl ViewerApp {
                         ui.label(egui::RichText::new(if es { "Contenido" } else { "Content" }).strong().size(11.0));
                         ui.end_row();
 
+                        let name_top = crate::ui::theme::strong_text(ui);
+                        let name_nested = ui.visuals().text_color();
+                        let tag_col = crate::ui::theme::accent();
+                        let dim_col = crate::ui::theme::dim_text(ui);
+                        let value_col = ui.visuals().text_color();
                         for entry in filtered {
                             let indent = "  ".repeat(entry.depth);
                             let name_resp = ui.add(
                                 egui::Label::new(
                                     egui::RichText::new(format!("{indent}{}", entry.name))
                                         .size(11.0)
-                                        .color(if entry.depth > 0 {
-                                            Color32::from_gray(180)
-                                        } else {
-                                            Color32::from_gray(230)
-                                        }),
+                                        .color(if entry.depth > 0 { name_nested } else { name_top }),
                                 )
                                 .sense(egui::Sense::click()),
                             );
@@ -379,25 +380,25 @@ impl ViewerApp {
                                 egui::RichText::new(&entry.tag_str)
                                     .monospace()
                                     .size(10.5)
-                                    .color(Color32::from_rgb(150, 200, 255)),
+                                    .color(tag_col),
                             );
                             ui.label(
                                 egui::RichText::new(&entry.vr)
                                     .monospace()
                                     .size(10.5)
-                                    .color(Color32::from_gray(165)),
+                                    .color(dim_col),
                             );
                             ui.label(
                                 egui::RichText::new(&entry.size_str)
                                     .monospace()
                                     .size(10.5)
-                                    .color(Color32::from_gray(155)),
+                                    .color(dim_col),
                             );
                             ui.label(
                                 egui::RichText::new(&entry.value)
                                     .monospace()
                                     .size(10.5)
-                                    .color(Color32::from_gray(225)),
+                                    .color(value_col),
                             );
                             ui.end_row();
                         }

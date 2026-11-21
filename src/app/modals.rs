@@ -20,7 +20,7 @@ impl ViewerApp {
                 ui.label(egui::RichText::new(tr.force_3d_headline).strong());
                 ui.add_space(6.0);
                 if let Some(err) = self.volume_errors.get(&req.key) {
-                    ui.colored_label(Color32::from_rgb(255, 200, 80), err.reason());
+                    ui.colored_label(crate::ui::theme::warn_color(ui), err.reason());
                     ui.add_space(6.0);
                 }
                 ui.label(tr.force_3d_body);
@@ -76,6 +76,7 @@ impl ViewerApp {
         let mut action_check = false;
         let mut action_install: Option<(String, Option<String>, Option<String>, String)> = None;
         let mut action_restart = false;
+        let es = self.lang == crate::i18n::Lang::Es;
 
         egui::Window::new(tr.updates_title)
             .collapsible(false)
@@ -92,7 +93,7 @@ impl ViewerApp {
                         env!("CARGO_PKG_VERSION")
                     ))
                     .monospace()
-                    .color(Color32::from_gray(170)),
+                    .color(crate::ui::theme::dim_text(ui)),
                 );
                 ui.add_space(6.0);
 
@@ -108,7 +109,7 @@ impl ViewerApp {
                         ui.label(
                             egui::RichText::new(format!("{} (v{v}).", tr.up_to_date))
                                 .strong()
-                                .color(Color32::from_rgb(130, 220, 155)),
+                                .color(crate::ui::theme::ok_color(ui)),
                         );
                         ui.add_space(8.0);
                         if ui.button(tr.check_again).clicked() {
@@ -119,7 +120,7 @@ impl ViewerApp {
                         ui.label(
                             egui::RichText::new(format!("{}: {}", tr.new_version, info.tag_name))
                                 .strong()
-                                .color(Color32::from_rgb(130, 210, 255)),
+                                .color(crate::ui::theme::accent()),
                         );
                         if !info.notes.trim().is_empty() {
                             ui.add_space(6.0);
@@ -147,11 +148,13 @@ impl ViewerApp {
                         });
                         ui.add_space(6.0);
                         ui.label(
-                            egui::RichText::new(
-                                "Note: Release binaries are unsigned; integrity is verified via SHA256SUMS.",
-                            )
+                            egui::RichText::new(if es {
+                                "Nota: los ejecutables publicados no están firmados; su integridad se verifica con SHA256SUMS."
+                            } else {
+                                "Note: Release binaries are unsigned; integrity is verified via SHA256SUMS."
+                            })
                             .small()
-                            .color(Color32::from_gray(160)),
+                            .color(crate::ui::theme::dim_text(ui)),
                         );
                     }
                     crate::updater::UpdateStatus::Installing => {
@@ -162,11 +165,13 @@ impl ViewerApp {
                     }
                     crate::updater::UpdateStatus::Installed(tag) => {
                         ui.label(
-                            egui::RichText::new(format!(
-                                "SekhmetX {tag} installed! Restart to launch the new version."
-                            ))
+                            egui::RichText::new(if es {
+                                format!("SekhmetX {tag} instalado. Reinicie para abrir la nueva versión.")
+                            } else {
+                                format!("SekhmetX {tag} installed! Restart to launch the new version.")
+                            })
                             .strong()
-                            .color(Color32::from_rgb(130, 220, 155)),
+                            .color(crate::ui::theme::ok_color(ui)),
                         );
                         ui.add_space(10.0);
                         if ui
@@ -178,8 +183,12 @@ impl ViewerApp {
                     }
                     crate::updater::UpdateStatus::Error(err) => {
                         ui.label(
-                            egui::RichText::new(format!("Update check failed: {err}"))
-                                .color(Color32::from_rgb(240, 120, 120)),
+                            egui::RichText::new(if es {
+                                format!("No se pudo buscar actualizaciones: {err}")
+                            } else {
+                                format!("Update check failed: {err}")
+                            })
+                            .color(crate::ui::theme::error_color(ui)),
                         );
                         ui.add_space(8.0);
                         if ui.button(tr.retry).clicked() {
@@ -190,13 +199,13 @@ impl ViewerApp {
                 ui.add_space(8.0);
                 ui.separator();
                 if ui
-                    .checkbox(&mut self.check_updates_on_startup, "Check for updates on startup")
+                    .checkbox(
+                        &mut self.check_updates_on_startup,
+                        if es { "Buscar actualizaciones al iniciar" } else { "Check for updates on startup" },
+                    )
                     .changed()
                     && let Some(ref db) = self.db {
-                        let _ = db.set_setting(
-                            "check_updates_on_startup",
-                            if self.check_updates_on_startup { "1" } else { "0" },
-                        );
+                        crate::settings::AppSettings::new(db).set_check_updates_on_startup(self.check_updates_on_startup);
                     }
             });
 
@@ -257,7 +266,7 @@ impl ViewerApp {
                         crate::i18n::Lang::Es => "Aviso: si envía el reporte en GitHub, el texto de arriba será público.",
                         crate::i18n::Lang::En => "Notice: submitting on GitHub makes the exact text above public.",
                     };
-                    ui.colored_label(Color32::from_rgb(230, 180, 60), pub_warn);
+                    ui.colored_label(crate::ui::theme::warn_color(ui), pub_warn);
                 }
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
@@ -323,7 +332,7 @@ impl ViewerApp {
                     {
                         self.lang = crate::i18n::Lang::En;
                         if let Some(ref db) = self.db {
-                            let _ = db.set_setting("lang", "en");
+                            crate::settings::AppSettings::new(db).set_language(crate::i18n::Lang::En);
                         }
                     }
                     if crate::ui::icons::choice(ui, self.lang == crate::i18n::Lang::Es, "Español")
@@ -331,7 +340,7 @@ impl ViewerApp {
                     {
                         self.lang = crate::i18n::Lang::Es;
                         if let Some(ref db) = self.db {
-                            let _ = db.set_setting("lang", "es");
+                            crate::settings::AppSettings::new(db).set_language(crate::i18n::Lang::Es);
                         }
                     }
                 });
@@ -370,7 +379,7 @@ impl ViewerApp {
                     }
                     if ui.button(tr.settings_reset_default).clicked() {
                         if let Some(ref db) = self.db {
-                            let _ = db.set_setting("custom_studies_dir", "");
+                            crate::settings::AppSettings::new(db).set_custom_studies_dir(None);
                         }
                         crate::db::set_custom_studies_dir(None);
                     }
@@ -396,7 +405,7 @@ impl ViewerApp {
                     {
                         self.study_storage_zip = false;
                         if let Some(ref db) = self.db {
-                            let _ = db.set_setting("study_storage_format", "unzip");
+                            crate::settings::AppSettings::new(db).set_study_storage_zip(false);
                         }
                     }
                     if crate::ui::icons::choice(ui, self.study_storage_zip, tr.settings_format_zip)
@@ -404,7 +413,7 @@ impl ViewerApp {
                     {
                         self.study_storage_zip = true;
                         if let Some(ref db) = self.db {
-                            let _ = db.set_setting("study_storage_format", "zip");
+                            crate::settings::AppSettings::new(db).set_study_storage_zip(true);
                         }
                     }
                 });
@@ -649,7 +658,7 @@ impl ViewerApp {
                     {
                         self.check_updates_on_startup = true;
                         if let Some(ref db) = self.db {
-                            let _ = db.set_setting("check_updates_on_startup", "1");
+                            crate::settings::AppSettings::new(db).set_check_updates_on_startup(true);
                         }
                     }
                     if crate::ui::icons::choice(ui, !self.check_updates_on_startup, lbl_manual)
@@ -657,7 +666,7 @@ impl ViewerApp {
                     {
                         self.check_updates_on_startup = false;
                         if let Some(ref db) = self.db {
-                            let _ = db.set_setting("check_updates_on_startup", "0");
+                            crate::settings::AppSettings::new(db).set_check_updates_on_startup(false);
                         }
                     }
                     ui.separator();
@@ -678,7 +687,7 @@ impl ViewerApp {
                     crate::updater::UpdateStatus::Available(info) => {
                         ui.horizontal(|ui| {
                             ui.colored_label(
-                                Color32::from_rgb(120, 225, 150),
+                                crate::ui::theme::ok_color(ui),
                                 match self.lang {
                                     crate::i18n::Lang::Es => format!("{} disponible", info.tag_name),
                                     crate::i18n::Lang::En => format!("{} available", info.tag_name),
@@ -698,7 +707,7 @@ impl ViewerApp {
                     crate::updater::UpdateStatus::Installed(tag) => {
                         ui.horizontal(|ui| {
                             ui.colored_label(
-                                Color32::from_rgb(120, 225, 150),
+                                crate::ui::theme::ok_color(ui),
                                 match self.lang {
                                     crate::i18n::Lang::Es => format!("{tag} instalada"),
                                     crate::i18n::Lang::En => format!("{tag} installed"),
@@ -734,7 +743,7 @@ impl ViewerApp {
                         });
                     }
                     crate::updater::UpdateStatus::Error(err) => {
-                        ui.colored_label(Color32::from_rgb(240, 120, 120), err);
+                        ui.colored_label(crate::ui::theme::error_color(ui), err);
                     }
                     crate::updater::UpdateStatus::Idle => {
                         ui.small(format!("v{}", env!("CARGO_PKG_VERSION")));
@@ -791,7 +800,7 @@ impl ViewerApp {
                         crate::i18n::Lang::Es => "¿Eliminar la base de datos, los estudios administrados y los registros?",
                         crate::i18n::Lang::En => "Delete the database, managed studies and logs?",
                     };
-                    ui.colored_label(Color32::from_rgb(230, 90, 90), confirm_msg);
+                    ui.colored_label(crate::ui::theme::error_color(ui), confirm_msg);
                     ui.horizontal(|ui| {
                         let yes_lbl = match self.lang {
                             crate::i18n::Lang::Es => "Confirmar eliminación",
@@ -911,7 +920,7 @@ impl ViewerApp {
 
     fn select_studies_folder(&mut self, dir: std::path::PathBuf) {
         if let Some(ref db) = self.db {
-            let _ = db.set_setting("custom_studies_dir", &dir.to_string_lossy());
+            crate::settings::AppSettings::new(db).set_custom_studies_dir(Some(&dir));
         }
         crate::db::set_custom_studies_dir(Some(dir.clone()));
         if dir.is_dir()
@@ -950,7 +959,7 @@ impl ViewerApp {
                     {
                         self.lang = crate::i18n::Lang::En;
                         if let Some(ref db) = self.db {
-                            let _ = db.set_setting("lang", "en");
+                            crate::settings::AppSettings::new(db).set_language(crate::i18n::Lang::En);
                         }
                     }
                     if crate::ui::icons::choice(ui, self.lang == crate::i18n::Lang::Es, "Español")
@@ -958,7 +967,7 @@ impl ViewerApp {
                     {
                         self.lang = crate::i18n::Lang::Es;
                         if let Some(ref db) = self.db {
-                            let _ = db.set_setting("lang", "es");
+                            crate::settings::AppSettings::new(db).set_language(crate::i18n::Lang::Es);
                         }
                     }
                 });
@@ -1028,7 +1037,7 @@ impl ViewerApp {
                 };
                 if ui.button(ack_lbl).clicked() {
                     if let Some(ref db) = self.db {
-                        let _ = db.set_setting("first_run_notice_ack", "1");
+                        crate::settings::AppSettings::new(db).set_first_run_notice_ack(true);
                     }
                     self.show_first_run_notice = false;
                 }
@@ -1334,7 +1343,7 @@ impl ViewerApp {
                         "Drag point · Double-click to add · Right-click to remove"
                     }
                 };
-                ui.small(egui::RichText::new(hint).color(Color32::from_gray(145)));
+                ui.small(egui::RichText::new(hint).color(crate::ui::theme::dim_text(ui)));
             });
         self.show_vr_tf_editor = open;
     }
@@ -1388,7 +1397,7 @@ impl ViewerApp {
                     let sp = mm / self.calibrate_last_len_px;
                     ui.small(
                         egui::RichText::new(format!("-> {:.4} mm/px", sp))
-                            .color(Color32::from_gray(165)),
+                            .color(crate::ui::theme::dim_text(ui)),
                     );
                 }
                 ui.add_space(6.0);
@@ -1663,7 +1672,7 @@ impl ViewerApp {
                     if ui
                         .button(
                             egui::RichText::new(disk_lbl)
-                                .color(Color32::from_rgb(245, 110, 110)),
+                                .color(crate::ui::theme::error_color(ui)),
                         )
                         .clicked()
                     {

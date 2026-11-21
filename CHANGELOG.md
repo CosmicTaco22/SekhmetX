@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.2] - 2026-11-21
+
+### Fixed & Improved (Housekeeping & UI Alignment)
+- **Light / Dark / OLED theme contrast & accent consistency** (`src/ui/theme.rs`, `src/app/browser.rs`, `src/app/metadata.rs`, `src/app/mod.rs`, `src/app/modals.rs`, `src/app/cpr_view.rs`, `src/ui/toolbar.rs`): added theme-aware `warn_color`, `ok_color`, and `error_color` helpers and replaced hard-coded light-on-white panel colours across the Library, Metadata Inspector, Status Bar, Update/Settings dialogs, CPR window, and Tiling Picker.
+- **Complete Spanish translations in the Update dialog** (`src/app/modals.rs`): translated previously English-only update status messages, unsigned-binary note, and *"Check for updates on startup"* checkbox.
+- **Anonymized DICOM export status & burned-in text warning** (`src/app/mod.rs`, `src/export.rs`): anonymized DICOM export now reports success/error in the status bar and warns (EN/ES) when pixel data may contain burned-in patient text (e.g. ultrasound, secondary capture, or `BurnedInAnnotation = YES`).
+- **Settings persistence & dead-code cleanup** (`src/app/modals.rs`, `src/settings.rs`, `src/db.rs`, `src/imaging/us_region.rs`): routed all Settings writes through typed `AppSettings` setters, removed unused `#[allow(dead_code)]` wrappers, and fixed a Rust 1.100 `--all-targets` clippy lint in `us_region.rs`.
+- **Docs refreshed** (`HANDOFF.md`, `README.md`): updated project handoff and feature list to reflect `v0.7.6`–`v0.9.2`.
+
 ## [0.9.1] - 2026-11-21
 
 ### Fixed

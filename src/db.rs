@@ -814,11 +814,6 @@ pub fn slice_file_exists(path: &Path) -> bool {
 /// Copies all slice files of `study` into `<data dir>/SekhmetX/Studies/<StudyUID>/`
 /// (either uncompressed DICOM files or a compressed `study.zip` archive)
 /// and updates slice paths in-place so studies persist in the library.
-#[allow(dead_code)]
-pub fn copy_study_into_library(study: &mut Study) -> Result<()> {
-    copy_study_into_library_with_format(study, false)
-}
-
 pub fn copy_study_into_library_with_format(study: &mut Study, as_zip: bool) -> Result<()> {
     let target_dir = study_managed_dir(&study.uid);
     if as_zip {

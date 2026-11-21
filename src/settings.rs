@@ -28,7 +28,6 @@ pub struct AppSettings<'a> {
     db: &'a Database,
 }
 
-#[allow(dead_code)]
 impl<'a> AppSettings<'a> {
     pub fn new(db: &'a Database) -> Self {
         Self { db }

@@ -42,7 +42,7 @@ fn paint_series_drag_preview(ui: &egui::Ui, index: &crate::dicom_index::Index) {
         .fixed_pos(pos + vec2(14.0, 14.0))
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style())
-                .fill(Color32::from_rgb(24, 38, 56))
+                .fill(theme::mix(ui.visuals().window_fill, theme::accent(), 0.22))
                 .stroke(Stroke::new(1.5, theme::accent_bright()))
                 .show(ui, |ui| {
                     ui.label(egui::RichText::new(label).strong().color(Color32::WHITE));
@@ -175,7 +175,7 @@ impl ViewerApp {
                     tr.studies
                 ))
                 .small()
-                .color(Color32::from_gray(165)),
+                .color(theme::dim_text(ui)),
             );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
@@ -275,7 +275,7 @@ impl ViewerApp {
             ui.group(|ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.colored_label(
-                        Color32::from_rgb(255, 210, 100),
+                        theme::warn_color(ui),
                         format!("{} {src_name}", tr.linking_banner),
                     );
                     if ui.small_button(tr.cancel_link).clicked() {
@@ -919,7 +919,7 @@ impl ViewerApp {
                     egui::RichText::new(tr.copy_zip_prompt)
                         .small()
                         .strong()
-                        .color(Color32::from_rgb(255, 210, 100)),
+                        .color(theme::warn_color(ui)),
                 );
                 ui.horizontal(|ui| {
                     if ui.small_button(tr.copy_btn).clicked() {
@@ -1041,7 +1041,7 @@ impl ViewerApp {
                             ui.label(
                                 egui::RichText::new(study.date.as_str())
                                     .size(9.5)
-                                    .color(Color32::from_gray(140)),
+                                    .color(theme::dim_text(ui)),
                             );
                         });
                     }

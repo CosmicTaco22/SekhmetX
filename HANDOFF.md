@@ -1,4 +1,4 @@
-# Handoff: where the project stands (v0.7.5, 21 Nov 2026)
+# Handoff: where the project stands (v0.9.2, 21 Nov 2026)
 
 Written for whoever continues this, human or agent. It records what exists,
 the owner's standing rules, what was verified, what is unfinished, and what
@@ -211,8 +211,7 @@ Not verified:
   added Windows file metadata and stopped stripping symbols; code-signing or an
   installer is the lasting fix.
 - **Parked features:** automatic crash-report sending (currently a pre-filled GitHub issue the user must
-  submit); the "save library copies as `.zip`" setting is stored but copies are
-  still written uncompressed.
+  submit); web-portal login plugin (parked dead last, waiting for the owner's design).
 - **Local Windows builds** in the owner's Antigravity folder used the
   `windows-gnu` toolchain; since v0.5.4 no `WebView2Loader.dll` is needed.
 - 12-bit lossy JPEG was unsupported at v0.1; not rechecked since.
@@ -220,23 +219,16 @@ Not verified:
 
 ## Next steps
 
-Done in `v0.7.2`–`v0.7.5`: Curved MPR thick-slab (MIP/MinIP/Mean), saved paths,
-transverse cross-section, and Virtual Endoscopy / Fly-through; 256³ parallel 3D
-scissors; `USRegion` ultrasound calibration; DICOM SR & GSPS viewport viewer;
-animated GIF cine export; compressed `.zip` library storage; DWI b-value
-splitting and live ADC/T2 map generation; 3D ROI volume (`cm³`) and ROI Undo
-(`Ctrl+Z`); custom W/L presets & Hanging Protocols UI; direct `DICOMDIR`
-opening; and `src/net/mod.rs` PACS/DICOMweb groundwork.
+Done in `v0.7.2`–`v0.9.2` (**168/168** release tests passing, `cargo clippy --release --all-targets -- -D warnings` clean):
+- **MPR, CPR & 3D:** Curved MPR thick-slab (MIP/MinIP/Mean), saved paths, transverse cross-section, and Virtual Endoscopy / Fly-through; 256³ parallel 3D scissors; 9 clinical 3D VR presets; 3D Surface Nets binary `.stl` mesh export; 3-plane Orthogonal MPR PET-CT Fusion.
+- **Clinical tools:** `USRegion` ultrasound calibration; DICOM SR & GSPS viewport viewer; DWI b-value splitting and live ADC/T2 parametric maps; Digital Image Subtraction (`[SUB]`); 2D Region Growing, ROI slice interpolation, 3D ROI volume (`cm³`), Agatston Calcium Scoring (`≥ 130 HU`), ROI Undo (`Ctrl+Z`), and CSV export; 4D dynamic/cardiac phase stepping.
+- **Library, export & customization:** Compressed `.zip` library storage; large ZIP (>4 GB, up to 32 GB / 200k entries) extraction; direct `DICOMDIR` opening; Library Smart Albums (Today, Last 7/30 Days, Key Images); Multi-monitor detached Library window; animated GIF and MP4/AVI video export; editable DICOM metadata tags; anonymized DICOM export with burned-in pixel text warning; auto-applied per-modality Hanging Protocols; custom W/L presets, report templates, and custom keyboard shortcuts.
+- **Networking:** Native DICOMweb client (QIDO-RS search, WADO-RS retrieve & open, STOW-RS send) and classic DIMSE PACS client (C-ECHO, C-FIND, C-MOVE, C-STORE SCU, plus built-in local C-STORE SCP listener).
 
 Still open:
-1. Real-world testing & polish of `v0.7.2`–`v0.7.5` features on clinical exams
-   (PET-CT, MR DWI, Ultrasound, SR dose reports, Curved MPR + Fly-through,
-   two-date alignment tuning from `sekhmetx.log`).
-2. Native DICOM PACS (`dicom-ul`) & DICOMweb (`ureq`) transports wired to
-   `src/net/mod.rs` (parked for later testing).
-3. Web-portal plugin system — dead last, waits for the owner's design.
-4. No code signing: the owner will not pay for certificates (decided at 0.7.1).
-   Do not add signing back unless asked.
+1. Real-world clinical testing & polish on actual CT/MR/PET/US exams and hospital PACS/DICOMweb servers.
+2. Web-portal plugin system — dead last, waits for the owner's design.
+3. No code signing: the owner will not pay for certificates (decided at 0.7.1). Do not add signing back unless asked.
 
 ## Working across sessions
 

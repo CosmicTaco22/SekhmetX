@@ -2215,7 +2215,7 @@ impl ViewerApp {
         }
     }
 
-    pub(crate) fn export_active_anonymized_dicom(&self) {
+    pub(crate) fn export_active_anonymized_dicom(&mut self) {
         let vp_idx = self.active_viewport;
         let Some((si, ri)) = self.viewports[vp_idx].selected else {
             return;
@@ -2226,9 +2226,34 @@ impl ViewerApp {
         let Some(se) = idx.studies.get(si).and_then(|st| st.series.get(ri)) else {
             return;
         };
+        let es = self.lang == crate::i18n::Lang::Es;
         if let Some(dir) = rfd::FileDialog::new().pick_folder() {
             let opts = crate::export::AnonymizeOptions::default();
-            let _ = crate::export::anonymize_series(&se.slices, &dir, &opts);
+            // Header anonymization cannot remove text burned into the pixels (ultrasound,
+            // screen captures, `BurnedInAnnotation = YES`): warn so the user checks the images.
+            let burned_in = se
+                .slices
+                .first()
+                .is_some_and(|sl| crate::export::has_likely_burned_in_text(&sl.path));
+            let result = crate::export::anonymize_series(&se.slices, &dir, &opts);
+            self.message = Some(match (result, es) {
+                (Ok(n), true) => {
+                    let mut m = format!("{n} imágenes anonimizadas exportadas a {}", dir.display());
+                    if burned_in {
+                        m.push_str(" · Atención: puede haber texto del paciente grabado en la imagen; revíselas antes de compartir.");
+                    }
+                    m
+                }
+                (Ok(n), false) => {
+                    let mut m = format!("{n} anonymized images exported to {}", dir.display());
+                    if burned_in {
+                        m.push_str(" · Warning: patient text may be burned into the pixels; check the images before sharing.");
+                    }
+                    m
+                }
+                (Err(e), true) => format!("Error al exportar DICOM anonimizado: {e}"),
+                (Err(e), false) => format!("Anonymized DICOM export failed: {e}"),
+            });
         }
     }
 
@@ -3180,7 +3205,7 @@ impl ViewerApp {
             }
             if let Some(msg) = &self.message {
                 ui.separator();
-                ui.colored_label(Color32::from_rgb(255, 180, 80), msg);
+                ui.colored_label(crate::ui::theme::warn_color(ui), msg);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let cog_resp = crate::ui::icons::small_tool_button(
@@ -3206,7 +3231,7 @@ impl ViewerApp {
                             .small_button(
                                 egui::RichText::new(lbl)
                                     .strong()
-                                    .color(Color32::from_rgb(120, 225, 150)),
+                                    .color(crate::ui::theme::ok_color(ui)),
                             )
                             .on_hover_text(match self.lang {
                                 crate::i18n::Lang::Es => format!("Hay una actualización ({}): clic para instalar", info.tag_name),
@@ -3226,7 +3251,7 @@ impl ViewerApp {
                             .small_button(
                                 egui::RichText::new(lbl)
                                     .strong()
-                                    .color(Color32::from_rgb(120, 225, 150)),
+                                    .color(crate::ui::theme::ok_color(ui)),
                             )
                             .on_hover_text(match self.lang {
                                 crate::i18n::Lang::Es => "Actualización instalada: clic para reiniciar SekhmetX",

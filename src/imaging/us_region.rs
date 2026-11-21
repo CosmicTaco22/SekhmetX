@@ -178,7 +178,7 @@ mod tests {
             UsRegion::region_holding((10, 10), (20, 20), &[blank.clone(), real.clone()]),
             Some(&real)
         );
-        assert!(UsRegion::region_holding((10, 10), (20, 20), &[blank.clone()]).is_none());
+        assert!(UsRegion::region_holding((10, 10), (20, 20), std::slice::from_ref(&blank)).is_none());
         assert!(!blank.measures() && real.measures());
     }
 

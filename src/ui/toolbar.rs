@@ -398,7 +398,7 @@ impl ViewerApp {
                                                 egui::RichText::new(shortcut)
                                                     .monospace()
                                                     .size(11.0)
-                                                    .color(Color32::from_gray(145)),
+                                                    .color(theme::dim_text(ui)),
                                             );
                                         },
                                     );
@@ -1128,6 +1128,9 @@ impl ViewerApp {
             let (active_r, active_c) =
                 hovered_rc.unwrap_or((cur_rows.saturating_sub(1), cur_cols.saturating_sub(1)));
 
+            let dark = theme::is_dark(ui);
+            let idle_fill = if dark { Color32::from_gray(42) } else { Color32::from_gray(212) };
+            let idle_stroke = ui.visuals().widgets.noninteractive.bg_stroke.color;
             let painter = ui.painter();
             for r in 0..grid_max {
                 for c in 0..grid_max {
@@ -1148,15 +1151,15 @@ impl ViewerApp {
                     } else if in_current {
                         theme::accent().gamma_multiply(0.45)
                     } else {
-                        Color32::from_gray(42)
+                        idle_fill
                     };
 
                     let stroke = if in_selection {
-                        Stroke::new(1.5, Color32::from_rgb(160, 220, 255))
+                        Stroke::new(1.5, theme::accent_bright())
                     } else if in_current {
-                        Stroke::new(1.0, Color32::from_rgb(90, 145, 200))
+                        Stroke::new(1.0, theme::accent())
                     } else {
-                        Stroke::new(1.0, Color32::from_gray(95))
+                        Stroke::new(1.0, idle_stroke)
                     };
 
                     painter.rect_filled(cell_rect, 3.0, fill);
@@ -1178,7 +1181,7 @@ impl ViewerApp {
                 ui.label(
                     egui::RichText::new(format!("{disp_r} × {disp_c}  ({count} {vp_word})"))
                         .strong()
-                        .color(Color32::from_rgb(150, 210, 255)),
+                        .color(theme::accent()),
                 );
             });
 
@@ -1261,9 +1264,9 @@ impl ViewerApp {
             if !vr_active && self.viewports[vp_idx].selected.is_some() {
                 let is_key = self.is_viewport_key_image(vp_idx);
                 let star_txt = if is_key {
-                    egui::RichText::new("★").color(Color32::from_rgb(255, 205, 65)).strong()
+                    egui::RichText::new("★").color(theme::star_color(ui)).strong()
                 } else {
-                    egui::RichText::new("☆").color(Color32::from_gray(165))
+                    egui::RichText::new("☆").color(theme::dim_text(ui))
                 };
                 let star_tip = match self.lang {
                     crate::i18n::Lang::Es => "Marcar/desmarcar imagen clave (K)",
@@ -1281,7 +1284,7 @@ impl ViewerApp {
                     if ui
                         .small_button(
                             egui::RichText::new(format!("★ {key_count}"))
-                                .color(Color32::from_rgb(255, 205, 65)),
+                                .color(theme::star_color(ui)),
                         )
                         .on_hover_text(jump_tip)
                         .clicked()
@@ -1410,7 +1413,7 @@ impl ViewerApp {
                     }
                     if self.blend_siblings {
                         ui.colored_label(
-                            Color32::from_rgb(255, 200, 80),
+                            theme::warn_color(ui),
                             format!(
                                 "{} {} {}",
                                 tr.blended_from,

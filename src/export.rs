@@ -357,7 +357,6 @@ fn map_uid(uid_map: &mut HashMap<String, String>, old: &str, counter: &mut usize
 
 /// Returns `true` if the DICOM file may contain burned-in patient text in pixel data
 /// (e.g. ultrasound, secondary capture, or `BurnedInAnnotation = YES`).
-#[allow(dead_code)]
 pub fn has_likely_burned_in_text(src: &Path) -> bool {
     let Ok(obj) = open_file(src) else {
         return false;
