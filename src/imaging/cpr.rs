@@ -194,6 +194,61 @@ pub struct Straightened {
     pub length_mm: f64,
     pub spacing: f64,
     pub check: CprCheck,
+    pub path: Vec<[f64; 3]>,
+    pub normals: Vec<[f64; 3]>,
+    pub binormals: Vec<[f64; 3]>,
+}
+
+impl Straightened {
+    /// Samples a perpendicular (transverse) cross-section at column `col` along the curve,
+    /// spanned by `(normals[col], binormals[col])` across `±half_width_mm`.
+    pub fn cross_section_at(
+        &self,
+        vol: &Volume3D,
+        col: usize,
+        half_width_mm: f64,
+    ) -> Option<Arc<Frame>> {
+        let p = *self.path.get(col)?;
+        let u = *self.normals.get(col)?;
+        let v = *self.binormals.get(col)?;
+        let sp = self.spacing;
+        let half = (half_width_mm / sp).round() as usize;
+        let dim = (2 * half + 1).clamp(16, 256);
+        let half_f = (dim / 2) as f64;
+        let bg = vol.background_value();
+        let mut pixels = vec![bg; dim * dim];
+        for row in 0..dim {
+            let dv = (row as f64 - half_f) * sp;
+            let row_base = add3(p, scale3(v, dv));
+            for cx in 0..dim {
+                let du = (cx as f64 - half_f) * sp;
+                if let Some(val) = vol.sample_lps(add3(row_base, scale3(u, du))) {
+                    pixels[row * dim + cx] = val;
+                }
+            }
+        }
+        Some(Arc::new(Frame {
+            width: dim as u32,
+            height: dim as u32,
+            pixels: Pixels::Gray(pixels),
+            stored_window: vol.stored_window,
+            full_window: vol.full_window,
+            bits_window: vol.bits_window,
+            inverts: vol.inverts,
+            voi_lut_applied: false,
+            slope: vol.slope,
+            spacing: Some((sp, sp)),
+            pixel_ratio: 1.0,
+            origin: None,
+            orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            is_3d_plane: false,
+            frame_of_reference_uid: vol.frame_of_reference_uid.clone(),
+            slice_thickness: Some(sp),
+            slice_location: None,
+            value_unit: vol.value_unit,
+            suv_factor: vol.suv_factor,
+        }))
+    }
 }
 
 /// Straightens `vol` along the path through `nodes` (patient LPS, mm), IsiX
@@ -360,7 +415,16 @@ pub fn straighten_slab(
         value_unit: vol.value_unit,
         suv_factor: vol.suv_factor,
     };
-    Some(Straightened { frame: Arc::new(frame), length_mm: polyline_length(&path), spacing, check })
+    let length_mm = polyline_length(&path);
+    Some(Straightened {
+        frame: Arc::new(frame),
+        length_mm,
+        spacing,
+        check,
+        path,
+        normals,
+        binormals,
+    })
 }
 
 #[cfg(test)]

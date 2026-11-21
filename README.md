@@ -116,15 +116,17 @@ or Pixmeo. It does not use their names or icons in the application.
 - Measurements can be moved, reshaped by their handles, and deleted; callouts
   can be dragged aside. Live ratio between two lengths.
 - ROI histogram and line profile.
-- Calibration of an image without pixel spacing from a length of known size.
+- Calibration of an image without pixel spacing from a length of known size, and automatic ultrasound region calibration (`SequenceOfUltrasoundRegions`).
+- Structured Report (DICOM SR) and GSPS presentation state viewer inside the viewport, with one-click copy and apply-to-viewports.
 - Key images: mark with `K` (the image is kept as shown, measurements
   included), filter a series to its key images, and export a case report: an
   HTML page with the images, their measurement values and a findings box, ready
   to print or save as PDF, anonymized.
 
 **Export and privacy**
-- PNG export of an image or a whole series, and anonymized DICOM export (private
+- PNG export of an image or a whole series, animated GIF cine/stack export, and anonymized DICOM export (private
   tags removed, identifiers scrubbed, UIDs remapped consistently).
+- Optional compressed `.zip` storage for studies copied into the local library.
 - `Ctrl+C` / `Cmd+C` copies the active viewport to the clipboard without
   patient details.
 - A DICOM metadata inspector beside the image.

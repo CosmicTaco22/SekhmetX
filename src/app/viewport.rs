@@ -198,6 +198,14 @@ impl ViewerApp {
             .or_else(|| mpr_pair.map(|(f, _)| f))
             .or_else(|| self.viewport_frame(vp_idx).cloned());
         let Some(mut frame) = frame_opt else {
+            if self.render_sr_or_gsps_viewport(ui, vp_idx, view) {
+                if self.show_annotations {
+                    self.draw_overlay(&painter, vp_idx, view, None);
+                }
+                self.draw_scrubber_bar(ui, &painter, vp_idx, view);
+                self.draw_viewport_border(&painter, vp_idx, view);
+                return;
+            }
             let text = match cur_key.and_then(|k| self.failed.get(&k)) {
                 Some(err) => format!("Could not display this image:\n{err}"),
                 None => "Loading…".to_string(),
@@ -2941,6 +2949,139 @@ fn rotate_vec3_around_axis(v: [f64; 3], axis: [f64; 3], angle: f64) -> [f64; 3] 
 }
 
 impl ViewerApp {
+    /// If the viewport holds a DICOM Structured Report (`SR`) or Grayscale Softcopy
+    /// Presentation State (`PR`), renders a clean readable report/summary panel inside `view`.
+    fn render_sr_or_gsps_viewport(&mut self, ui: &mut egui::Ui, vp_idx: usize, view: Rect) -> bool {
+        let (path, modality) = {
+            let Some((si, ri)) = self.viewports.get(vp_idx).and_then(|v| v.selected) else {
+                return false;
+            };
+            let Some(se) = self
+                .index
+                .as_ref()
+                .and_then(|idx| idx.studies.get(si))
+                .and_then(|st| st.series.get(ri))
+            else {
+                return false;
+            };
+            let sl_idx = self.viewports[vp_idx].slice.min(se.slices.len().saturating_sub(1));
+            let Some(sl) = se.slices.get(sl_idx) else {
+                return false;
+            };
+            let is_sr_pr = se.modality.eq_ignore_ascii_case("SR")
+                || se.modality.eq_ignore_ascii_case("PR");
+            let failed = self
+                .viewport_slice_key(vp_idx, sl_idx)
+                .is_some_and(|k| self.failed.contains_key(&k));
+            if !is_sr_pr && !failed {
+                return false;
+            }
+            (sl.path.clone(), se.modality.clone())
+        };
+
+        let cached = self.sr_cache.entry(path.clone()).or_insert_with(|| {
+            let obj = dicom_object::open_file(&path).ok()?;
+            if let Some(gsps) = crate::imaging::sr::GspsState::from_dicom(&obj) {
+                let mut text = String::new();
+                if !gsps.label.is_empty() {
+                    text.push_str(&format!("Label: {}\n", gsps.label));
+                }
+                if !gsps.description.is_empty() {
+                    text.push_str(&format!("Description: {}\n", gsps.description));
+                }
+                if let Some(w) = gsps.window {
+                    text.push_str(&format!("Window: WL {:.1} / WW {:.1}\n", w.level, w.width));
+                }
+                if gsps.rotation_deg != 0 || gsps.horizontal_flip || gsps.invert {
+                    text.push_str(&format!(
+                        "Transform: rot {}°, flip H: {}, invert: {}\n",
+                        gsps.rotation_deg, gsps.horizontal_flip, gsps.invert
+                    ));
+                }
+                if !gsps.text_annotations.is_empty() {
+                    text.push_str("\nAnnotations:\n");
+                    for a in &gsps.text_annotations {
+                        text.push_str(&format!("  • {a}\n"));
+                    }
+                }
+                return Some((text, Some(gsps)));
+            }
+            if let Some(sr) = crate::imaging::sr::SrNode::from_dicom(&obj) {
+                let txt = sr.format_plain_text();
+                if !txt.trim().is_empty() {
+                    return Some((txt, None));
+                }
+            }
+            None
+        });
+
+        let Some((text, gsps_opt)) = cached.clone() else {
+            return false;
+        };
+
+        let es = self.lang == crate::i18n::Lang::Es;
+        let t = |en: &'static str, sp: &'static str| if es { sp } else { en };
+        let title = if gsps_opt.is_some() {
+            t("Presentation State (GSPS)", "Estado de Presentación (GSPS)")
+        } else if modality.eq_ignore_ascii_case("SR") {
+            t("Structured Report (DICOM SR)", "Informe Estructurado (DICOM SR)")
+        } else {
+            t("DICOM Document", "Documento DICOM")
+        };
+
+        let inner = view.shrink(16.0);
+        let mut apply_gsps: Option<crate::imaging::sr::GspsState> = None;
+        ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(title)
+                        .strong()
+                        .size(15.0)
+                        .color(crate::ui::theme::accent_bright()),
+                );
+                if ui.small_button(t("Copy text", "Copiar texto")).clicked() {
+                    ui.ctx().copy_text(text.clone());
+                }
+                if let Some(ref gsps) = gsps_opt
+                    && ui
+                        .small_button(t("Apply to other viewports", "Aplicar a otros visores"))
+                        .clicked()
+                {
+                    apply_gsps = Some(gsps.clone());
+                }
+            });
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .id_salt(("sr_scroll", vp_idx))
+                .show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(&text)
+                                .monospace()
+                                .size(12.5)
+                                .color(Color32::from_gray(230)),
+                        )
+                        .wrap(),
+                    );
+                });
+        });
+
+        if let Some(gsps) = apply_gsps {
+            let count = self.tiling.cell_count();
+            for (i, vp) in self.viewports.iter_mut().enumerate().take(count) {
+                if i != vp_idx && vp.selected.is_some() {
+                    if let Some(w) = gsps.window {
+                        vp.window = Some(w);
+                    }
+                    vp.rotation = (gsps.rotation_deg as f32).rem_euclid(360.0);
+                    vp.x_flipped = gsps.horizontal_flip;
+                    vp.invert = gsps.invert;
+                }
+            }
+        }
+        true
+    }
+
     /// Lists all other non-empty series in the active study for the Fusion overlay picker.
     pub(crate) fn fusion_candidate_series(&self, vp_idx: usize) -> Vec<((usize, usize), String)> {
         let Some((st_idx, cur_se)) = self.viewports.get(vp_idx).and_then(|v| v.selected) else {

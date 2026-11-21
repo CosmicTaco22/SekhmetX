@@ -12,6 +12,7 @@ pub mod cpr;
 pub mod defaults;
 pub mod drag;
 pub mod fusion;
+pub mod mr_maps;
 pub mod photometry;
 pub mod presets;
 pub mod slab_scale;

@@ -433,11 +433,28 @@ fn open_dicom_cached(path: &Path) -> Result<Arc<DefaultDicomObject>> {
             return Ok(obj);
         }
 
-    let obj = Arc::new(
-        OpenFileOptions::new()
-            .open_file(path)
-            .with_context(|| format!("could not open {}", path.display()))?,
-    );
+    let obj = if let Some((zip_part, entry_name)) = path.to_str().and_then(|s| s.split_once("::")) {
+        let zfile = std::fs::File::open(zip_part)
+            .with_context(|| format!("could not open zip archive {zip_part}"))?;
+        let mut archive = zip::ZipArchive::new(zfile)
+            .with_context(|| format!("invalid zip archive {zip_part}"))?;
+        let mut entry = archive
+            .by_name(entry_name)
+            .with_context(|| format!("missing zip entry {entry_name} in {zip_part}"))?;
+        let mut bytes = Vec::with_capacity(entry.size() as usize);
+        std::io::Read::read_to_end(&mut entry, &mut bytes)?;
+        Arc::new(
+            OpenFileOptions::new()
+                .from_reader(std::io::Cursor::new(bytes))
+                .with_context(|| format!("could not parse DICOM entry {entry_name}"))?,
+        )
+    } else {
+        Arc::new(
+            OpenFileOptions::new()
+                .open_file(path)
+                .with_context(|| format!("could not open {}", path.display()))?,
+        )
+    };
 
     let num_frames = get_int(&obj, tags::NUMBER_OF_FRAMES).unwrap_or(1);
     if num_frames > 1

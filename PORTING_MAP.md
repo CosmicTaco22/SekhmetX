@@ -51,7 +51,7 @@ Lines count all IsiX code in the area, including headers and tests; Rust version
 | **3D: volume rendering, MIP/VR, surface rendering, 3D presets**<br>`volume-3d` | Rebuild | not started | 127 / 38,587 | — | wgpu | IsiX renders 3D with VTK and Metal. Rebuild as a wgpu ray caster; the opacity/colour preset maths ports directly. |
 | **Curved MPR (CPR) and straightened views**<br>`cpr` | Rebuild | started | 47 / 21,007 | src/imaging/cpr.rs (path checks and straightened sampling), src/app/cpr_view.rs (window) | — |  |
 | **Segmentation, registration, subtraction, SEG objects**<br>`segmentation-registration` | Port | started | 28 / 7,417 | src/volume.rs (RigidTransform3D), src/app.rs | — | Automatic 6-DOF 3D rigid registration (foreground centroid + multi-scale Normalized Cross-Correlation) and manual 3D lock for cross-study comparison. |
-| **MR maps: T1/T2 fitting, synthetic DWI, b-value split**<br>`advanced-mr` | Port | not started | 11 / 2,795 | — | — |  |
+| **MR maps: T1/T2 fitting, synthetic DWI, b-value split**<br>`advanced-mr` | Port | started | 11 / 2,795 | src/imaging/mr_maps.rs | — | Ported IsiX BValueSplit and T2FitMapping echo grouping, plus log-linear T2 (ms) and mono-exponential ADC fitting with unit tests. |
 | **Reports (Word/Pages/RTF templates linked to studies)**<br>`reports` | Rebuild | not started | 20 / 5,815 | — | — | Decide later: may be replaced by your own dictation workflow. |
 
 ## P4 · maybe

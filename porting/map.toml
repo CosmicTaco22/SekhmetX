@@ -436,7 +436,10 @@ id = "advanced-mr"
 name = "MR maps: T1/T2 fitting, synthetic DWI, b-value split"
 decision = "port"
 priority = 3
-progress = "todo"
+progress = "partial"
+ported_from = "087f2cd0f721"
+rdicom = "src/imaging/mr_maps.rs"
+notes = "Ported IsiX BValueSplit and T2FitMapping echo grouping, plus log-linear T2 (ms) and mono-exponential ADC fitting with unit tests."
 paths = ['^Modules/IsiXImaging/(Sources|Tests)/BufferOperations/(T1|T2|SyntheticDiffusion|BValue)']
 names = ['T1FitMap', 'T2FitMap', 'ViewerSyntheticDWI']
 

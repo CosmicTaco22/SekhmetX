@@ -23,6 +23,10 @@ pub(crate) struct CprView {
     pub(crate) invert: bool,
     pub(crate) texture: Option<TextureHandle>,
     pub(crate) tex_key: Option<(i64, i64, u8, i64, u32, u32, bool)>,
+    pub(crate) show_cross_section: bool,
+    pub(crate) cross_col: usize,
+    pub(crate) cross_texture: Option<TextureHandle>,
+    pub(crate) cross_tex_key: Option<(usize, i64, u32, u32, bool)>,
     /// A length measured on the straightened image, image pixels.
     pub(crate) measure: Option<(Pos2, Pos2)>,
     pub(crate) open: bool,
@@ -40,6 +44,11 @@ impl CprView {
             self.slab_thickness_mm,
         );
         self.texture = None;
+        self.cross_texture = None;
+        self.cross_tex_key = None;
+        if let Some(ref r) = self.result {
+            self.cross_col = self.cross_col.min(r.path.len().saturating_sub(1));
+        }
         self.measure = None;
     }
 }
@@ -88,6 +97,10 @@ impl ViewerApp {
             invert: self.viewports[vp_idx].effective_invert(),
             texture: None,
             tex_key: None,
+            show_cross_section: true,
+            cross_col: 0,
+            cross_texture: None,
+            cross_tex_key: None,
             measure: None,
             open: true,
         };
@@ -218,6 +231,23 @@ impl ViewerApp {
                         {
                             rebuild = true;
                         }
+                    ui.separator();
+                    ui.checkbox(&mut view.show_cross_section, t("Cross-section", "Transversal"));
+                    if view.show_cross_section
+                        && let Some(ref r) = view.result
+                        && r.path.len() > 1
+                    {
+                        let max_col = r.path.len() - 1;
+                        view.cross_col = view.cross_col.min(max_col);
+                        ui.add(
+                            egui::Slider::new(&mut view.cross_col, 0..=max_col)
+                                .show_value(false),
+                        )
+                        .on_hover_text(t(
+                            "Slide along the path to inspect perpendicular cross-sections",
+                            "Deslice a lo largo del trazado para ver cortes transversales",
+                        ));
+                    }
                     if let Some(ref db) = self.db
                         && !series_uid.is_empty()
                     {
@@ -293,12 +323,89 @@ impl ViewerApp {
                     return;
                 };
                 let avail = ui.available_size();
+                let cross_side = if view.show_cross_section && vol.is_some() {
+                    (avail.y.min(avail.x * 0.32)).clamp(110.0, 240.0)
+                } else {
+                    0.0
+                };
+                let main_avail_x = if cross_side > 0.0 {
+                    (avail.x - cross_side - 10.0).max(100.0)
+                } else {
+                    avail.x.max(100.0)
+                };
                 let aspect = f.height as f32 / f.width.max(1) as f32;
-                let w = avail.x.max(100.0);
+                let w = main_avail_x;
                 let h = (w * aspect).min(avail.y.max(80.0));
                 let w = h / aspect.max(1e-3);
-                let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::drag());
+
+                let (rect, resp) = ui
+                    .horizontal(|ui| {
+                        let (r_main, resp_main) = ui.allocate_exact_size(vec2(w, h), Sense::drag());
+                        if cross_side > 0.0
+                            && let Some(ref v_ref) = vol
+                        {
+                            ui.add_space(6.0);
+                            let c_key = (
+                                view.cross_col,
+                                (view.half_width_mm * 10.0) as i64,
+                                view.window.level.to_bits(),
+                                view.window.width.to_bits(),
+                                view.invert,
+                            );
+                            if (view.cross_texture.is_none() || view.cross_tex_key != Some(c_key))
+                                && let Some(cf) =
+                                    result.cross_section_at(v_ref, view.cross_col, view.half_width_mm)
+                            {
+                                let rgba = cf.render_with_clut(view.window, view.invert != cf.inverts, None);
+                                let cimg = egui::ColorImage::from_rgba_unmultiplied(
+                                    [cf.width as usize, cf.height as usize],
+                                    &rgba,
+                                );
+                                view.cross_texture = Some(ctx.load_texture(
+                                    "curved-mpr-cross",
+                                    cimg,
+                                    egui::TextureOptions::LINEAR,
+                                ));
+                                view.cross_tex_key = Some(c_key);
+                            }
+                            if let Some(ref ctex) = view.cross_texture {
+                                let (crect, _) = ui.allocate_exact_size(vec2(cross_side, cross_side), Sense::hover());
+                                ui.painter().image(
+                                    ctex.id(),
+                                    crect,
+                                    Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)),
+                                    Color32::WHITE,
+                                );
+                                let c = crect.center();
+                                let ch_col = theme::accent_bright().gamma_multiply(0.7);
+                                ui.painter().line_segment(
+                                    [pos2(c.x - 8.0, c.y), pos2(c.x + 8.0, c.y)],
+                                    Stroke::new(1.0, ch_col),
+                                );
+                                ui.painter().line_segment(
+                                    [pos2(c.x, c.y - 8.0), pos2(c.x, c.y + 8.0)],
+                                    Stroke::new(1.0, ch_col),
+                                );
+                                ui.painter().rect_stroke(
+                                    crect,
+                                    2.0,
+                                    Stroke::new(1.0, theme::accent()),
+                                    egui::StrokeKind::Inside,
+                                );
+                            }
+                        }
+                        (r_main, resp_main)
+                    })
+                    .inner;
                 ui.painter().image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+                if view.show_cross_section && result.path.len() > 1 {
+                    let frac = view.cross_col as f32 / (result.path.len() - 1) as f32;
+                    let cx = rect.min.x + frac * rect.width();
+                    ui.painter().line_segment(
+                        [pos2(cx, rect.min.y), pos2(cx, rect.max.y)],
+                        Stroke::new(1.2, theme::accent_bright().gamma_multiply(0.8)),
+                    );
+                }
                 let to_px = |p: Pos2| {
                     pos2((p.x - rect.min.x) / rect.width() * f.width as f32, (p.y - rect.min.y) / rect.height() * f.height as f32)
                 };

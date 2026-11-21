@@ -1,6 +1,6 @@
 [package]
 name = "sekhmetx"
-version = "0.7.2"
+version = "0.7.3"
 edition = "2024"
 description = "SekhmetX: a fast, native cross-platform DICOM viewer in Rust (modeled on IsiX / Horos / OsiriX)"
 license = "LGPL-3.0-or-later"
@@ -12,7 +12,7 @@ flate2 = "1"
 walkdir = "2.5"
 rayon = "1"
 trash = "5"
-image = { version = "0.25", default-features = false, features = ["png"] }
+image = { version = "0.25", default-features = false, features = ["png", "gif"] }
 
 # GUI: egui via eframe (OpenGL renderer works on any Windows PC)
 eframe = { version = "0.37", default-features = true }

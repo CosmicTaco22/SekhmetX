@@ -469,7 +469,7 @@ impl Database {
             if !series_list.is_empty() {
                 let any_present = series_list
                     .iter()
-                    .any(|se| se.slices.first().is_some_and(|s| s.path.exists()));
+                    .any(|se| se.slices.first().is_some_and(|s| slice_file_exists(&s.path)));
                 for se in &mut series_list {
                     crate::dicom_index::refine_plane(se);
                 }
@@ -802,10 +802,69 @@ pub fn study_managed_dir(study_uid: &str) -> PathBuf {
     managed_studies_dir().join(if safe.is_empty() { "unknown" } else { &safe })
 }
 
+/// Returns `true` if `path` exists on disk (supporting `archive.zip::entry` compressed library paths).
+pub fn slice_file_exists(path: &Path) -> bool {
+    if let Some((zip_part, _)) = path.to_str().and_then(|s| s.split_once("::")) {
+        Path::new(zip_part).exists()
+    } else {
+        path.exists()
+    }
+}
+
 /// Copies all slice files of `study` into `<data dir>/SekhmetX/Studies/<StudyUID>/`
-/// and updates slice paths in-place so ZIP/removable-drive studies persist in the library.
+/// (either uncompressed DICOM files or a compressed `study.zip` archive)
+/// and updates slice paths in-place so studies persist in the library.
+#[allow(dead_code)]
 pub fn copy_study_into_library(study: &mut Study) -> Result<()> {
-    copy_study_into_dir(study, &study_managed_dir(&study.uid))
+    copy_study_into_library_with_format(study, false)
+}
+
+pub fn copy_study_into_library_with_format(study: &mut Study, as_zip: bool) -> Result<()> {
+    let target_dir = study_managed_dir(&study.uid);
+    if as_zip {
+        copy_study_into_zip(study, &target_dir)
+    } else {
+        copy_study_into_dir(study, &target_dir)
+    }
+}
+
+pub fn copy_study_into_zip(study: &mut Study, target_dir: &Path) -> Result<()> {
+    use std::io::Write;
+    std::fs::create_dir_all(target_dir)?;
+    let zip_path = target_dir.join("study.zip");
+    let file = std::fs::File::create(&zip_path)?;
+    let mut writer = zip::ZipWriter::new(file);
+    let opts = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+
+    let mut written: std::collections::HashMap<PathBuf, PathBuf> =
+        std::collections::HashMap::new();
+    for (se_idx, se) in study.series.iter_mut().enumerate() {
+        for (sl_idx, sl) in se.slices.iter_mut().enumerate() {
+            if let Some(vpath) = written.get(&sl.path) {
+                sl.path = vpath.clone();
+                continue;
+            }
+            if !sl.path.exists() {
+                continue;
+            }
+            let file_name = sl
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("slice.dcm");
+            let entry_name = format!("s{se_idx:03}_{sl_idx:05}_{file_name}");
+            let bytes = std::fs::read(&sl.path)?;
+            writer.start_file(&entry_name, opts)?;
+            writer.write_all(&bytes)?;
+            let virtual_path = PathBuf::from(format!("{}::{entry_name}", zip_path.display()));
+            written.insert(sl.path.clone(), virtual_path.clone());
+            sl.path = virtual_path;
+        }
+    }
+    writer.finish()?;
+    study.files_missing = false;
+    Ok(())
 }
 
 pub fn copy_study_into_dir(study: &mut Study, target_dir: &Path) -> Result<()> {

@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.3] - 2026-11-21
+
+### Added
+- **Structured Report (SR) & GSPS (`PR`) viewer** (`src/app/viewport.rs`, `src/imaging/sr.rs`): selecting a DICOM SR (e.g. CT dose report) or GSPS (`PR`) series now renders a readable, scrollable report/summary inside the viewport with a **Copy text** button, and GSPS adds **Apply to other viewports** (window, rotation, horizontal flip, invert) in English and Spanish.
+- **Animated GIF stack / cine export** (`src/export.rs`, `src/app/mod.rs`, `src/ui/toolbar.rs`, `src/i18n.rs`): export any series or cine loop as a looping animated GIF (`Export Series (Animated GIF)…` / `Exportar Serie (GIF Animado)…`) at the active cine FPS with current W/L, CLUT, invert, and convolution (downscaled to at most 512 px per side).
+- **Compressed `.zip` library storage** (`src/db.rs`, `src/frame.rs`, `src/app/mod.rs`): wired up the *"Compressed (.zip)"* setting in Settings so studies copied into the library save into `Studies/<uid>/study.zip` and stream directly from the archive without re-extracting.
+- **Curved MPR transverse cross-section view** (`src/imaging/cpr.rs`, `src/app/cpr_view.rs`): added a **Cross-section** (`Transversal`) toggle and slider in the Curved MPR window showing the live perpendicular slice along the path with a crosshair and vertical position line.
+- **Advanced MR mapping** (`src/imaging/mr_maps.rs`): ported IsiX's `BValueSplit` (Siemens/GE/Philips tags + grouping) and `T2FitMapping` echo grouping, plus log-linear **T2** (ms) and **ADC** ($10^{-6}\text{ mm}^2/\text{s}$) map fitting with unit tests.
+
 ## [0.7.2] - 2026-11-21
 
 ### Improved

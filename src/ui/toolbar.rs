@@ -844,6 +844,10 @@ impl ViewerApp {
                             self.export_active_series_png();
                             ui.close();
                         }
+                        if ui.button(tr.export_series_gif).clicked() {
+                            self.export_active_series_gif();
+                            ui.close();
+                        }
                         if ui.button(tr.export_anon_dicom).clicked() {
                             self.export_active_anonymized_dicom();
                             ui.close();

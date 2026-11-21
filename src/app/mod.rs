@@ -420,6 +420,7 @@ pub(crate) struct ViewerApp {
     loader: Loader,
     cache: HashMap<SliceKey, Arc<Frame>>,
     failed: HashMap<SliceKey, String>,
+    sr_cache: HashMap<PathBuf, Option<(String, Option<crate::imaging::sr::GspsState>)>>,
     keep_radius: usize,
     volumes: HashMap<(usize, usize), Arc<Volume3D>>,
     volume_errors: HashMap<(usize, usize), crate::volume::VolumeError>,
@@ -707,6 +708,7 @@ impl ViewerApp {
             loader: Loader::new(move || ctx.request_repaint()),
             cache: HashMap::new(),
             failed: HashMap::new(),
+            sr_cache: HashMap::new(),
             keep_radius: 600,
             volumes: HashMap::new(),
             volume_errors: HashMap::new(),
@@ -1029,6 +1031,47 @@ impl ViewerApp {
         }
     }
 
+    pub(crate) fn export_active_series_gif(&mut self) {
+        let vp_idx = self.active_viewport;
+        let Some((si, ri)) = self.viewports[vp_idx].selected else {
+            return;
+        };
+        let Some(ref idx) = self.index else {
+            return;
+        };
+        let Some(se) = idx.studies.get(si).and_then(|st| st.series.get(ri)) else {
+            return;
+        };
+        let vp = &self.viewports[vp_idx];
+        let fps = self.fps.clamp(1.0, 60.0);
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Animated GIF", &["gif"])
+            .set_file_name("sekhmetx_cine.gif")
+            .save_file()
+        {
+            match crate::export::export_series_gif(
+                &se.slices,
+                vp.window,
+                vp.effective_invert(),
+                &vp.clut_name,
+                vp.convolution_idx,
+                fps,
+                &path,
+            ) {
+                Ok(n) => {
+                    self.message = Some(if self.lang == crate::i18n::Lang::Es {
+                        format!("GIF exportado ({n} cortes): {}", path.display())
+                    } else {
+                        format!("Exported GIF ({n} frames): {}", path.display())
+                    });
+                }
+                Err(e) => {
+                    self.message = Some(format!("GIF export failed: {e}"));
+                }
+            }
+        }
+    }
+
     pub(crate) fn export_active_anonymized_dicom(&self) {
         let vp_idx = self.active_viewport;
         let Some((si, ri)) = self.viewports[vp_idx].selected else {
@@ -1075,7 +1118,7 @@ impl ViewerApp {
                 if !zips.is_empty() {
                     zip_sources.push((st.uid.clone(), zips));
                 }
-                let _ = crate::db::copy_study_into_library(st);
+                let _ = crate::db::copy_study_into_library_with_format(st, self.study_storage_zip);
             }
         }
         if let Some(ref mut db) = self.db {
@@ -1168,7 +1211,7 @@ impl ViewerApp {
                                 if !zips.is_empty() {
                                     zip_sources.push((st.uid.clone(), zips));
                                 }
-                                let _ = crate::db::copy_study_into_library(st);
+                                let _ = crate::db::copy_study_into_library_with_format(st, self.study_storage_zip);
                             }
                         }
                     } else if has_ephemeral_zip

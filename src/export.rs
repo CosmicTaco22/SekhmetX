@@ -54,6 +54,57 @@ pub fn export_frame_png(
         .with_context(|| format!("failed to write PNG {}", out_path.display()))
 }
 
+/// Exports `slices` as an animated GIF cine movie (`anonymize-export`), downscaling
+/// frames to at most `512` px per side so files stay compact and responsive.
+pub fn export_series_gif(
+    slices: &[SliceRef],
+    window: Option<Window>,
+    invert: bool,
+    clut_name: &str,
+    conv_idx: Option<usize>,
+    fps: f32,
+    out_path: &Path,
+) -> Result<usize> {
+    use image::codecs::gif::{GifEncoder, Repeat};
+    use image::{Delay, Frame as GifFrame, RgbaImage};
+
+    let file = std::fs::File::create(out_path)
+        .with_context(|| format!("failed to create GIF {}", out_path.display()))?;
+    let mut encoder = GifEncoder::new_with_speed(file, 10);
+    encoder.set_repeat(Repeat::Infinite)?;
+
+    let delay_ms = (1000.0 / fps.clamp(1.0, 60.0)).round() as u32;
+    let clut = ColourTableBook::table_named(clut_name);
+    let mut count = 0usize;
+
+    for sref in slices {
+        let Ok(raw_frame) = load_frame(&sref.path, sref.frame) else {
+            continue;
+        };
+        let display_frame = conv_idx
+            .and_then(|i| FACTORY_CONVOLUTIONS.get(i))
+            .map(|k| raw_frame.with_convolution(&k.to_convolution()));
+        let src = display_frame.as_ref().unwrap_or(&raw_frame);
+        let w = window.unwrap_or_else(|| src.default_window());
+        let rgba = src.render_with_clut(w, invert != src.inverts, clut.as_ref());
+        let Some(img) = RgbaImage::from_raw(src.width, src.height, rgba) else {
+            continue;
+        };
+        let resized = if src.width > 512 || src.height > 512 {
+            let scale = 512.0 / src.width.max(src.height) as f32;
+            let nw = ((src.width as f32 * scale).round() as u32).max(1);
+            let nh = ((src.height as f32 * scale).round() as u32).max(1);
+            image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle)
+        } else {
+            img
+        };
+        let frame = GifFrame::from_parts(resized, 0, 0, Delay::from_numer_denom_ms(delay_ms, 1));
+        encoder.encode_frame(frame)?;
+        count += 1;
+    }
+    Ok(count)
+}
+
 /// Exports every slice in `slices` as sequentially numbered PNGs inside `out_dir`.
 pub fn export_series_png(
     slices: &[SliceRef],
