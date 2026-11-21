@@ -149,6 +149,32 @@ impl<'a> AppSettings<'a> {
             let _ = self.db.set_setting("hanging_protocols", &json);
         }
     }
+
+    pub fn pacs_nodes(&self) -> Vec<crate::net::PacsNode> {
+        self.db
+            .get_setting("pacs_nodes")
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_pacs_nodes(&self, nodes: &[crate::net::PacsNode]) {
+        if let Ok(json) = serde_json::to_string(nodes) {
+            let _ = self.db.set_setting("pacs_nodes", &json);
+        }
+    }
+
+    pub fn dicomweb_servers(&self) -> Vec<crate::net::DicomWebServer> {
+        self.db
+            .get_setting("dicomweb_servers")
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_dicomweb_servers(&self, servers: &[crate::net::DicomWebServer]) {
+        if let Ok(json) = serde_json::to_string(servers) {
+            let _ = self.db.set_setting("dicomweb_servers", &json);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -189,6 +215,26 @@ mod tests {
         }];
         settings.set_hanging_protocols(&protos);
         assert_eq!(settings.hanging_protocols(), protos);
+
+        let nodes = vec![crate::net::PacsNode {
+            name: "Local PACS".into(),
+            ae_title: "ORTHANC".into(),
+            host: "127.0.0.1".into(),
+            port: 4242,
+            local_ae_title: "SEKHMETX".into(),
+            use_tls: false,
+            retrieve_method: crate::net::RetrieveMethod::CMove,
+        }];
+        settings.set_pacs_nodes(&nodes);
+        assert_eq!(settings.pacs_nodes(), nodes);
+
+        let servers = vec![crate::net::DicomWebServer {
+            name: "Demo DICOMweb".into(),
+            base_url: "https://example.org/dicom-web".into(),
+            auth: crate::net::DicomWebAuth::BearerToken,
+        }];
+        settings.set_dicomweb_servers(&servers);
+        assert_eq!(settings.dicomweb_servers(), servers);
 
         assert!(!settings.first_run_notice_ack());
         settings.set_first_run_notice_ack(true);

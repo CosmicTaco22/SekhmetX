@@ -284,9 +284,9 @@ id = "network-pacs"
 name = "PACS networking: echo, query/retrieve, send, listener, TLS, worklist"
 decision = "port"
 priority = 2
-progress = "todo"
-rdicom = "src/net/ (planned)"
-crates = "dicom-ul (dicom-rs), rustls"
+progress = "partial"
+rdicom = "src/net/mod.rs, src/net/dimse.rs, src/app/modals.rs"
+crates = "pure-Rust PS 3.8 TCP (C-ECHO SCU); dicom-ul/rustls (planned)"
 paths = ['^Modules/IsiXDICOMNetwork/', '^Preference Panes/OSILocationsPreferencePane/']
 names = ['DCMTKServiceClassUser', 'DCMTKVerifySCU', 'MoveManager', 'OsiriXSCPDataHandler', 'SimplePing',
          'DCMTK(Query|Store|Root|Study|Series|Image).*', 'IsiXDCMTK(QueryRetrieve.*|Move.*|GetUser|StoreSCU|SCPDatabase)',
@@ -302,8 +302,9 @@ id = "dicomweb"
 name = "DICOMweb and WADO (QIDO/WADO/STOW, OAuth)"
 decision = "port"
 priority = 2
-progress = "todo"
-crates = "reqwest"
+progress = "partial"
+rdicom = "src/net/mod.rs, src/net/dicomweb.rs, src/app/modals.rs"
+crates = "ureq"
 names = ['DICOMweb.*', 'WADO.*']
 
 [[area]]

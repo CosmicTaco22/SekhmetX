@@ -7,6 +7,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod dicomweb;
+pub mod dimse;
+
 /// How a DICOM DIMSE PACS node delivers requested studies.
 #[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

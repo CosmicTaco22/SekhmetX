@@ -1638,6 +1638,455 @@ impl ViewerApp {
             self.pending_clear_library = false;
         }
     }
+
+    pub(super) fn draw_pacs_modal(&mut self, ctx: &egui::Context) {
+        if !self.show_pacs_modal {
+            return;
+        }
+        let es = self.lang == crate::i18n::Lang::Es;
+        let title = if es {
+            "PACS / DICOMweb — Consulta y Descarga"
+        } else {
+            "PACS / DICOMweb — Query & Retrieve"
+        };
+        let mut open = self.show_pacs_modal;
+        egui::Window::new(title)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(640.0)
+            .default_height(460.0)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    if crate::ui::icons::choice(ui, !self.pacs_tab_dimse, "DICOMweb (QIDO / WADO)")
+                        .clicked()
+                    {
+                        self.pacs_tab_dimse = false;
+                    }
+                    if crate::ui::icons::choice(ui, self.pacs_tab_dimse, "DICOM PACS (C-ECHO)")
+                        .clicked()
+                    {
+                        self.pacs_tab_dimse = true;
+                    }
+                });
+                ui.separator();
+
+                if !self.pacs_tab_dimse {
+                    self.draw_dicomweb_tab(ui, ctx, es);
+                } else {
+                    self.draw_dimse_tab(ui, ctx, es);
+                }
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if self.pacs_busy {
+                        ui.spinner();
+                        ui.label(if es { "Conectando…" } else { "Connecting…" });
+                    } else if let Some(ref st) = self.pacs_status {
+                        ui.label(st);
+                    }
+                });
+            });
+        self.show_pacs_modal = open;
+    }
+
+    fn draw_dicomweb_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, es: bool) {
+        if !self.dicomweb_servers.is_empty() && self.selected_dicomweb >= self.dicomweb_servers.len()
+        {
+            self.selected_dicomweb = 0;
+        }
+        ui.horizontal(|ui| {
+            ui.label(if es { "Servidor:" } else { "Server:" });
+            let cur_label = self
+                .dicomweb_servers
+                .get(self.selected_dicomweb)
+                .map(|s| format!("{} ({})", s.name, s.base_url))
+                .unwrap_or_else(|| {
+                    if es {
+                        "Ninguno configurado".to_string()
+                    } else {
+                        "None configured".to_string()
+                    }
+                });
+            egui::ComboBox::from_id_salt("dicomweb_server_combo")
+                .selected_text(cur_label)
+                .width(340.0)
+                .show_ui(ui, |ui| {
+                    for (i, s) in self.dicomweb_servers.iter().enumerate() {
+                        let lbl = format!("{} ({})", s.name, s.base_url);
+                        ui.selectable_value(&mut self.selected_dicomweb, i, lbl);
+                    }
+                });
+            if !self.dicomweb_servers.is_empty()
+                && ui
+                    .button(if es { "Eliminar" } else { "Remove" })
+                    .clicked()
+            {
+                self.dicomweb_servers.remove(self.selected_dicomweb);
+                if self.selected_dicomweb >= self.dicomweb_servers.len() {
+                    self.selected_dicomweb = self.dicomweb_servers.len().saturating_sub(1);
+                }
+                if let Some(ref db) = self.db {
+                    crate::settings::AppSettings::new(db)
+                        .set_dicomweb_servers(&self.dicomweb_servers);
+                }
+            }
+        });
+
+        let needs_secret = self
+            .dicomweb_servers
+            .get(self.selected_dicomweb)
+            .is_some_and(|s| s.auth != crate::net::DicomWebAuth::None);
+        if needs_secret {
+            ui.horizontal(|ui| {
+                ui.label(if es {
+                    "Token / Credencial (solo sesión):"
+                } else {
+                    "Token / Credential (session only):"
+                });
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.dicomweb_secret)
+                        .password(true)
+                        .desired_width(240.0),
+                );
+            });
+        }
+
+        ui.collapsing(
+            if es {
+                "Agregar servidor DICOMweb"
+            } else {
+                "Add DICOMweb Server"
+            },
+            |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(if es { "Nombre:" } else { "Name:" });
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.new_dw_name)
+                            .desired_width(120.0)
+                            .hint_text("Orthanc"),
+                    );
+                    ui.label("URL:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.new_dw_url)
+                            .desired_width(240.0)
+                            .hint_text("https://host/dicom-web"),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label(if es { "Autenticación:" } else { "Auth:" });
+                    for (auth, lbl) in [
+                        (crate::net::DicomWebAuth::None, if es { "Ninguna" } else { "None" }),
+                        (crate::net::DicomWebAuth::BearerToken, "Bearer"),
+                        (crate::net::DicomWebAuth::Basic, "Basic"),
+                    ] {
+                        if crate::ui::icons::choice(ui, self.new_dw_auth == auth, lbl).clicked() {
+                            self.new_dw_auth = auth;
+                        }
+                    }
+                    let can_add = !self.new_dw_name.trim().is_empty()
+                        && !self.new_dw_url.trim().is_empty();
+                    if ui
+                        .add_enabled(can_add, egui::Button::new(if es { "Agregar" } else { "Add" }))
+                        .clicked()
+                    {
+                        self.dicomweb_servers.push(crate::net::DicomWebServer {
+                            name: self.new_dw_name.trim().to_string(),
+                            base_url: self.new_dw_url.trim().to_string(),
+                            auth: self.new_dw_auth,
+                        });
+                        self.selected_dicomweb = self.dicomweb_servers.len() - 1;
+                        self.new_dw_name.clear();
+                        self.new_dw_url.clear();
+                        if let Some(ref db) = self.db {
+                            crate::settings::AppSettings::new(db)
+                                .set_dicomweb_servers(&self.dicomweb_servers);
+                        }
+                    }
+                });
+            },
+        );
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(if es { "Paciente:" } else { "Patient:" });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pacs_filter.patient_name)
+                    .desired_width(120.0)
+                    .hint_text("DOE*"),
+            );
+            ui.label("ID:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pacs_filter.patient_id).desired_width(80.0),
+            );
+            ui.label("Mod:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pacs_filter.modality)
+                    .desired_width(48.0)
+                    .hint_text("CT"),
+            );
+            ui.label(if es { "Fecha:" } else { "Date:" });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pacs_filter.study_date)
+                    .desired_width(90.0)
+                    .hint_text("YYYYMMDD"),
+            );
+            let can_search = !self.pacs_busy && !self.dicomweb_servers.is_empty();
+            if ui
+                .add_enabled(
+                    can_search,
+                    egui::Button::new(if es { "Buscar" } else { "Search" }),
+                )
+                .clicked()
+            {
+                let srv = self.dicomweb_servers[self.selected_dicomweb].clone();
+                let filter = self.pacs_filter.clone();
+                let secret = if self.dicomweb_secret.trim().is_empty() {
+                    None
+                } else {
+                    Some(self.dicomweb_secret.clone())
+                };
+                let tx = self.pacs_tx.clone();
+                let ctx_c = ctx.clone();
+                self.pacs_busy = true;
+                self.pacs_status = None;
+                std::thread::spawn(move || {
+                    let res = crate::net::dicomweb::qido_search_studies(
+                        &srv,
+                        secret.as_deref(),
+                        &filter,
+                    )
+                    .map_err(|e| format!("{e:#}"));
+                    let _ = tx.send(crate::app::PacsBgResult::Qido(res));
+                    ctx_c.request_repaint();
+                });
+            }
+        });
+
+        ui.add_space(4.0);
+        let mut retrieve_uid: Option<String> = None;
+        egui::ScrollArea::vertical()
+            .id_salt("pacs_results_scroll")
+            .max_height(220.0)
+            .show(ui, |ui| {
+                if self.pacs_results.is_empty() {
+                    ui.label(
+                        egui::RichText::new(if es {
+                            "Sin resultados. Use Buscar para consultar estudios por QIDO-RS."
+                        } else {
+                            "No results yet. Click Search to query studies via QIDO-RS."
+                        })
+                        .weak(),
+                    );
+                } else {
+                    for st in &self.pacs_results {
+                        ui.horizontal(|ui| {
+                            let label = format!(
+                                "{}  |  {}  |  {}  |  {}",
+                                if st.patient_name.is_empty() {
+                                    "—"
+                                } else {
+                                    &st.patient_name
+                                },
+                                st.study_date,
+                                st.modalities,
+                                st.description
+                            );
+                            ui.label(label);
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            !self.pacs_busy,
+                                            egui::Button::new(if es {
+                                                "Descargar y Abrir"
+                                            } else {
+                                                "Retrieve & Open"
+                                            }),
+                                        )
+                                        .clicked()
+                                    {
+                                        retrieve_uid = Some(st.study_uid.clone());
+                                    }
+                                },
+                            );
+                        });
+                        ui.separator();
+                    }
+                }
+            });
+
+        if let Some(uid) = retrieve_uid
+            && let Some(srv) = self.dicomweb_servers.get(self.selected_dicomweb).cloned()
+        {
+            let secret = if self.dicomweb_secret.trim().is_empty() {
+                None
+            } else {
+                Some(self.dicomweb_secret.clone())
+            };
+            let safe_uid: String = uid
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' })
+                .collect();
+            let dest_dir = crate::db::managed_studies_dir()
+                .join("pacs_retrieved")
+                .join(safe_uid);
+            let tx = self.pacs_tx.clone();
+            let ctx_c = ctx.clone();
+            self.pacs_busy = true;
+            self.pacs_status = Some(if es {
+                "Descargando estudio por WADO-RS…".to_string()
+            } else {
+                "Retrieving study via WADO-RS…".to_string()
+            });
+            std::thread::spawn(move || {
+                let res = crate::net::dicomweb::wado_retrieve_study(
+                    &srv,
+                    secret.as_deref(),
+                    &uid,
+                    &dest_dir,
+                )
+                .map(|n| (dest_dir, n))
+                .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(crate::app::PacsBgResult::Wado(res));
+                ctx_c.request_repaint();
+            });
+        }
+    }
+
+    fn draw_dimse_tab(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, es: bool) {
+        if !self.pacs_nodes.is_empty() && self.selected_pacs_node >= self.pacs_nodes.len() {
+            self.selected_pacs_node = 0;
+        }
+        ui.horizontal(|ui| {
+            ui.label(if es { "Nodo PACS:" } else { "PACS Node:" });
+            let cur_label = self
+                .pacs_nodes
+                .get(self.selected_pacs_node)
+                .map(|n| format!("{} ({}@{}:{})", n.name, n.ae_title, n.host, n.port))
+                .unwrap_or_else(|| {
+                    if es {
+                        "Ninguno configurado".to_string()
+                    } else {
+                        "None configured".to_string()
+                    }
+                });
+            egui::ComboBox::from_id_salt("pacs_node_combo")
+                .selected_text(cur_label)
+                .width(300.0)
+                .show_ui(ui, |ui| {
+                    for (i, n) in self.pacs_nodes.iter().enumerate() {
+                        let lbl = format!("{} ({}@{}:{})", n.name, n.ae_title, n.host, n.port);
+                        ui.selectable_value(&mut self.selected_pacs_node, i, lbl);
+                    }
+                });
+            let can_echo = !self.pacs_busy && !self.pacs_nodes.is_empty();
+            if ui
+                .add_enabled(
+                    can_echo,
+                    egui::Button::new(if es {
+                        "Probar (C-ECHO)"
+                    } else {
+                        "Test (C-ECHO)"
+                    }),
+                )
+                .clicked()
+            {
+                let node = self.pacs_nodes[self.selected_pacs_node].clone();
+                let tx = self.pacs_tx.clone();
+                let ctx_c = ctx.clone();
+                self.pacs_busy = true;
+                self.pacs_status = None;
+                std::thread::spawn(move || {
+                    let res = crate::net::dimse::c_echo(&node).map_err(|e| format!("{e:#}"));
+                    let _ = tx.send(crate::app::PacsBgResult::Echo(res));
+                    ctx_c.request_repaint();
+                });
+            }
+            if !self.pacs_nodes.is_empty()
+                && ui
+                    .button(if es { "Eliminar" } else { "Remove" })
+                    .clicked()
+            {
+                self.pacs_nodes.remove(self.selected_pacs_node);
+                if self.selected_pacs_node >= self.pacs_nodes.len() {
+                    self.selected_pacs_node = self.pacs_nodes.len().saturating_sub(1);
+                }
+                if let Some(ref db) = self.db {
+                    crate::settings::AppSettings::new(db).set_pacs_nodes(&self.pacs_nodes);
+                }
+            }
+        });
+
+        ui.separator();
+        ui.label(
+            egui::RichText::new(if es {
+                "Agregar nodo DICOM (DIMSE)"
+            } else {
+                "Add DICOM (DIMSE) Node"
+            })
+            .strong(),
+        );
+        ui.horizontal(|ui| {
+            ui.label(if es { "Nombre:" } else { "Name:" });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_pacs_name)
+                    .desired_width(110.0)
+                    .hint_text("Local PACS"),
+            );
+            ui.label("Called AE:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_pacs_ae)
+                    .desired_width(90.0)
+                    .hint_text("ORTHANC"),
+            );
+            ui.label("Local AE:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_pacs_local_ae).desired_width(90.0),
+            );
+        });
+        ui.horizontal(|ui| {
+            ui.label("Host:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_pacs_host)
+                    .desired_width(180.0)
+                    .hint_text("127.0.0.1"),
+            );
+            ui.label(if es { "Puerto:" } else { "Port:" });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.new_pacs_port).desired_width(60.0),
+            );
+            let port_ok = self.new_pacs_port.trim().parse::<u16>().ok().filter(|&p| p > 0);
+            let candidate = port_ok.map(|port| crate::net::PacsNode {
+                name: self.new_pacs_name.trim().to_string(),
+                ae_title: self.new_pacs_ae.trim().to_string(),
+                host: self.new_pacs_host.trim().to_string(),
+                port,
+                local_ae_title: self.new_pacs_local_ae.trim().to_string(),
+                use_tls: false,
+                retrieve_method: crate::net::RetrieveMethod::CMove,
+            });
+            let valid = candidate
+                .as_ref()
+                .is_some_and(|n| !n.name.is_empty() && n.is_valid());
+            if ui
+                .add_enabled(valid, egui::Button::new(if es { "Agregar" } else { "Add" }))
+                .clicked()
+                && let Some(node) = candidate
+            {
+                self.pacs_nodes.push(node);
+                self.selected_pacs_node = self.pacs_nodes.len() - 1;
+                self.new_pacs_name.clear();
+                self.new_pacs_ae.clear();
+                self.new_pacs_host.clear();
+                if let Some(ref db) = self.db {
+                    crate::settings::AppSettings::new(db).set_pacs_nodes(&self.pacs_nodes);
+                }
+            }
+        });
+    }
 }
 
 /// Opens `dir` in the system file manager (Explorer, Finder, or the desktop's own).

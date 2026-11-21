@@ -913,6 +913,15 @@ impl ViewerApp {
                         }
                     }
                     ui.separator();
+                    let pacs_lbl = match self.lang {
+                        crate::i18n::Lang::En => "PACS / DICOMweb Query & Retrieve…",
+                        crate::i18n::Lang::Es => "Consultar y Descargar PACS / DICOMweb…",
+                    };
+                    if ui.button(pacs_lbl).clicked() {
+                        self.show_pacs_modal = true;
+                        ui.close();
+                    }
+                    ui.separator();
                     if ui.button(tr.reset_viewport).clicked() {
                         let vp = self.active_cell_mut();
                         vp.reset_view();

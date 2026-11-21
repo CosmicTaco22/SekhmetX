@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.6] - 2026-11-21
+
+### Added
+- **Auto-apply Hanging Protocols on study open** (`src/app/mod.rs`, `src/app/browser.rs`): opening a study from the Library now automatically checks saved per-modality hanging protocols, sets the configured grid layout (`1×1`–`4×4`), assigns series across viewports, and applies Auto-MPR if enabled.
+- **Native DICOMweb & PACS Query/Retrieve client** (`src/net/dicomweb.rs`, `src/net/dimse.rs`, `src/settings.rs`, `src/app/modals.rs`, `src/app/browser.rs`, `src/ui/toolbar.rs`):
+  - **DICOMweb (QIDO-RS / WADO-RS)**: add and persist DICOMweb servers (with optional session-only Bearer/Basic token), search studies by patient/ID/modality/date via QIDO-RS, and download & open studies directly via WADO-RS `multipart/related`.
+  - **DICOM PACS (DIMSE C-ECHO)**: pure-Rust PS 3.8 DICOM Upper Layer `A-ASSOCIATE-RQ` / `C-ECHO-RQ` SCU connectivity test with round-trip latency measurement, plus persistent PACS node configuration in SQLite (no hardcoded servers or credentials).
+  - Accessible from the Database Library bar (**PACS / DICOMweb…**) and the View menu (**PACS / DICOMweb Query & Retrieve…** / **Consultar y Descargar PACS / DICOMweb…**).
+
 ## [0.7.5] - 2026-11-21
 
 ### Added

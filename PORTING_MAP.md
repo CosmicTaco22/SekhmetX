@@ -35,8 +35,8 @@ Lines count all IsiX code in the area, including headers and tests; Rust version
 
 | Area | Decision | RDicom | Source files / lines | In RDicom | Rust crates | Notes |
 |---|---|---|---|---|---|---|
-| **PACS networking: echo, query/retrieve, send, listener, TLS, worklist**<br>`network-pacs` | Port | not started | 184 / 38,534 | src/net/ (planned) | dicom-ul (dicom-rs), rustls |  |
-| **DICOMweb and WADO (QIDO/WADO/STOW, OAuth)**<br>`dicomweb` | Port | not started | 18 / 6,588 | — | reqwest |  |
+| **PACS networking: echo, query/retrieve, send, listener, TLS, worklist**<br>`network-pacs` | Port | started | 184 / 38,534 | src/net/mod.rs, src/net/dimse.rs, src/app/modals.rs | pure-Rust PS 3.8 TCP (C-ECHO SCU); dicom-ul/rustls (planned) |  |
+| **DICOMweb and WADO (QIDO/WADO/STOW, OAuth)**<br>`dicomweb` | Port | started | 18 / 6,588 | src/net/mod.rs, src/net/dicomweb.rs, src/app/modals.rs | ureq |  |
 | **MPR: orthogonal and oblique reslicing, thick slab MIP/MinIP**<br>`mpr` | Rebuild | started | 58 / 17,955 | src/volume.rs, src/app.rs | wgpu, rayon | In-place single-viewport 3D MPR (Axial/Coronal/Sagittal/Oblique 3D trackball rotation), hybrid multi-series (AX/COR/SAG) tri-planar resolution fusion, and Thick-Slab MIP/MinIP/Mean ray-marched projections. |
 | **PET-CT fusion and SUV**<br>`fusion-pet` | Port | started | 20 / 6,105 | src/imaging/suv.rs, src/imaging/fusion.rs, src/frame.rs, src/app/viewport.rs, src/ui/toolbar.rs | — | Ported SUVParameters, SUVComputation, PETSUVConversion, PETWindowing, SUVWindowScaling, FusionBlend, FusionComparison, PETBlendingTable, and ViewTransform.alphaTable with unit tests; wired SUV cursor/ROI readouts and LPS-aligned 2D PET-CT fusion overlay + toolbar popover. |
 | **Presentation states (GSPS), key images, structured reports**<br>`annotations-sr` | Port | started | 9 / 1,621 | src/imaging/sr.rs, src/db.rs (key_images), src/app/mod.rs (case report) | — | Key images + HTML case report export done; SR ContentSequence tree parser and GSPS PR reader groundwork added in src/imaging/sr.rs. |

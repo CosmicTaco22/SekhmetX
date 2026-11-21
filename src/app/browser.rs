@@ -1245,6 +1245,9 @@ impl ViewerApp {
                         self.start_scan(vec![dir]);
                     }
                 }
+                if ui.button("PACS / DICOMweb…").clicked() {
+                    self.show_pacs_modal = true;
+                }
             });
         });
         ui.add_space(4.0);
@@ -1842,12 +1845,16 @@ impl ViewerApp {
         if let Some(uid) = remove_uid {
             self.queue_remove_study(&uid);
         } else if let Some(si) = tile_study {
-            self.tile_study_series(si);
+            if !self.apply_hanging_protocol_for_study(si, None) {
+                self.tile_study_series(si);
+            }
             self.show_database_view = false;
         } else if let Some((si, ri)) = open_series {
-            self.active_viewport = 0;
-            self.assign_series_to_viewport(0, Some((si, ri)));
-            self.populate_unassigned_viewports();
+            if !self.apply_hanging_protocol_for_study(si, Some(ri)) {
+                self.active_viewport = 0;
+                self.assign_series_to_viewport(0, Some((si, ri)));
+                self.populate_unassigned_viewports();
+            }
             self.show_database_view = false;
         }
     }

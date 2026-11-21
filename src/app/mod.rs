@@ -387,6 +387,12 @@ impl ViewportCell {
     }
 }
 
+pub(crate) enum PacsBgResult {
+    Qido(Result<Vec<crate::net::StudyQueryResult>, String>),
+    Wado(Result<(PathBuf, usize), String>),
+    Echo(Result<u128, String>),
+}
+
 pub type SeriesPair = ((usize, usize), (usize, usize));
 type LeaderSyncInfo = (
     (usize, usize),
@@ -555,6 +561,27 @@ pub(crate) struct ViewerApp {
     pub(crate) new_hp_cols: usize,
     pub(crate) new_hp_auto_mpr: bool,
     pub(crate) roi_undo: Vec<((PathBuf, u32), Vec<Measure>)>,
+    pub(crate) show_pacs_modal: bool,
+    pub(crate) pacs_tab_dimse: bool,
+    pub(crate) pacs_nodes: Vec<crate::net::PacsNode>,
+    pub(crate) dicomweb_servers: Vec<crate::net::DicomWebServer>,
+    pub(crate) selected_dicomweb: usize,
+    pub(crate) selected_pacs_node: usize,
+    pub(crate) dicomweb_secret: String,
+    pub(crate) pacs_filter: crate::net::QueryFilter,
+    pub(crate) pacs_results: Vec<crate::net::StudyQueryResult>,
+    pub(crate) pacs_status: Option<String>,
+    pub(crate) pacs_busy: bool,
+    pub(crate) new_dw_name: String,
+    pub(crate) new_dw_url: String,
+    pub(crate) new_dw_auth: crate::net::DicomWebAuth,
+    pub(crate) new_pacs_name: String,
+    pub(crate) new_pacs_ae: String,
+    pub(crate) new_pacs_host: String,
+    pub(crate) new_pacs_port: String,
+    pub(crate) new_pacs_local_ae: String,
+    pub(crate) pacs_tx: std::sync::mpsc::Sender<PacsBgResult>,
+    pacs_rx: Receiver<PacsBgResult>,
     pub(crate) previous_crash_pending: bool,
     show_crash_modal: bool,
     show_first_run_notice: bool,
@@ -681,6 +708,15 @@ impl ViewerApp {
             .as_ref()
             .map(|s| s.hanging_protocols())
             .unwrap_or_default();
+        let saved_pacs_nodes = settings
+            .as_ref()
+            .map(|s| s.pacs_nodes())
+            .unwrap_or_default();
+        let saved_dicomweb_servers = settings
+            .as_ref()
+            .map(|s| s.dicomweb_servers())
+            .unwrap_or_default();
+        let (pacs_tx, pacs_rx) = std::sync::mpsc::channel();
         // "column,asc" e.g. "5,0" = by date, newest first. Default: patient name A→Z, as Horos.
         let saved_db_sort = db
             .as_ref()
@@ -839,6 +875,27 @@ impl ViewerApp {
             new_hp_cols: 2,
             new_hp_auto_mpr: true,
             roi_undo: Vec::new(),
+            show_pacs_modal: false,
+            pacs_tab_dimse: false,
+            pacs_nodes: saved_pacs_nodes,
+            dicomweb_servers: saved_dicomweb_servers,
+            selected_dicomweb: 0,
+            selected_pacs_node: 0,
+            dicomweb_secret: String::new(),
+            pacs_filter: crate::net::QueryFilter::default(),
+            pacs_results: Vec::new(),
+            pacs_status: None,
+            pacs_busy: false,
+            new_dw_name: String::new(),
+            new_dw_url: String::new(),
+            new_dw_auth: crate::net::DicomWebAuth::None,
+            new_pacs_name: String::new(),
+            new_pacs_ae: String::new(),
+            new_pacs_host: String::new(),
+            new_pacs_port: "4242".to_string(),
+            new_pacs_local_ae: "SEKHMETX".to_string(),
+            pacs_tx,
+            pacs_rx,
             previous_crash_pending: false,
             show_crash_modal: false,
             show_first_run_notice: !first_run_ack,
@@ -1350,6 +1407,59 @@ impl ViewerApp {
         });
     }
 
+    /// Applies a matching saved `HangingProtocol` (if configured for the study's primary
+    /// modality) when opening study `si`, optionally placing `lead_series` in viewport 0.
+    pub(crate) fn apply_hanging_protocol_for_study(
+        &mut self,
+        si: usize,
+        lead_series: Option<usize>,
+    ) -> bool {
+        let Some((modality, series_order)) = self.index.as_ref().and_then(|idx| {
+            let st = idx.studies.get(si)?;
+            let lead = lead_series.and_then(|r| st.series.get(r));
+            let primary = lead.or_else(|| {
+                st.series
+                    .iter()
+                    .max_by_key(|s| s.slices.len())
+            })?;
+            let mut order: Vec<usize> = (0..st.series.len()).collect();
+            if let Some(lr) = lead_series
+                && let Some(pos) = order.iter().position(|&i| i == lr)
+            {
+                order.remove(pos);
+                order.insert(0, lr);
+            }
+            Some((primary.modality.clone(), order))
+        }) else {
+            return false;
+        };
+
+        let Some(hp) = self
+            .hanging_protocols
+            .iter()
+            .find(|p| p.modality.eq_ignore_ascii_case(&modality))
+            .cloned()
+        else {
+            return false;
+        };
+
+        self.tiling = ViewportTiling::new(hp.rows.clamp(1, 4), hp.cols.clamp(1, 4));
+        let count = self.tiling.cell_count();
+        self.active_viewport = 0;
+        for vp_idx in 0..count {
+            if let Some(&ri) = series_order.get(vp_idx) {
+                self.assign_series_to_viewport(vp_idx, Some((si, ri)));
+                if !hp.auto_mpr {
+                    self.viewports[vp_idx].mpr_enabled = false;
+                    self.viewports[vp_idx].mpr_auto_applied = true;
+                }
+            } else {
+                self.assign_series_to_viewport(vp_idx, None);
+            }
+        }
+        true
+    }
+
     /// Computes total 3D volume (cm³) of closed ROIs drawn across slices of the active series.
     pub(crate) fn compute_active_series_roi_volume(&mut self) {
         let es = self.lang == crate::i18n::Lang::Es;
@@ -1516,6 +1626,60 @@ impl ViewerApp {
                     Err(e) => crate::updater::UpdateStatus::Error(format!("{e:#}")),
                 };
             }
+
+        while let Ok(ev) = self.pacs_rx.try_recv() {
+            self.pacs_busy = false;
+            let es = self.lang == crate::i18n::Lang::Es;
+            match ev {
+                PacsBgResult::Qido(Ok(studies)) => {
+                    let n = studies.len();
+                    self.pacs_results = studies;
+                    self.pacs_status = Some(if es {
+                        format!("{n} estudio(s) encontrados.")
+                    } else {
+                        format!("Found {n} study(ies).")
+                    });
+                }
+                PacsBgResult::Qido(Err(e)) => {
+                    self.pacs_status = Some(if es {
+                        format!("Error QIDO-RS: {e}")
+                    } else {
+                        format!("QIDO-RS error: {e}")
+                    });
+                }
+                PacsBgResult::Wado(Ok((dir, count))) => {
+                    self.pacs_status = Some(if es {
+                        format!("{count} archivos descargados. Abriendo estudio…")
+                    } else {
+                        format!("Retrieved {count} file(s). Opening study…")
+                    });
+                    self.show_pacs_modal = false;
+                    self.show_database_view = false;
+                    self.start_scan(vec![dir]);
+                }
+                PacsBgResult::Wado(Err(e)) => {
+                    self.pacs_status = Some(if es {
+                        format!("Error WADO-RS: {e}")
+                    } else {
+                        format!("WADO-RS error: {e}")
+                    });
+                }
+                PacsBgResult::Echo(Ok(ms)) => {
+                    self.pacs_status = Some(if es {
+                        format!("C-ECHO exitoso ({ms} ms).")
+                    } else {
+                        format!("C-ECHO succeeded ({ms} ms).")
+                    });
+                }
+                PacsBgResult::Echo(Err(e)) => {
+                    self.pacs_status = Some(if es {
+                        format!("Error C-ECHO: {e}")
+                    } else {
+                        format!("C-ECHO failed: {e}")
+                    });
+                }
+            }
+        }
 
         if let Some(scan) = &self.scan {
             match scan.rx.try_recv() {
@@ -2856,6 +3020,7 @@ impl eframe::App for ViewerApp {
         self.draw_force_mpr_modal(&ctx);
         self.draw_update_modal(&ctx);
         self.draw_settings_modal(&ctx);
+        self.draw_pacs_modal(&ctx);
         self.draw_cpr_window(&ctx);
         self.draw_calibrate_modal(&ctx);
         self.draw_remove_study_modal(&ctx);
