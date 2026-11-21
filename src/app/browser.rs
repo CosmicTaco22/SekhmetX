@@ -1276,6 +1276,44 @@ impl ViewerApp {
             }
         };
 
+        // Smart-album date helper (YYYYMMDD from UNIX epoch days, Howard Hinnant civil calendar).
+        let yyyymmdd_days_ago = |days_ago: i64| -> String {
+            let secs = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let z = (secs / 86_400) - days_ago + 719_468;
+            let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+            let doe = (z - era * 146_097) as u64;
+            let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+            let y = yoe as i64 + era * 400;
+            let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+            let mp = (5 * doy + 2) / 153;
+            let d = doy - (153 * mp + 2) / 5 + 1;
+            let m = if mp < 10 { mp + 3 } else { mp - 9 };
+            let year = y + i64::from(m <= 2);
+            format!("{year:04}{m:02}{d:02}")
+        };
+        let cut_today = yyyymmdd_days_ago(0);
+        let cut_7d = yyyymmdd_days_ago(7);
+        let cut_30d = yyyymmdd_days_ago(30);
+
+        let study_matches_album = |st: &crate::dicom_index::Study, code: &str| -> bool {
+            let digits: String = st.date.chars().filter(|c| c.is_ascii_digit()).collect();
+            match code {
+                "ALL" => true,
+                "TODAY" => digits.len() >= 8 && digits[..8] >= cut_today[..],
+                "LAST7" => digits.len() >= 8 && digits[..8] >= cut_7d[..],
+                "LAST30" => digits.len() >= 8 && digits[..8] >= cut_30d[..],
+                "KEYS" => st.series.iter().any(|se| {
+                    se.slices
+                        .iter()
+                        .any(|sl| self.key_images.contains(&(sl.path.clone(), sl.frame)))
+                }),
+                m => st.series.iter().any(|se| modality_matches(se, m)),
+            }
+        };
+
         let mut matching_studies: Vec<usize> = Vec::new();
         for (si, st) in index.studies.iter().enumerate() {
             let q_ok = query.is_empty()
@@ -1288,8 +1326,7 @@ impl ViewerApp {
                     se.description.to_ascii_lowercase().contains(&query)
                         || se.modality.to_ascii_lowercase().contains(&query)
                 });
-            let m_ok = mod_filter == "ALL"
-                || st.series.iter().any(|se| modality_matches(se, &mod_filter));
+            let m_ok = study_matches_album(st, &mod_filter);
             if q_ok && m_ok {
                 matching_studies.push(si);
             }
@@ -1388,6 +1425,63 @@ impl ViewerApp {
                                 Align2::LEFT_CENTER,
                                 label,
                                 FontId::proportional(13.0),
+                                fg,
+                            );
+                            ui.painter().text(
+                                pos2(rect.max.x - 10.0, rect.center().y),
+                                Align2::RIGHT_CENTER,
+                                cnt.to_string(),
+                                FontId::proportional(11.5),
+                                if selected { fg } else { theme::dim_text(ui) },
+                            );
+                            if resp.clicked() {
+                                self.browser_modality = code.to_string();
+                            }
+                        }
+                        ui.add_space(10.0);
+                        ui.label(
+                            egui::RichText::new(if es {
+                                "ÁLBUMES INTELIGENTES"
+                            } else {
+                                "SMART ALBUMS"
+                            })
+                            .size(10.0)
+                            .strong()
+                            .color(theme::dim_text(ui)),
+                        );
+                        ui.add_space(2.0);
+                        for (code, label) in [
+                            ("TODAY", if es { "Hoy" } else { "Today" }),
+                            ("LAST7", if es { "Últimos 7 días" } else { "Last 7 Days" }),
+                            ("LAST30", if es { "Últimos 30 días" } else { "Last 30 Days" }),
+                            ("KEYS", if es { "Imágenes clave" } else { "Key Images" }),
+                        ] {
+                            let cnt = index
+                                .studies
+                                .iter()
+                                .filter(|st| study_matches_album(st, code))
+                                .count();
+                            let selected = self.browser_modality == code;
+                            let (rect, resp) =
+                                ui.allocate_exact_size(vec2(162.0, 24.0), Sense::click());
+                            let fill = if selected {
+                                theme::accent()
+                            } else if resp.hovered() {
+                                ui.visuals().widgets.hovered.bg_fill.gamma_multiply(0.5)
+                            } else {
+                                Color32::TRANSPARENT
+                            };
+                            ui.painter().rect_filled(rect, 5.0, fill);
+                            let fg = if selected {
+                                Color32::WHITE
+                            } else {
+                                ui.visuals().text_color()
+                            };
+                            ui.painter().text(
+                                pos2(rect.min.x + 10.0, rect.center().y),
+                                Align2::LEFT_CENTER,
+                                label,
+                                FontId::proportional(12.5),
                                 fg,
                             );
                             ui.painter().text(

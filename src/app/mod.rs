@@ -393,6 +393,8 @@ pub(crate) enum PacsBgResult {
     Echo(Result<u128, String>),
     Find(Result<Vec<crate::net::StudyQueryResult>, String>),
     Store(Result<usize, String>),
+    Move(Result<u16, String>),
+    ScpReceived(PathBuf, usize),
 }
 
 pub type SeriesPair = ((usize, usize), (usize, usize));
@@ -582,10 +584,16 @@ pub(crate) struct ViewerApp {
     pub(crate) new_pacs_host: String,
     pub(crate) new_pacs_port: String,
     pub(crate) new_pacs_local_ae: String,
+    pub(crate) new_pacs_tls: bool,
     pub(crate) pacs_tx: std::sync::mpsc::Sender<PacsBgResult>,
     pacs_rx: Receiver<PacsBgResult>,
+    pub(crate) scp_port: String,
+    pub(crate) scp_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub(crate) report_template: String,
     pub(crate) custom_shortcuts: HashMap<String, String>,
+    pub(crate) show_detached_library: bool,
+    pub(crate) meta_edit_field: usize,
+    pub(crate) meta_edit_value: String,
     pub(crate) previous_crash_pending: bool,
     show_crash_modal: bool,
     show_first_run_notice: bool,
@@ -906,10 +914,16 @@ impl ViewerApp {
             new_pacs_host: String::new(),
             new_pacs_port: "4242".to_string(),
             new_pacs_local_ae: "SEKHMETX".to_string(),
+            new_pacs_tls: false,
             pacs_tx,
             pacs_rx,
+            scp_port: "11112".to_string(),
+            scp_stop: None,
             report_template: saved_report_template,
             custom_shortcuts: saved_custom_shortcuts,
+            show_detached_library: false,
+            meta_edit_field: 0,
+            meta_edit_value: String::new(),
             previous_crash_pending: false,
             show_crash_modal: false,
             show_first_run_notice: !first_run_ack,
@@ -1687,6 +1701,386 @@ impl ViewerApp {
         }
     }
 
+    /// Runs 2D Region Growing seeded at the last Point/Probe ROI on the active slice
+    /// (or image center if none), creating a closed `Measure::Polygon` ROI.
+    pub(crate) fn grow_region_at_active_point(&mut self) {
+        let es = self.lang == crate::i18n::Lang::Es;
+        let vp = self.active_viewport;
+        let Some(frame) = self.viewport_frame(vp).cloned() else {
+            return;
+        };
+        let Some(key) = self.viewport_measure_key(vp) else {
+            return;
+        };
+        let seed = self
+            .measures
+            .get(&key)
+            .and_then(|list| {
+                list.iter().rev().find_map(|m| match m {
+                    Measure::Point(p) | Measure::Arrow { tip: p, .. } => Some(*p),
+                    _ => None,
+                })
+            });
+        let Some(seed_pt) = seed else {
+            self.message = Some(if es {
+                "Coloque primero un Punto/Sonda sobre la lesión y vuelva a ejecutar Crecer Región.".into()
+            } else {
+                "Place a Point/Probe ROI on the lesion first, then run Grow Region.".into()
+            });
+            return;
+        };
+        let sx = (seed_pt.x.round() as isize).clamp(0, frame.width as isize - 1) as usize;
+        let sy = (seed_pt.y.round() as isize).clamp(0, frame.height as isize - 1) as usize;
+        let win = self.effective_window(vp, &frame);
+        let tol = (win.width * 0.12).clamp(20.0, 180.0);
+        let poly = crate::roi::grow_region_polygon(&frame, sx, sy, tol);
+        if poly.len() < 3 {
+            self.message = Some(if es {
+                "Región demasiado pequeña para generar contorno.".into()
+            } else {
+                "Grown region was too small to form a contour.".into()
+            });
+            return;
+        }
+        let pts: Vec<Pos2> = poly.into_iter().map(|(x, y)| pos2(x, y)).collect();
+        self.push_roi_undo(&key);
+        self.measures
+            .entry(key.clone())
+            .or_default()
+            .push(Measure::Polygon(pts));
+        self.persist_measures_for(&key);
+        self.message = Some(if es {
+            format!("Región segmentada (±{tol:.0} {})", frame.value_unit)
+        } else {
+            format!("Region grown (±{tol:.0} {})", frame.value_unit)
+        });
+    }
+
+    /// Linearly interpolates closed ROIs across intermediate empty slices of the active series.
+    pub(crate) fn interpolate_active_series_rois(&mut self) {
+        let es = self.lang == crate::i18n::Lang::Es;
+        let Some((si, ri)) = self.active_cell().selected else {
+            return;
+        };
+        let Some(series) = self
+            .index
+            .as_ref()
+            .and_then(|idx| idx.studies.get(si))
+            .and_then(|st| st.series.get(ri))
+            .cloned()
+        else {
+            return;
+        };
+        let measure_to_poly = |m: &Measure| -> Option<Vec<(f32, f32)>> {
+            match m {
+                Measure::Oval(a, b) => {
+                    let cx = (a.x + b.x) * 0.5;
+                    let cy = (a.y + b.y) * 0.5;
+                    let rx = (b.x - a.x).abs() * 0.5;
+                    let ry = (b.y - a.y).abs() * 0.5;
+                    Some(
+                        (0..32)
+                            .map(|k| {
+                                let t = (k as f32 / 32.0) * std::f32::consts::TAU;
+                                (cx + rx * t.cos(), cy + ry * t.sin())
+                            })
+                            .collect(),
+                    )
+                }
+                Measure::Rect(a, b) => Some(vec![(a.x, a.y), (b.x, a.y), (b.x, b.y), (a.x, b.y)]),
+                Measure::Polygon(pts) | Measure::Pencil(pts) if pts.len() >= 3 => {
+                    Some(pts.iter().map(|p| (p.x, p.y)).collect())
+                }
+                _ => None,
+            }
+        };
+
+        let mut annotated: Vec<(usize, Vec<(f32, f32)>)> = Vec::new();
+        for (idx, sl) in series.slices.iter().enumerate() {
+            let key = (sl.path.clone(), sl.frame);
+            if let Some(list) = self.measures.get(&key)
+                && let Some(poly) = list.iter().rev().find_map(measure_to_poly)
+            {
+                annotated.push((idx, poly));
+            }
+        }
+        if annotated.len() < 2 {
+            self.message = Some(if es {
+                "Dibuje una ROI cerrada en al menos dos cortes distintos para interpolar.".into()
+            } else {
+                "Draw a closed ROI on at least two separate slices to interpolate.".into()
+            });
+            return;
+        }
+        let mut added = 0usize;
+        for w in annotated.windows(2) {
+            let (i0, ref p0) = w[0];
+            let (i1, ref p1) = w[1];
+            if i1 <= i0 + 1 {
+                continue;
+            }
+            let span = (i1 - i0) as f32;
+            for (mid, sl) in series.slices.iter().enumerate().take(i1).skip(i0 + 1) {
+                let t = (mid - i0) as f32 / span;
+                let interp = crate::roi::interpolate_polygon(p0, p1, t);
+                if interp.len() >= 3 {
+                    let key = (sl.path.clone(), sl.frame);
+                    let pts: Vec<Pos2> = interp.into_iter().map(|(x, y)| pos2(x, y)).collect();
+                    self.measures
+                        .entry(key.clone())
+                        .or_default()
+                        .push(Measure::Polygon(pts));
+                    self.persist_measures_for(&key);
+                    added += 1;
+                }
+            }
+        }
+        self.message = Some(if es {
+            format!("ROIs interpoladas en {added} corte(s) intermedio(s).")
+        } else {
+            format!("Interpolated ROIs across {added} intermediate slice(s).")
+        });
+    }
+
+    /// Exports all ROI measurements in the active study to a CSV spreadsheet.
+    pub(crate) fn export_active_rois_csv(&mut self) {
+        let es = self.lang == crate::i18n::Lang::Es;
+        let Some((si, _)) = self.active_cell().selected else {
+            return;
+        };
+        let Some(study) = self.study_at(si).cloned() else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("CSV Spreadsheet", &["csv"])
+            .set_file_name("rois.csv")
+            .save_file()
+        else {
+            return;
+        };
+        let mut csv = String::from(
+            "Series,Slice,Type,Length_or_Perim_cm,Area_cm2,Mean,SD,Min,Max,Unit\n",
+        );
+        let mut rows = 0usize;
+        for (ri, se) in study.series.iter().enumerate() {
+            let s_label = series_label(se).replace(',', ";");
+            for (sl_idx, sl) in se.slices.iter().enumerate() {
+                let key = (sl.path.clone(), sl.frame);
+                let Some(list) = self.measures.get(&key) else {
+                    continue;
+                };
+                let Ok(frame) = crate::frame::load_frame(&sl.path, sl.frame) else {
+                    continue;
+                };
+                let sp = self
+                    .series_spacing_override
+                    .get(&(si, ri))
+                    .copied()
+                    .or(frame.spacing);
+                for m in list {
+                    let (kind_name, len_s, area_s, stats) = match m {
+                        Measure::Length(a, b) => {
+                            let ev = crate::roi::evaluate_length_with_spacing(
+                                &frame,
+                                crate::roi::RoiPoint::new(a.x as f64, a.y as f64),
+                                crate::roi::RoiPoint::new(b.x as f64, b.y as f64),
+                                sp,
+                            );
+                            (
+                                "Length",
+                                ev.length_cm_or_px.map(|v| format!("{v:.3}")).unwrap_or_default(),
+                                String::new(),
+                                None,
+                            )
+                        }
+                        Measure::Oval(a, b) => {
+                            let cx = (a.x + b.x) * 0.5;
+                            let cy = (a.y + b.y) * 0.5;
+                            let rx = (b.x - a.x).abs() * 0.5;
+                            let ry = (b.y - a.y).abs() * 0.5;
+                            let pts: Vec<_> = (0..48)
+                                .map(|k| {
+                                    let t = (k as f32 / 48.0) * std::f32::consts::TAU;
+                                    crate::roi::RoiPoint::new(
+                                        (cx + rx * t.cos()) as f64,
+                                        (cy + ry * t.sin()) as f64,
+                                    )
+                                })
+                                .collect();
+                            let ev = crate::roi::evaluate_region_with_spacing(
+                                &frame,
+                                crate::roi::RoiKind::Oval,
+                                &pts,
+                                None,
+                                sp,
+                            );
+                            (
+                                "Oval",
+                                ev.length_cm_or_px.map(|v| format!("{v:.3}")).unwrap_or_default(),
+                                ev.area_cm2_or_px2.map(|v| format!("{v:.3}")).unwrap_or_default(),
+                                ev.stats,
+                            )
+                        }
+                        Measure::Rect(a, b) => {
+                            let pts = vec![
+                                crate::roi::RoiPoint::new(a.x as f64, a.y as f64),
+                                crate::roi::RoiPoint::new(b.x as f64, a.y as f64),
+                                crate::roi::RoiPoint::new(b.x as f64, b.y as f64),
+                                crate::roi::RoiPoint::new(a.x as f64, b.y as f64),
+                            ];
+                            let ev = crate::roi::evaluate_region_with_spacing(
+                                &frame,
+                                crate::roi::RoiKind::Rectangle,
+                                &pts,
+                                None,
+                                sp,
+                            );
+                            (
+                                "Rect",
+                                ev.length_cm_or_px.map(|v| format!("{v:.3}")).unwrap_or_default(),
+                                ev.area_cm2_or_px2.map(|v| format!("{v:.3}")).unwrap_or_default(),
+                                ev.stats,
+                            )
+                        }
+                        Measure::Polygon(pts) | Measure::Pencil(pts) if pts.len() >= 3 => {
+                            let rpts: Vec<_> = pts
+                                .iter()
+                                .map(|p| crate::roi::RoiPoint::new(p.x as f64, p.y as f64))
+                                .collect();
+                            let ev = crate::roi::evaluate_region_with_spacing(
+                                &frame,
+                                crate::roi::RoiKind::ClosedPolygon,
+                                &rpts,
+                                None,
+                                sp,
+                            );
+                            (
+                                "Polygon",
+                                ev.length_cm_or_px.map(|v| format!("{v:.3}")).unwrap_or_default(),
+                                ev.area_cm2_or_px2.map(|v| format!("{v:.3}")).unwrap_or_default(),
+                                ev.stats,
+                            )
+                        }
+                        _ => continue,
+                    };
+                    let (mean_s, sd_s, min_s, max_s) = if let Some(s) = stats {
+                        (
+                            format!("{:.2}", s.mean),
+                            format!("{:.2}", s.deviation),
+                            format!("{:.2}", s.minimum),
+                            format!("{:.2}", s.maximum),
+                        )
+                    } else {
+                        (String::new(), String::new(), String::new(), String::new())
+                    };
+                    let unit = if frame.suv_factor.is_some() {
+                        "SUV"
+                    } else {
+                        frame.value_unit
+                    };
+                    csv.push_str(&format!(
+                        "\"{s_label}\",{},{kind_name},{len_s},{area_s},{mean_s},{sd_s},{min_s},{max_s},{unit}\n",
+                        sl_idx + 1
+                    ));
+                    rows += 1;
+                }
+            }
+        }
+        match std::fs::write(&path, csv) {
+            Ok(()) => {
+                self.message = Some(if es {
+                    format!("Exportadas {rows} ROI(s) a CSV.")
+                } else {
+                    format!("Exported {rows} ROI(s) to CSV.")
+                });
+            }
+            Err(e) => {
+                self.message = Some(format!("CSV export failed: {e}"));
+            }
+        }
+    }
+
+    /// Exports the active series as an `.mp4` (via `ffmpeg` if installed) or pure-Rust `.avi` movie.
+    pub(crate) fn export_active_series_video(&mut self) {
+        let es = self.lang == crate::i18n::Lang::Es;
+        let vp_idx = self.active_viewport;
+        let Some(series) = self.viewport_series(vp_idx).cloned() else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Video (.mp4 / .avi)", &["mp4", "avi"])
+            .set_file_name("series.mp4")
+            .save_file()
+        else {
+            return;
+        };
+        let vp = &self.viewports[vp_idx];
+        match crate::export::export_series_video(
+            &series.slices,
+            vp.window,
+            vp.effective_invert(),
+            &vp.clut_name,
+            vp.convolution_idx,
+            self.fps,
+            &path,
+        ) {
+            Ok(n) => {
+                self.message = Some(if es {
+                    format!("Video exportado ({n} fotogramas).")
+                } else {
+                    format!("Exported video ({n} frames).")
+                });
+            }
+            Err(e) => {
+                self.message = Some(format!("Video export failed: {e}"));
+            }
+        }
+    }
+
+    /// Detects 4D temporal phases (repeated slice positions across time/cardiac phases) in the
+    /// active series. Returns `Some((num_phases, current_phase_idx, slices_per_phase))`.
+    pub(crate) fn active_series_4d_phases(&self) -> Option<(usize, usize, usize)> {
+        let vp = self.active_viewport;
+        let series = self.viewport_series(vp)?;
+        let total = series.slices.len();
+        if total < 4 {
+            return None;
+        }
+        // Count how many slices share the first slice's Z/position within 0.25 mm.
+        let p0 = series.slices[0].position?;
+        let mut matches = 0usize;
+        for sl in &series.slices {
+            if let Some(p) = sl.position {
+                let d2 = (p[0] - p0[0]).powi(2) + (p[1] - p0[1]).powi(2) + (p[2] - p0[2]).powi(2);
+                if d2 <= 0.25 * 0.25 {
+                    matches += 1;
+                }
+            }
+        }
+        if matches < 2 || !total.is_multiple_of(matches) {
+            return None;
+        }
+        let slices_per_phase = total / matches;
+        if slices_per_phase == 0 {
+            return None;
+        }
+        let cur_slice = self.viewports[vp].slice.min(total - 1);
+        let cur_phase = (cur_slice / slices_per_phase).min(matches - 1);
+        Some((matches, cur_phase, slices_per_phase))
+    }
+
+    /// Steps the active viewport's 4D temporal phase by `delta` while preserving anatomical Z slice.
+    pub(crate) fn step_active_4d_phase(&mut self, delta: isize) {
+        let Some((num_phases, cur_phase, per_phase)) = self.active_series_4d_phases() else {
+            return;
+        };
+        let vp = self.active_viewport;
+        let cur_z = self.viewports[vp].slice % per_phase;
+        let next_phase = ((cur_phase as isize + delta).rem_euclid(num_phases as isize)) as usize;
+        let target_slice = next_phase * per_phase + cur_z;
+        self.set_viewport_slice(vp, target_slice as isize, true);
+    }
+
     /// Applies a matching saved `HangingProtocol` (if configured for the study's primary
     /// modality) when opening study `si`, optionally placing `lead_series` in viewport 0.
     pub(crate) fn apply_hanging_protocol_for_study(
@@ -1987,6 +2381,29 @@ impl ViewerApp {
                     } else {
                         format!("Send failed: {e}")
                     });
+                }
+                PacsBgResult::Move(Ok(_)) => {
+                    self.pacs_status = Some(if es {
+                        "C-MOVE completado. Revise los archivos recibidos.".into()
+                    } else {
+                        "C-MOVE completed. Check received study.".into()
+                    });
+                }
+                PacsBgResult::Move(Err(e)) => {
+                    self.pacs_status = Some(if es {
+                        format!("Error C-MOVE: {e}")
+                    } else {
+                        format!("C-MOVE failed: {e}")
+                    });
+                }
+                PacsBgResult::ScpReceived(dir, count) => {
+                    self.pacs_status = Some(if es {
+                        format!("Recibidos {count} archivo(s) DICOM por C-STORE SCP. Abriendo…")
+                    } else {
+                        format!("Received {count} DICOM file(s) via C-STORE SCP. Opening…")
+                    });
+                    self.show_database_view = false;
+                    self.start_scan(vec![dir]);
                 }
             }
         }
@@ -3396,6 +3813,30 @@ impl eframe::App for ViewerApp {
         self.draw_vr_tf_editor(&ctx);
         self.draw_crash_modal(&ctx);
         self.draw_first_run_notice_modal(&ctx);
+
+        if self.show_detached_library {
+            let es = self.lang == crate::i18n::Lang::Es;
+            let mut keep_open = true;
+            ctx.show_viewport_immediate(
+                egui::ViewportId::from_hash_of("sekhmetx_detached_library"),
+                egui::ViewportBuilder::default()
+                    .with_title(if es {
+                        "SekhmetX — Biblioteca (Multi-Monitor)"
+                    } else {
+                        "SekhmetX — Library (Multi-Monitor)"
+                    })
+                    .with_inner_size([1080.0, 680.0]),
+                |vp_ui, _class| {
+                    if vp_ui.ctx().input(|i| i.viewport().close_requested()) {
+                        keep_open = false;
+                    }
+                    egui::CentralPanel::default().show(vp_ui, |ui| {
+                        self.database_view(ui);
+                    });
+                },
+            );
+            self.show_detached_library = keep_open;
+        }
     }
 }
 

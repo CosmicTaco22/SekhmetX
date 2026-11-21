@@ -2229,25 +2229,143 @@ impl ViewerApp {
         });
 
         if !self.pacs_results.is_empty() {
+            let mut move_uid: Option<String> = None;
             egui::ScrollArea::vertical()
                 .id_salt("dimse_results_scroll")
                 .max_height(130.0)
                 .show(ui, |ui| {
                     for st in &self.pacs_results {
-                        ui.label(format!(
-                            "{}  |  {}  |  {}  |  {}",
-                            if st.patient_name.is_empty() {
-                                "—"
-                            } else {
-                                &st.patient_name
-                            },
-                            st.study_date,
-                            st.modalities,
-                            st.description
-                        ));
+                        ui.horizontal(|ui| {
+                            ui.label(format!(
+                                "{}  |  {}  |  {}  |  {}",
+                                if st.patient_name.is_empty() {
+                                    "—"
+                                } else {
+                                    &st.patient_name
+                                },
+                                st.study_date,
+                                st.modalities,
+                                st.description
+                            ));
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui
+                                        .add_enabled(
+                                            !self.pacs_busy && !self.pacs_nodes.is_empty(),
+                                            egui::Button::new(if es {
+                                                "Traer (C-MOVE)"
+                                            } else {
+                                                "Retrieve (C-MOVE)"
+                                            }),
+                                        )
+                                        .clicked()
+                                    {
+                                        move_uid = Some(st.study_uid.clone());
+                                    }
+                                },
+                            );
+                        });
                     }
                 });
+            if let Some(uid) = move_uid
+                && let Some(node) = self.pacs_nodes.get(self.selected_pacs_node).cloned()
+            {
+                let dest_ae = node.local_ae_title.clone();
+                let tx = self.pacs_tx.clone();
+                let ctx_c = ctx.clone();
+                self.pacs_busy = true;
+                self.pacs_status = Some(if es {
+                    "Solicitando estudio por C-MOVE…".to_string()
+                } else {
+                    "Requesting study via C-MOVE…".to_string()
+                });
+                std::thread::spawn(move || {
+                    let res = crate::net::dimse::c_move_study(&node, &uid, &dest_ae)
+                        .map_err(|e| format!("{e:#}"));
+                    let _ = tx.send(crate::app::PacsBgResult::Move(res));
+                    ctx_c.request_repaint();
+                });
+            }
         }
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            let listening = self.scp_stop.is_some();
+            ui.label(if es {
+                "Receptor local C-STORE SCP (puerto):"
+            } else {
+                "Local C-STORE SCP Receiver (port):"
+            });
+            ui.add_enabled(
+                !listening,
+                egui::TextEdit::singleline(&mut self.scp_port).desired_width(60.0),
+            );
+            if listening {
+                if ui
+                    .button(if es { "Detener receptor" } else { "Stop Listener" })
+                    .clicked()
+                {
+                    if let Some(flag) = self.scp_stop.take() {
+                        flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    self.pacs_status = Some(if es {
+                        "Receptor C-STORE detenido.".into()
+                    } else {
+                        "C-STORE listener stopped.".into()
+                    });
+                }
+            } else if let Ok(port) = self.scp_port.trim().parse::<u16>()
+                && port > 0
+                && ui
+                    .button(if es { "Iniciar receptor" } else { "Start Listener" })
+                    .clicked()
+            {
+                match std::net::TcpListener::bind(("0.0.0.0", port)) {
+                    Ok(listener) => {
+                        let _ = listener.set_nonblocking(true);
+                        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        self.scp_stop = Some(stop.clone());
+                        let tx = self.pacs_tx.clone();
+                        let ctx_c = ctx.clone();
+                        let base_dir = crate::db::managed_studies_dir().join("pacs_scp_incoming");
+                        self.pacs_status = Some(if es {
+                            format!("Escuchando C-STORE SCP en puerto {port}…")
+                        } else {
+                            format!("Listening for C-STORE SCP on port {port}…")
+                        });
+                        std::thread::spawn(move || {
+                            let mut batch = 0usize;
+                            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                                match listener.accept() {
+                                    Ok((stream, _)) => {
+                                        let _ = stream.set_nonblocking(false);
+                                        batch += 1;
+                                        let dest = base_dir.join(format!("recv_{batch:04}"));
+                                        if let Ok(n) =
+                                            crate::net::dimse::handle_scp_connection(stream, &dest)
+                                            && n > 0
+                                        {
+                                            let _ = tx.send(
+                                                crate::app::PacsBgResult::ScpReceived(dest, n),
+                                            );
+                                            ctx_c.request_repaint();
+                                        }
+                                    }
+                                    Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                        std::thread::sleep(std::time::Duration::from_millis(120));
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        self.pacs_status = Some(format!("SCP bind error: {e}"));
+                    }
+                }
+            }
+        });
 
         ui.separator();
         ui.label(
@@ -2287,6 +2405,7 @@ impl ViewerApp {
             ui.add(
                 egui::TextEdit::singleline(&mut self.new_pacs_port).desired_width(60.0),
             );
+            ui.checkbox(&mut self.new_pacs_tls, "TLS");
             let port_ok = self.new_pacs_port.trim().parse::<u16>().ok().filter(|&p| p > 0);
             let candidate = port_ok.map(|port| crate::net::PacsNode {
                 name: self.new_pacs_name.trim().to_string(),
@@ -2294,7 +2413,7 @@ impl ViewerApp {
                 host: self.new_pacs_host.trim().to_string(),
                 port,
                 local_ae_title: self.new_pacs_local_ae.trim().to_string(),
-                use_tls: false,
+                use_tls: self.new_pacs_tls,
                 retrieve_method: crate::net::RetrieveMethod::CMove,
             });
             let valid = candidate

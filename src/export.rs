@@ -105,6 +105,213 @@ pub fn export_series_gif(
     Ok(count)
 }
 
+/// Writes an uncompressed 24-bit BGR RIFF AVI movie (zero external codecs/tools needed).
+pub fn write_avi_rgb24(out_path: &Path, width: u32, height: u32, fps: u32, frames_rgba: &[Vec<u8>]) -> Result<()> {
+    use std::io::Write;
+    let fps = fps.clamp(1, 60);
+    let n_frames = frames_rgba.len() as u32;
+    if n_frames == 0 || width == 0 || height == 0 {
+        anyhow::bail!("empty video");
+    }
+    let row_stride = (width * 3).div_ceil(4) * 4;
+    let frame_bytes = row_stride * height;
+    let usec_per_frame = 1_000_000 / fps;
+
+    // Build hdrl LIST
+    let mut avih = Vec::with_capacity(56);
+    avih.extend_from_slice(&usec_per_frame.to_le_bytes());
+    avih.extend_from_slice(&(frame_bytes * fps).to_le_bytes()); // max bytes/sec
+    avih.extend_from_slice(&0u32.to_le_bytes());
+    avih.extend_from_slice(&0x10u32.to_le_bytes()); // AVIF_HASINDEX
+    avih.extend_from_slice(&n_frames.to_le_bytes());
+    avih.extend_from_slice(&0u32.to_le_bytes());
+    avih.extend_from_slice(&1u32.to_le_bytes()); // 1 stream
+    avih.extend_from_slice(&frame_bytes.to_le_bytes());
+    avih.extend_from_slice(&width.to_le_bytes());
+    avih.extend_from_slice(&height.to_le_bytes());
+    avih.extend_from_slice(&[0u8; 16]);
+
+    let mut strh = Vec::with_capacity(56);
+    strh.extend_from_slice(b"vids");
+    strh.extend_from_slice(b"DIB ");
+    strh.extend_from_slice(&0u32.to_le_bytes());
+    strh.extend_from_slice(&0u32.to_le_bytes());
+    strh.extend_from_slice(&0u32.to_le_bytes());
+    strh.extend_from_slice(&1u32.to_le_bytes()); // scale
+    strh.extend_from_slice(&fps.to_le_bytes()); // rate
+    strh.extend_from_slice(&0u32.to_le_bytes());
+    strh.extend_from_slice(&n_frames.to_le_bytes());
+    strh.extend_from_slice(&frame_bytes.to_le_bytes());
+    strh.extend_from_slice(&0u32.to_le_bytes());
+    strh.extend_from_slice(&0u32.to_le_bytes());
+    strh.extend_from_slice(&[0u8; 8]); // rcFrame
+
+    let mut strf = Vec::with_capacity(40);
+    strf.extend_from_slice(&40u32.to_le_bytes());
+    strf.extend_from_slice(&(width as i32).to_le_bytes());
+    strf.extend_from_slice(&(height as i32).to_le_bytes());
+    strf.extend_from_slice(&1u16.to_le_bytes()); // planes
+    strf.extend_from_slice(&24u16.to_le_bytes()); // bpp
+    strf.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+    strf.extend_from_slice(&frame_bytes.to_le_bytes());
+    strf.extend_from_slice(&[0u8; 16]);
+
+    let mut strl = Vec::new();
+    strl.extend_from_slice(b"strl");
+    strl.extend_from_slice(b"strh");
+    strl.extend_from_slice(&(strh.len() as u32).to_le_bytes());
+    strl.extend_from_slice(&strh);
+    strl.extend_from_slice(b"strf");
+    strl.extend_from_slice(&(strf.len() as u32).to_le_bytes());
+    strl.extend_from_slice(&strf);
+
+    let mut hdrl = Vec::new();
+    hdrl.extend_from_slice(b"hdrl");
+    hdrl.extend_from_slice(b"avih");
+    hdrl.extend_from_slice(&(avih.len() as u32).to_le_bytes());
+    hdrl.extend_from_slice(&avih);
+    hdrl.extend_from_slice(b"LIST");
+    hdrl.extend_from_slice(&(strl.len() as u32).to_le_bytes());
+    hdrl.extend_from_slice(&strl);
+
+    let movi_data_len = 4 + n_frames * (8 + frame_bytes);
+    let idx1_len = n_frames * 16;
+    let riff_len = 4 + (8 + hdrl.len() as u32) + (8 + movi_data_len) + (8 + idx1_len);
+
+    let mut f = std::fs::File::create(out_path)
+        .with_context(|| format!("failed to create AVI {}", out_path.display()))?;
+    f.write_all(b"RIFF")?;
+    f.write_all(&riff_len.to_le_bytes())?;
+    f.write_all(b"AVI ")?;
+    f.write_all(b"LIST")?;
+    f.write_all(&(hdrl.len() as u32).to_le_bytes())?;
+    f.write_all(&hdrl)?;
+    f.write_all(b"LIST")?;
+    f.write_all(&movi_data_len.to_le_bytes())?;
+    f.write_all(b"movi")?;
+
+    let mut bgr_buf = vec![0u8; frame_bytes as usize];
+    for rgba in frames_rgba {
+        bgr_buf.fill(0);
+        for y in 0..height as usize {
+            let src_y = (height as usize - 1) - y; // BMP/AVI bottom-up
+            for x in 0..width as usize {
+                let s = (src_y * width as usize + x) * 4;
+                let d = y * row_stride as usize + x * 3;
+                if s + 2 < rgba.len() && d + 2 < bgr_buf.len() {
+                    bgr_buf[d] = rgba[s + 2];
+                    bgr_buf[d + 1] = rgba[s + 1];
+                    bgr_buf[d + 2] = rgba[s];
+                }
+            }
+        }
+        f.write_all(b"00db")?;
+        f.write_all(&frame_bytes.to_le_bytes())?;
+        f.write_all(&bgr_buf)?;
+    }
+
+    f.write_all(b"idx1")?;
+    f.write_all(&idx1_len.to_le_bytes())?;
+    let mut offset = 4u32;
+    for _ in 0..n_frames {
+        f.write_all(b"00db")?;
+        f.write_all(&0x10u32.to_le_bytes())?; // AVIIF_KEYFRAME
+        f.write_all(&offset.to_le_bytes())?;
+        f.write_all(&frame_bytes.to_le_bytes())?;
+        offset += 8 + frame_bytes;
+    }
+    Ok(())
+}
+
+/// Exports `slices` as an `.mp4` (via `ffmpeg` if installed on PATH) or pure-Rust `.avi` movie.
+pub fn export_series_video(
+    slices: &[SliceRef],
+    window: Option<Window>,
+    invert: bool,
+    clut_name: &str,
+    conv_idx: Option<usize>,
+    fps: f32,
+    out_path: &Path,
+) -> Result<usize> {
+    use image::RgbaImage;
+    let clut = ColourTableBook::table_named(clut_name);
+    let mut frames = Vec::new();
+    let mut dims: Option<(u32, u32)> = None;
+
+    for sref in slices {
+        let Ok(raw_frame) = load_frame(&sref.path, sref.frame) else {
+            continue;
+        };
+        let display_frame = conv_idx
+            .and_then(|i| FACTORY_CONVOLUTIONS.get(i))
+            .map(|k| raw_frame.with_convolution(&k.to_convolution()));
+        let src = display_frame.as_ref().unwrap_or(&raw_frame);
+        let w = window.unwrap_or_else(|| src.default_window());
+        let rgba = src.render_with_clut(w, invert != src.inverts, clut.as_ref());
+        let Some(img) = RgbaImage::from_raw(src.width, src.height, rgba) else {
+            continue;
+        };
+        let (tw, th) = if let Some(d) = dims {
+            d
+        } else {
+            let max_side = 512.0;
+            let (nw, nh) = if src.width > 512 || src.height > 512 {
+                let scale = max_side / src.width.max(src.height) as f32;
+                (
+                    (((src.width as f32 * scale).round() as u32) & !1).max(2),
+                    (((src.height as f32 * scale).round() as u32) & !1).max(2),
+                )
+            } else {
+                ((src.width & !1).max(2), (src.height & !1).max(2))
+            };
+            dims = Some((nw, nh));
+            (nw, nh)
+        };
+        let resized = if img.width() != tw || img.height() != th {
+            image::imageops::resize(&img, tw, th, image::imageops::FilterType::Triangle)
+        } else {
+            img
+        };
+        frames.push(resized.into_raw());
+    }
+    let Some((tw, th)) = dims else {
+        anyhow::bail!("no decodable frames to export");
+    };
+    let fps_u32 = fps.clamp(1.0, 60.0).round() as u32;
+    let is_mp4 = out_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("mp4"));
+    if is_mp4 {
+        let tmp = tempfile::TempDir::new()?;
+        let avi_tmp = tmp.path().join("tmp.avi");
+        write_avi_rgb24(&avi_tmp, tw, th, fps_u32, &frames)?;
+        let status = std::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-i",
+                &avi_tmp.to_string_lossy(),
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+                &out_path.to_string_lossy(),
+            ])
+            .status();
+        match status {
+            Ok(s) if s.success() => return Ok(frames.len()),
+            _ => {
+                // Fallback: save as .avi beside the requested path so export never fails without ffmpeg
+                let fallback = out_path.with_extension("avi");
+                write_avi_rgb24(&fallback, tw, th, fps_u32, &frames)?;
+                return Ok(frames.len());
+            }
+        }
+    }
+    write_avi_rgb24(out_path, tw, th, fps_u32, &frames)?;
+    Ok(frames.len())
+}
+
 /// Exports every slice in `slices` as sequentially numbered PNGs inside `out_dir`.
 pub fn export_series_png(
     slices: &[SliceRef],
@@ -516,5 +723,19 @@ mod tests {
             nested.element(tags::REFERENCED_SOP_INSTANCE_UID).unwrap().to_str().unwrap(),
             root_sop
         );
+    }
+
+    #[test]
+    fn write_avi_rgb24_produces_valid_riff_header() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("cine.avi");
+        let f0 = vec![128u8; 4 * 4 * 4];
+        let f1 = vec![200u8; 4 * 4 * 4];
+        write_avi_rgb24(&path, 4, 4, 15, &[f0, f1]).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"AVI ");
+        assert!(bytes.windows(4).any(|w| w == b"movi"));
+        assert!(bytes.windows(4).any(|w| w == b"idx1"));
     }
 }

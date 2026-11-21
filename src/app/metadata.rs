@@ -278,6 +278,49 @@ impl ViewerApp {
         }
 
         let needle = self.metadata_filter.trim().to_ascii_lowercase();
+        let edit_path = cache.path.clone();
+        let mut save_tag: Option<(dicom_core::Tag, dicom_core::VR, String)> = None;
+        if edit_path.is_file() {
+            const EDITABLE: [(&str, dicom_core::Tag, dicom_core::VR); 5] = [
+                ("StudyDescription", tags::STUDY_DESCRIPTION, dicom_core::VR::LO),
+                ("SeriesDescription", tags::SERIES_DESCRIPTION, dicom_core::VR::LO),
+                ("PatientName", tags::PATIENT_NAME, dicom_core::VR::PN),
+                ("AccessionNumber", tags::ACCESSION_NUMBER, dicom_core::VR::SH),
+                ("InstitutionName", tags::INSTITUTION_NAME, dicom_core::VR::LO),
+            ];
+            ui.collapsing(
+                if es {
+                    "Editar etiqueta DICOM"
+                } else {
+                    "Edit DICOM Tag"
+                },
+                |ui| {
+                    ui.horizontal(|ui| {
+                        let cur_idx = self.meta_edit_field.min(EDITABLE.len() - 1);
+                        egui::ComboBox::from_id_salt("meta_edit_tag_combo")
+                            .selected_text(EDITABLE[cur_idx].0)
+                            .width(140.0)
+                            .show_ui(ui, |ui| {
+                                for (i, (name, _, _)) in EDITABLE.iter().enumerate() {
+                                    ui.selectable_value(&mut self.meta_edit_field, i, *name);
+                                }
+                            });
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.meta_edit_value)
+                                .desired_width(140.0)
+                                .hint_text(if es { "Nuevo valor…" } else { "New value…" }),
+                        );
+                        if ui
+                            .button(if es { "Guardar" } else { "Save" })
+                            .clicked()
+                        {
+                            let (_, tag, vr) = EDITABLE[cur_idx];
+                            save_tag = Some((tag, vr, self.meta_edit_value.trim().to_string()));
+                        }
+                    });
+                },
+            );
+        }
         let filtered: Vec<&DicomTagEntry> = cache
             .entries
             .iter()
@@ -360,5 +403,30 @@ impl ViewerApp {
                         }
                     });
             });
+
+        if let Some((tag, vr, val)) = save_tag {
+            let res: Result<(), String> = (|| {
+                let mut obj = dicom_object::open_file(&edit_path).map_err(|e| e.to_string())?;
+                obj.put(dicom_core::DataElement::new(
+                    tag,
+                    vr,
+                    dicom_core::PrimitiveValue::from(val.as_str()),
+                ));
+                obj.write_to_file(&edit_path).map_err(|e| e.to_string())
+            })();
+            match res {
+                Ok(()) => {
+                    self.metadata_cache = None;
+                    self.message = Some(if es {
+                        "Etiqueta DICOM guardada en el archivo.".into()
+                    } else {
+                        "Saved DICOM tag to file.".into()
+                    });
+                }
+                Err(e) => {
+                    self.message = Some(format!("DICOM tag save failed: {e}"));
+                }
+            }
+        }
     }
 }

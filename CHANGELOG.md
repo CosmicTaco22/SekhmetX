@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] - 2026-11-21
+
+### Added
+- **Classic PACS Receive (`C-MOVE` SCU + local `C-STORE` SCP listener) & TLS config** (`src/net/dimse.rs`, `src/app/modals.rs`, `src/app/mod.rs`):
+  - Start/stop a built-in pure-Rust DICOM `C-STORE` SCP listener on any local port (default `11112`) that accepts incoming studies, writes Part-10 `.dcm` files, and opens them automatically.
+  - Added Study-Root `C-MOVE` retrieve button on `C-FIND` results, plus a `TLS` flag in the DIMSE PACS node editor.
+- **2D Region Growing, ROI Interpolation & CSV Export** (`src/roi/mod.rs`, `src/app/mod.rs`, `src/ui/toolbar.rs`):
+  - **ROI → Grow Region (from Point ROI)** (`Crecer Región`): 4-connected flood-fill segmentation around a placed Point/Probe ROI producing a closed polygon contour.
+  - **ROI → Interpolate ROIs Between Slices** (`Interpolar ROIs entre Cortes`): linearly interpolates closed ROIs across intermediate empty slices for fast 3D volumetry.
+  - **ROI → Export ROIs (.csv)…**: exports all study ROIs and statistics to a CSV spreadsheet.
+- **4D Dynamic / Cardiac Phase Controls** (`src/app/mod.rs`, `src/ui/toolbar.rs`): automatic detection of multi-phase 4D stacks sharing Z positions, with **4D Phase ◀ / ▶** stepping in the View menu preserving anatomical slice position.
+- **Library Smart Albums** (`src/app/browser.rs`): added **Today**, **Last 7 Days**, **Last 30 Days**, and **Key Images** smart albums in the Database Library sidebar.
+- **MP4 / AVI Video Export** (`src/export.rs`, `src/app/mod.rs`, `src/ui/toolbar.rs`): added **Export Series (MP4 / AVI Video)…** using `ffmpeg` (H.264 `.mp4`) when available, with a zero-dependency pure-Rust 24-bit RGB `.avi` fallback.
+- **Editable DICOM Metadata** (`src/app/metadata.rs`): inline **Edit DICOM Tag** panel inside the Metadata Inspector to update and save `StudyDescription`, `SeriesDescription`, `PatientName`, `AccessionNumber`, and `InstitutionName` directly to the `.dcm` file.
+- **Multi-Monitor Detached Library Window** (`src/app/mod.rs`, `src/ui/toolbar.rs`): **View → Detach Library Window (Multi-Monitor)** opens the Study Library in an independent OS window for dual-monitor setups.
+- **3-Plane Orthogonal MPR PET-CT Fusion** (`src/ui/toolbar.rs`, `src/app/viewport.rs`): toggling PET-CT Fusion while Orthogonal MPR is active now syncs the LPS-resliced PET overlay across all 3 orthogonal planes (Axial, Coronal, Sagittal) simultaneously.
+
 ## [0.8.0] - 2026-11-21
 
 ### Added

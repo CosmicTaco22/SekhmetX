@@ -573,6 +573,166 @@ pub fn compute_roi_volume_cm3(
     Some(vol_mm3 / 1000.0)
 }
 
+/// 2D Region Growing from `(seed_x, seed_y)` within `±tolerance` of the seed intensity.
+/// Returns a simplified closed boundary polygon (in image pixel coordinates) suitable
+/// for `Measure::Polygon`.
+pub fn grow_region_polygon(
+    frame: &Frame,
+    seed_x: usize,
+    seed_y: usize,
+    tolerance: f32,
+) -> Vec<(f32, f32)> {
+    let w = frame.width as usize;
+    let h = frame.height as usize;
+    if seed_x >= w || seed_y >= h || w == 0 || h == 0 {
+        return Vec::new();
+    }
+    let Pixels::Gray(gray) = &frame.pixels else {
+        return Vec::new();
+    };
+    let seed_val = gray[seed_y * w + seed_x];
+    if !seed_val.is_finite() {
+        return Vec::new();
+    }
+    let tol = tolerance.abs().max(1.0);
+    let lo = seed_val - tol;
+    let hi = seed_val + tol;
+
+    let mut visited = vec![false; w * h];
+    let mut queue = std::collections::VecDeque::new();
+    visited[seed_y * w + seed_x] = true;
+    queue.push_back((seed_x, seed_y));
+
+    let mut region = Vec::new();
+    const MAX_PIXELS: usize = 150_000;
+    while let Some((x, y)) = queue.pop_front() {
+        region.push((x, y));
+        if region.len() >= MAX_PIXELS {
+            break;
+        }
+        let neighbors = [
+            (x.wrapping_sub(1), y),
+            (x + 1, y),
+            (x, y.wrapping_sub(1)),
+            (x, y + 1),
+        ];
+        for (nx, ny) in neighbors {
+            if nx < w && ny < h {
+                let idx = ny * w + nx;
+                if !visited[idx] {
+                    let v = gray[idx];
+                    if v.is_finite() && v >= lo && v <= hi {
+                        visited[idx] = true;
+                        queue.push_back((nx, ny));
+                    }
+                }
+            }
+        }
+    }
+    if region.len() < 4 {
+        return Vec::new();
+    }
+
+    // Collect boundary pixels and bin them into 48 angular sectors around the centroid
+    // (taking the outermost boundary pixel per sector for a clean, non-self-intersecting contour).
+    let (mut cx, mut cy) = (0.0f64, 0.0f64);
+    for &(x, y) in &region {
+        cx += x as f64;
+        cy += y as f64;
+    }
+    cx /= region.len() as f64;
+    cy /= region.len() as f64;
+
+    const SECTORS: usize = 48;
+    let mut best: [Option<(f64, f32, f32)>; SECTORS] = [None; SECTORS];
+    for &(x, y) in &region {
+        let is_edge = x == 0
+            || y == 0
+            || x + 1 == w
+            || y + 1 == h
+            || !visited[y * w + (x - 1)]
+            || !visited[y * w + (x + 1)]
+            || !visited[(y - 1) * w + x]
+            || !visited[(y + 1) * w + x];
+        if !is_edge {
+            continue;
+        }
+        let dx = x as f64 - cx;
+        let dy = y as f64 - cy;
+        let dist2 = dx * dx + dy * dy;
+        let mut ang = dy.atan2(dx);
+        if ang < 0.0 {
+            ang += std::f64::consts::TAU;
+        }
+        let bin = ((ang / std::f64::consts::TAU) * SECTORS as f64).floor() as usize % SECTORS;
+        if best[bin].is_none_or(|(d, _, _)| dist2 > d) {
+            best[bin] = Some((dist2, x as f32 + 0.5, y as f32 + 0.5));
+        }
+    }
+    best.into_iter()
+        .flatten()
+        .map(|(_, x, y)| (x, y))
+        .collect()
+}
+
+/// Resamples a closed polygon to `n` evenly spaced points along its perimeter.
+pub fn resample_closed_polygon(pts: &[(f32, f32)], n: usize) -> Vec<(f32, f32)> {
+    if pts.len() < 3 || n < 3 {
+        return pts.to_vec();
+    }
+    let m = pts.len();
+    let mut seg_lens = Vec::with_capacity(m);
+    let mut total = 0.0f32;
+    for i in 0..m {
+        let a = pts[i];
+        let b = pts[(i + 1) % m];
+        let d = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        seg_lens.push(d);
+        total += d;
+    }
+    if total <= 1e-5 {
+        return vec![pts[0]; n];
+    }
+    let mut out = Vec::with_capacity(n);
+    for k in 0..n {
+        let target = (k as f32 / n as f32) * total;
+        let mut acc = 0.0f32;
+        let mut chosen = pts[0];
+        for i in 0..m {
+            let d = seg_lens[i];
+            if acc + d >= target || i + 1 == m {
+                let f = if d > 1e-6 {
+                    ((target - acc) / d).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let a = pts[i];
+                let b = pts[(i + 1) % m];
+                chosen = (a.0 + (b.0 - a.0) * f, a.1 + (b.1 - a.1) * f);
+                break;
+            }
+            acc += d;
+        }
+        out.push(chosen);
+    }
+    out
+}
+
+/// Linearly interpolates between two closed polygons `a` (at t=0) and `b` (at t=1).
+pub fn interpolate_polygon(a: &[(f32, f32)], b: &[(f32, f32)], t: f32) -> Vec<(f32, f32)> {
+    const N: usize = 32;
+    let ra = resample_closed_polygon(a, N);
+    let rb = resample_closed_polygon(b, N);
+    if ra.len() != N || rb.len() != N {
+        return Vec::new();
+    }
+    let t = t.clamp(0.0, 1.0);
+    ra.iter()
+        .zip(rb.iter())
+        .map(|(p, q)| (p.0 + (q.0 - p.0) * t, p.1 + (q.1 - p.1) * t))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,5 +758,43 @@ mod tests {
         assert!((vol - 1.0).abs() < 1e-9, "got {vol}");
         // Single slice with 5 mm thickness: 200 mm² * 5 mm = 1.0 cm³
         assert!((compute_roi_volume_cm3(&[(10.0, 200.0)], 5.0).unwrap() - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn grow_region_and_polygon_interpolation_work() {
+        let mut pixels = vec![0.0f32; 20 * 20];
+        for y in 6..14 {
+            for x in 6..14 {
+                pixels[y * 20 + x] = 200.0;
+            }
+        }
+        let f = Frame {
+            width: 20,
+            height: 20,
+            pixels: Pixels::Gray(pixels),
+            stored_window: None,
+            full_window: crate::imaging::Window::new(100.0, 200.0),
+            bits_window: None,
+            inverts: false,
+            voi_lut_applied: false,
+            slope: 1.0,
+            spacing: Some((1.0, 1.0)),
+            pixel_ratio: 1.0,
+            origin: None,
+            orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
+            is_3d_plane: false,
+            frame_of_reference_uid: None,
+            slice_thickness: None,
+            slice_location: None,
+            value_unit: "HU",
+            suv_factor: None,
+        };
+        let poly = grow_region_polygon(&f, 10, 10, 40.0);
+        assert!(poly.len() >= 12, "expected contour polygon, got {}", poly.len());
+        let a = vec![(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+        let b = vec![(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)];
+        let mid = interpolate_polygon(&a, &b, 0.5);
+        assert_eq!(mid.len(), 32);
+        assert!((mid[0].0 - 5.0).abs() < 1e-3 && (mid[0].1 - 5.0).abs() < 1e-3);
     }
 }

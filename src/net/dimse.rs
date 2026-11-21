@@ -14,6 +14,7 @@ use super::{PacsNode, QueryFilter, StudyQueryResult};
 
 const VERIFICATION_SOP_CLASS: &[u8] = b"1.2.840.10008.1.1";
 const STUDY_ROOT_FIND_SOP_CLASS: &[u8] = b"1.2.840.10008.5.1.4.1.2.2.1";
+const STUDY_ROOT_MOVE_SOP_CLASS: &[u8] = b"1.2.840.10008.5.1.4.1.2.2.2";
 const IMPLICIT_VR_LE: &[u8] = b"1.2.840.10008.1.2";
 const APP_CONTEXT_UID: &[u8] = b"1.2.840.10008.3.1.1.1";
 const IMPL_CLASS_UID: &[u8] = b"1.2.826.0.1.3680043.10.1234";
@@ -231,6 +232,11 @@ fn read_pdu(stream: &mut TcpStream) -> Result<(u8, Vec<u8>)> {
 fn connect_node(node: &PacsNode) -> Result<TcpStream> {
     if !node.is_valid() {
         return Err(anyhow!("Invalid PACS node configuration (check AE Title, host, and port)"));
+    }
+    if node.use_tls {
+        return Err(anyhow!(
+            "DIMSE TLS node selected: please use DICOMweb HTTPS or an stunnel/VPN tunnel for encrypted hospital PACS links"
+        ));
     }
     let addr = format!("{}:{}", node.host.trim(), node.port)
         .to_socket_addrs()
@@ -464,6 +470,259 @@ pub fn c_store_files(node: &PacsNode, paths: &[PathBuf]) -> Result<usize> {
     Ok(sent)
 }
 
+/// Builds `(command_pdu, identifier_dataset_pdu)` for a Study-Root `C-MOVE-RQ`.
+pub fn build_c_move_rq_pdus(study_uid: &str, move_dest_ae: &str) -> (Vec<u8>, Vec<u8>) {
+    let mut cmd = Vec::new();
+    push_implicit_elem(&mut cmd, 0x0000, 0x0002, STUDY_ROOT_MOVE_SOP_CLASS, 0x00);
+    push_implicit_elem(&mut cmd, 0x0000, 0x0100, &0x0021_u16.to_le_bytes(), 0x00); // C-MOVE-RQ
+    push_implicit_elem(&mut cmd, 0x0000, 0x0110, &1_u16.to_le_bytes(), 0x00);
+    push_implicit_elem(&mut cmd, 0x0000, 0x0600, move_dest_ae.trim().as_bytes(), b' ');
+    push_implicit_elem(&mut cmd, 0x0000, 0x0700, &0x0000_u16.to_le_bytes(), 0x00);
+    push_implicit_elem(&mut cmd, 0x0000, 0x0800, &0x0000_u16.to_le_bytes(), 0x00);
+
+    let mut ds = Vec::new();
+    push_implicit_elem(&mut ds, 0x0008, 0x0052, b"STUDY", b' ');
+    push_implicit_elem(&mut ds, 0x0020, 0x000D, study_uid.trim().as_bytes(), 0x00);
+
+    (
+        wrap_pdata(1, 0x03, &finish_command_group(&cmd)),
+        wrap_pdata(1, 0x02, &ds),
+    )
+}
+
+/// Requests `node` to send `study_uid` via Study-Root `C-MOVE` to `move_dest_ae`.
+pub fn c_move_study(node: &PacsNode, study_uid: &str, move_dest_ae: &str) -> Result<u16> {
+    let mut stream = connect_node(node)?;
+    let assoc_rq = build_associate_rq_contexts(
+        &node.ae_title,
+        &node.local_ae_title,
+        &[(1, STUDY_ROOT_MOVE_SOP_CLASS, IMPLICIT_VR_LE)],
+    );
+    stream.write_all(&assoc_rq)?;
+    let (pdu_type, _) = read_pdu(&mut stream)?;
+    if pdu_type == 0x03 {
+        return Err(anyhow!("PACS rejected association for C-MOVE — check AE Titles"));
+    }
+    if pdu_type != 0x02 {
+        return Err(anyhow!("Unexpected PDU 0x{pdu_type:02X} (expected A-ASSOCIATE-AC)"));
+    }
+    let (cmd_pdu, ds_pdu) = build_c_move_rq_pdus(study_uid, move_dest_ae);
+    stream.write_all(&cmd_pdu)?;
+    stream.write_all(&ds_pdu)?;
+
+    let final_status = loop {
+        let (is_cmd, cmd_bytes) = read_dimse_fragment(&mut stream)?;
+        if !is_cmd {
+            continue;
+        }
+        let status = parse_dimse_status(&cmd_bytes).unwrap_or(0x0000);
+        if status == 0xFF00 {
+            continue;
+        }
+        break status;
+    };
+    send_release(&mut stream);
+    if final_status != 0x0000 && final_status != 0xB000 {
+        return Err(anyhow!("C-MOVE finished with status 0x{final_status:04X}"));
+    }
+    Ok(final_status)
+}
+
+/// Builds a DICOM `A-ASSOCIATE-AC` PDU accepting all presentation contexts proposed in `rq_body`.
+pub fn build_associate_ac(rq_body: &[u8]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(256);
+    if rq_body.len() >= 68 {
+        body.extend_from_slice(&rq_body[..68]);
+    } else {
+        body.extend_from_slice(&1_u16.to_be_bytes());
+        body.extend_from_slice(&[0u8; 66]);
+    }
+    push_item(&mut body, 0x10, APP_CONTEXT_UID);
+
+    // Parse proposed presentation contexts (item type 0x20) starting at offset 68.
+    let mut pos = 68;
+    while pos + 4 <= rq_body.len() {
+        let item_type = rq_body[pos];
+        let item_len = u16::from_be_bytes([rq_body[pos + 2], rq_body[pos + 3]]) as usize;
+        pos += 4;
+        if pos + item_len > rq_body.len() {
+            break;
+        }
+        let item_data = &rq_body[pos..pos + item_len];
+        pos += item_len;
+        if item_type == 0x20 && item_data.len() >= 4 {
+            let pc_id = item_data[0];
+            // Pick first Transfer Syntax (0x40), defaulting to Implicit VR LE.
+            let mut ts: &[u8] = IMPLICIT_VR_LE;
+            let mut sub = 4;
+            while sub + 4 <= item_data.len() {
+                let st = item_data[sub];
+                let sl = u16::from_be_bytes([item_data[sub + 2], item_data[sub + 3]]) as usize;
+                sub += 4;
+                if sub + sl > item_data.len() {
+                    break;
+                }
+                if st == 0x40 {
+                    ts = &item_data[sub..sub + sl];
+                    break;
+                }
+                sub += sl;
+            }
+            let mut ac_pc = vec![pc_id, 0x00, 0x00, 0x00]; // Result = acceptance
+            push_item(&mut ac_pc, 0x40, ts);
+            push_item(&mut body, 0x21, &ac_pc);
+        }
+    }
+
+    let mut ui = Vec::new();
+    push_item(&mut ui, 0x51, &16384_u32.to_be_bytes());
+    push_item(&mut ui, 0x52, IMPL_CLASS_UID);
+    push_item(&mut body, 0x50, &ui);
+
+    let mut pdu = Vec::with_capacity(6 + body.len());
+    pdu.push(0x02); // A-ASSOCIATE-AC
+    pdu.push(0x00);
+    pdu.extend_from_slice(&(body.len() as u32).to_be_bytes());
+    pdu.extend_from_slice(&body);
+    pdu
+}
+
+/// Builds a `P-DATA-TF` PDU carrying a `C-STORE-RSP` (`0x8001`, status `0x0000`).
+pub fn build_c_store_rsp_pdu(
+    pc_id: u8,
+    sop_class: &[u8],
+    sop_instance: &[u8],
+    msg_id: u16,
+) -> Vec<u8> {
+    let mut cmd = Vec::new();
+    push_implicit_elem(&mut cmd, 0x0000, 0x0002, sop_class, 0x00);
+    push_implicit_elem(&mut cmd, 0x0000, 0x0100, &0x8001_u16.to_le_bytes(), 0x00); // C-STORE-RSP
+    push_implicit_elem(&mut cmd, 0x0000, 0x0120, &msg_id.to_le_bytes(), 0x00);
+    push_implicit_elem(&mut cmd, 0x0000, 0x0800, &0x0101_u16.to_le_bytes(), 0x00); // No Data Set
+    push_implicit_elem(&mut cmd, 0x0000, 0x0900, &0x0000_u16.to_le_bytes(), 0x00); // Success
+    push_implicit_elem(&mut cmd, 0x0000, 0x1000, sop_instance, 0x00);
+    wrap_pdata(pc_id, 0x03, &finish_command_group(&cmd))
+}
+
+fn parse_cmd_fields(cmd: &[u8]) -> (u16, u16, Vec<u8>, Vec<u8>) {
+    let mut cmd_field = 0u16;
+    let mut msg_id = 1u16;
+    let mut sop_class = Vec::new();
+    let mut sop_inst = Vec::new();
+    let mut pos = 0;
+    while pos + 8 <= cmd.len() {
+        let g = u16::from_le_bytes([cmd[pos], cmd[pos + 1]]);
+        let e = u16::from_le_bytes([cmd[pos + 2], cmd[pos + 3]]);
+        let len = u32::from_le_bytes([cmd[pos + 4], cmd[pos + 5], cmd[pos + 6], cmd[pos + 7]]) as usize;
+        pos += 8;
+        if pos + len > cmd.len() {
+            break;
+        }
+        let val = &cmd[pos..pos + len];
+        pos += len;
+        if g == 0x0000 {
+            match e {
+                0x0002 => sop_class = val.to_vec(),
+                0x0100 if len >= 2 => cmd_field = u16::from_le_bytes([val[0], val[1]]),
+                0x0110 if len >= 2 => msg_id = u16::from_le_bytes([val[0], val[1]]),
+                0x1000 => sop_inst = val.to_vec(),
+                _ => {}
+            }
+        }
+    }
+    (cmd_field, msg_id, sop_class, sop_inst)
+}
+
+/// Handles one incoming DICOM `C-STORE` / `C-ECHO` SCP association on `stream`,
+/// saving any received instances as Part-10 `.dcm` files in `dest_dir`.
+pub fn handle_scp_connection(mut stream: TcpStream, dest_dir: &std::path::Path) -> Result<usize> {
+    stream.set_read_timeout(Some(Duration::from_secs(15)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(15)))?;
+    let (pdu_type, rq_body) = read_pdu(&mut stream)?;
+    if pdu_type != 0x01 {
+        return Ok(0);
+    }
+    let ac = build_associate_ac(&rq_body);
+    stream.write_all(&ac)?;
+    std::fs::create_dir_all(dest_dir)?;
+
+    let mut received = 0usize;
+    loop {
+        let Ok((pt, body)) = read_pdu(&mut stream) else {
+            break;
+        };
+        if pt == 0x05 {
+            // A-RELEASE-RQ -> A-RELEASE-RP
+            let _ = stream.write_all(&[0x06, 0x00, 0x00, 0x00, 0x00, 0x04, 0, 0, 0, 0]);
+            break;
+        }
+        if pt != 0x04 || body.len() < 6 {
+            continue;
+        }
+        let pc_id = body[4];
+        let mut cmd_bytes = Vec::new();
+        let mut pos = 0;
+        while pos + 6 <= body.len() {
+            let pdv_len = u32::from_be_bytes([body[pos], body[pos + 1], body[pos + 2], body[pos + 3]]) as usize;
+            pos += 4;
+            if pdv_len < 2 || pos + pdv_len > body.len() {
+                break;
+            }
+            cmd_bytes.extend_from_slice(&body[pos + 2..pos + pdv_len]);
+            pos += pdv_len;
+        }
+        let (cmd_field, msg_id, sop_class, sop_inst) = parse_cmd_fields(&cmd_bytes);
+        if cmd_field == 0x0030 {
+            // C-ECHO-RQ -> C-ECHO-RSP
+            let mut rsp = Vec::new();
+            push_implicit_elem(&mut rsp, 0x0000, 0x0002, VERIFICATION_SOP_CLASS, 0x00);
+            push_implicit_elem(&mut rsp, 0x0000, 0x0100, &0x8030_u16.to_le_bytes(), 0x00);
+            push_implicit_elem(&mut rsp, 0x0000, 0x0120, &msg_id.to_le_bytes(), 0x00);
+            push_implicit_elem(&mut rsp, 0x0000, 0x0800, &0x0101_u16.to_le_bytes(), 0x00);
+            push_implicit_elem(&mut rsp, 0x0000, 0x0900, &0x0000_u16.to_le_bytes(), 0x00);
+            let _ = stream.write_all(&wrap_pdata(pc_id, 0x03, &finish_command_group(&rsp)));
+        } else if cmd_field == 0x0001 {
+            // C-STORE-RQ: read dataset fragments and wrap in minimal Part-10 file header
+            let (_is_cmd, ds_bytes) = read_dimse_fragment(&mut stream)?;
+            let mut file_bytes = Vec::with_capacity(256 + ds_bytes.len());
+            file_bytes.extend_from_slice(&[0u8; 128]);
+            file_bytes.extend_from_slice(b"DICM");
+            // Explicit VR LE File Meta Information (0002,0002), (0002,0003), (0002,0010)
+            let push_meta_ui = |buf: &mut Vec<u8>, elem: u16, val: &[u8]| {
+                buf.extend_from_slice(&0x0002_u16.to_le_bytes());
+                buf.extend_from_slice(&elem.to_le_bytes());
+                buf.extend_from_slice(b"UI");
+                let pad = val.len() % 2;
+                buf.extend_from_slice(&((val.len() + pad) as u16).to_le_bytes());
+                buf.extend_from_slice(val);
+                if pad == 1 {
+                    buf.push(0x00);
+                }
+            };
+            let mut meta = Vec::new();
+            push_meta_ui(&mut meta, 0x0002, &sop_class);
+            push_meta_ui(&mut meta, 0x0003, &sop_inst);
+            push_meta_ui(&mut meta, 0x0010, IMPLICIT_VR_LE);
+            // (0002,0000) FileMetaInformationGroupLength (UL)
+            file_bytes.extend_from_slice(&0x0002_u16.to_le_bytes());
+            file_bytes.extend_from_slice(&0x0000_u16.to_le_bytes());
+            file_bytes.extend_from_slice(b"UL");
+            file_bytes.extend_from_slice(&4_u16.to_le_bytes());
+            file_bytes.extend_from_slice(&(meta.len() as u32).to_le_bytes());
+            file_bytes.extend_from_slice(&meta);
+            file_bytes.extend_from_slice(&ds_bytes);
+
+            let fname = format!("scp_{:05}.dcm", received);
+            std::fs::write(dest_dir.join(fname), &file_bytes)?;
+            received += 1;
+
+            let rsp = build_c_store_rsp_pdu(pc_id, &sop_class, &sop_inst, msg_id);
+            let _ = stream.write_all(&rsp);
+        }
+    }
+    Ok(received)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,5 +771,17 @@ mod tests {
         assert_eq!(parsed.patient_name, "DOE^JOHN");
         assert_eq!(parsed.modalities, "CT");
         assert_eq!(parsed.num_series, 3);
+    }
+
+    #[test]
+    fn c_move_and_associate_ac_encode_valid_pdus() {
+        let (cmd, ds) = build_c_move_rq_pdus("1.2.3.4", "SEKHMETX");
+        assert_eq!(cmd[0], 0x04);
+        assert_eq!(ds[0], 0x04);
+        let rq = build_associate_rq("ORTHANC", "SEKHMETX");
+        let ac = build_associate_ac(&rq[6..]);
+        assert_eq!(ac[0], 0x02); // A-ASSOCIATE-AC
+        let rsp = build_c_store_rsp_pdu(1, VERIFICATION_SOP_CLASS, b"1.2.3", 1);
+        assert_eq!(rsp[0], 0x04);
     }
 }

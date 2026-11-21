@@ -429,6 +429,30 @@ impl ViewerApp {
                             crate::i18n::Lang::En => "Undo ROI (Ctrl+Z)",
                             crate::i18n::Lang::Es => "Deshacer ROI (Ctrl+Z)",
                         };
+                        let grow_lbl = match self.lang {
+                            crate::i18n::Lang::En => "Grow Region (from Point ROI)",
+                            crate::i18n::Lang::Es => "Crecer Región (desde Punto)",
+                        };
+                        if ui.button(grow_lbl).clicked() {
+                            self.grow_region_at_active_point();
+                            ui.close();
+                        }
+                        let interp_lbl = match self.lang {
+                            crate::i18n::Lang::En => "Interpolate ROIs Between Slices",
+                            crate::i18n::Lang::Es => "Interpolar ROIs entre Cortes",
+                        };
+                        if ui.button(interp_lbl).clicked() {
+                            self.interpolate_active_series_rois();
+                            ui.close();
+                        }
+                        let csv_lbl = match self.lang {
+                            crate::i18n::Lang::En => "Export ROIs (.csv)…",
+                            crate::i18n::Lang::Es => "Exportar ROIs (.csv)…",
+                        };
+                        if ui.button(csv_lbl).clicked() {
+                            self.export_active_rois_csv();
+                            ui.close();
+                        }
                         let ca_lbl = match self.lang {
                             crate::i18n::Lang::En => "Agatston Calcium Score (≥ 130 HU)",
                             crate::i18n::Lang::Es => "Puntaje de Calcio Agatston (≥ 130 HU)",
@@ -701,6 +725,18 @@ impl ViewerApp {
                                 self.viewports[vp_idx].fusion.series =
                                     self.auto_pick_fusion_series(vp_idx);
                             }
+                            if self.ortho_mpr_active {
+                                let ser = self.viewports[vp_idx].fusion.series;
+                                let blend = self.viewports[vp_idx].fusion.blend;
+                                let clut = self.viewports[vp_idx].fusion.clut_name.clone();
+                                for i in 0..3.min(self.viewports.len()) {
+                                    self.viewports[i].fusion.enabled = enabled;
+                                    self.viewports[i].fusion.series = ser;
+                                    self.viewports[i].fusion.blend = blend;
+                                    self.viewports[i].fusion.clut_name = clut.clone();
+                                    self.viewports[i].fusion.resliced = None;
+                                }
+                            }
                         }
                         ui.separator();
 
@@ -889,6 +925,14 @@ impl ViewerApp {
                             self.export_active_series_gif();
                             ui.close();
                         }
+                        let vid_lbl = match self.lang {
+                            crate::i18n::Lang::En => "Export Series (MP4 / AVI Video)…",
+                            crate::i18n::Lang::Es => "Exportar Serie (Video MP4 / AVI)…",
+                        };
+                        if ui.button(vid_lbl).clicked() {
+                            self.export_active_series_video();
+                            ui.close();
+                        }
                         if ui.button(tr.export_anon_dicom).clicked() {
                             self.export_active_anonymized_dicom();
                             ui.close();
@@ -909,6 +953,22 @@ impl ViewerApp {
                     if ui.button(sub_lbl).clicked() {
                         self.subtract_active_series();
                         ui.close();
+                    }
+                    if let Some((num_phases, cur_phase, _)) = self.active_series_4d_phases() {
+                        ui.separator();
+                        ui.horizontal(|ui| {
+                            let lbl = match self.lang {
+                                crate::i18n::Lang::En => format!("4D Phase {}/{num_phases}", cur_phase + 1),
+                                crate::i18n::Lang::Es => format!("Fase 4D {}/{num_phases}", cur_phase + 1),
+                            };
+                            ui.label(lbl);
+                            if ui.small_button("◀").clicked() {
+                                self.step_active_4d_phase(-1);
+                            }
+                            if ui.small_button("▶").clicked() {
+                                self.step_active_4d_phase(1);
+                            }
+                        });
                     }
                     if let Some((si, ri)) = self.active_cell().selected
                         && self
@@ -943,6 +1003,26 @@ impl ViewerApp {
                     };
                     if ui.button(pacs_lbl).clicked() {
                         self.show_pacs_modal = true;
+                        ui.close();
+                    }
+                    let multi_lbl = match self.lang {
+                        crate::i18n::Lang::En => {
+                            if self.show_detached_library {
+                                "Close Second Library Window"
+                            } else {
+                                "Detach Library Window (Multi-Monitor)"
+                            }
+                        }
+                        crate::i18n::Lang::Es => {
+                            if self.show_detached_library {
+                                "Cerrar Ventana de Biblioteca"
+                            } else {
+                                "Ventana de Biblioteca Separada (Multi-Monitor)"
+                            }
+                        }
+                    };
+                    if ui.button(multi_lbl).clicked() {
+                        self.show_detached_library = !self.show_detached_library;
                         ui.close();
                     }
                     ui.separator();
