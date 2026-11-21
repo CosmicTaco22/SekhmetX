@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.5] - 2026-11-21
+
+### Added
+- **ADC & T2 Parametric Map generator** (`src/app/mod.rs`, `src/imaging/mr_maps.rs`, `src/ui/toolbar.rs`): added **Generate ADC Map** (`Generar Mapa ADC`, in $10^{-6}\text{ mm}^2/\text{s}$) and **Generate T2 Map** (`Generar Mapa T2`, in `ms`) in the View menu for MR series, building live in-memory map series from multi-b DWI or multi-echo stacks.
+- **Hanging Protocols Settings UI** (`src/app/modals.rs`, `src/app/mod.rs`): configure per-modality grid layouts (`1×1`–`4×4`) and auto-MPR preferences in Settings (persisted in SQLite).
+- **ROI Undo (`Ctrl+Z` / `Cmd+Z`)** (`src/app/mod.rs`, `src/ui/toolbar.rs`): undo deleting or clearing ROIs via keyboard shortcut or **Undo ROI (Ctrl+Z)** (`Deshacer ROI (Ctrl+Z)`) in the ROI menu.
+- **Direct `DICOMDIR` file opening** (`src/dicom_index.rs`): opening or dropping a hospital CD/DVD `DICOMDIR` file now automatically indexes its parent folder while skipping the `DICOMDIR` record file itself.
+
 ## [0.7.4] - 2026-11-21
 
 ### Added

@@ -549,6 +549,12 @@ pub(crate) struct ViewerApp {
     pub(crate) new_preset_name: String,
     pub(crate) new_preset_wl: f32,
     pub(crate) new_preset_ww: f32,
+    pub(crate) hanging_protocols: Vec<crate::settings::HangingProtocol>,
+    pub(crate) new_hp_modality: String,
+    pub(crate) new_hp_rows: usize,
+    pub(crate) new_hp_cols: usize,
+    pub(crate) new_hp_auto_mpr: bool,
+    pub(crate) roi_undo: Vec<((PathBuf, u32), Vec<Measure>)>,
     pub(crate) previous_crash_pending: bool,
     show_crash_modal: bool,
     show_first_run_notice: bool,
@@ -670,6 +676,10 @@ impl ViewerApp {
         let saved_custom_presets = settings
             .as_ref()
             .map(|s| s.custom_presets())
+            .unwrap_or_default();
+        let saved_hanging_protocols = settings
+            .as_ref()
+            .map(|s| s.hanging_protocols())
             .unwrap_or_default();
         // "column,asc" e.g. "5,0" = by date, newest first. Default: patient name A→Z, as Horos.
         let saved_db_sort = db
@@ -823,6 +833,12 @@ impl ViewerApp {
             new_preset_name: String::new(),
             new_preset_wl: 40.0,
             new_preset_ww: 400.0,
+            hanging_protocols: saved_hanging_protocols,
+            new_hp_modality: "CT".to_string(),
+            new_hp_rows: 1,
+            new_hp_cols: 2,
+            new_hp_auto_mpr: true,
+            roi_undo: Vec::new(),
             previous_crash_pending: false,
             show_crash_modal: false,
             show_first_run_notice: !first_run_ack,
@@ -1134,6 +1150,203 @@ impl ViewerApp {
             format!("Serie DWI separada en {n_groups} grupos de valor b")
         } else {
             format!("Split DWI series into {n_groups} b-value groups")
+        });
+    }
+
+    /// Snapshots the current ROI list for `key` onto the undo stack (capped at 32 entries).
+    pub(crate) fn push_roi_undo(&mut self, key: &(PathBuf, u32)) {
+        let prev = self.measures.get(key).cloned().unwrap_or_default();
+        self.roi_undo.push((key.clone(), prev));
+        if self.roi_undo.len() > 32 {
+            self.roi_undo.remove(0);
+        }
+    }
+
+    /// Restores the previous ROI state from the undo stack (`Ctrl+Z` / `Cmd+Z`).
+    pub(crate) fn undo_last_roi(&mut self) {
+        let Some((key, prev)) = self.roi_undo.pop() else {
+            return;
+        };
+        if prev.is_empty() {
+            self.measures.remove(&key);
+        } else {
+            self.measures.insert(key.clone(), prev);
+        }
+        self.persist_measures_for(&key);
+        self.selected_roi = None;
+        self.message = Some(
+            if self.lang == crate::i18n::Lang::Es {
+                "Último cambio de ROI deshecho"
+            } else {
+                "Undid last ROI change"
+            }
+            .to_string(),
+        );
+    }
+
+    /// Generates an in-memory ADC (`is_adc = true`, in `10⁻⁶ mm²/s`) or T2 (`is_adc = false`, in `ms`)
+    /// parametric map series from a multi-b DWI or multi-echo MR series and selects it.
+    pub(crate) fn generate_mr_map(&mut self, si: usize, ri: usize, is_adc: bool) {
+        let es = self.lang == crate::i18n::Lang::Es;
+        let base = match self
+            .index
+            .as_ref()
+            .and_then(|idx| idx.studies.get(si))
+            .and_then(|st| st.series.get(ri))
+        {
+            Some(s) => s.clone(),
+            None => return,
+        };
+        if base.slices.len() < 2 {
+            return;
+        }
+
+        // Read per-slice parameter (b-value for ADC, EchoTime ms for T2) and 3D origin.
+        let params: Vec<Option<f64>> = base
+            .slices
+            .iter()
+            .map(|s| {
+                if is_adc {
+                    crate::imaging::mr_maps::BValueSplit::read_from_file(&s.path)
+                } else {
+                    crate::imaging::mr_maps::MrMapFit::read_echo_time_ms(&s.path)
+                }
+            })
+            .collect();
+        let origins: Vec<[f64; 3]> = base
+            .slices
+            .iter()
+            .enumerate()
+            .map(|(i, s)| s.position.unwrap_or([0.0, 0.0, s.slice_location.unwrap_or(i as f64)]))
+            .collect();
+        let groups = crate::imaging::mr_maps::MrMapFit::echo_groups_by_origin(&origins);
+
+        let mut map_slices = Vec::new();
+        let mut map_frames = Vec::new();
+        for group in groups {
+            let mut valid_items: Vec<(f64, usize)> = group
+                .into_iter()
+                .filter_map(|idx| Some((params[idx]?, idx)))
+                .collect();
+            valid_items.sort_by(|a, b| a.0.total_cmp(&b.0));
+            if valid_items.len() < 2
+                || (valid_items.last().unwrap().0 - valid_items[0].0).abs() < 1e-3
+            {
+                continue;
+            }
+            let mut loaded = Vec::new();
+            let mut xs = Vec::new();
+            for (x_val, idx) in &valid_items {
+                let sl = &base.slices[*idx];
+                if let Ok(fr) = crate::frame::load_frame(&sl.path, sl.frame) {
+                    loaded.push(fr);
+                    xs.push(*x_val);
+                }
+            }
+            if loaded.len() < 2 {
+                continue;
+            }
+            let (w, h) = (loaded[0].width, loaded[0].height);
+            let grays: Vec<&[f32]> = loaded
+                .iter()
+                .filter_map(|f| match &f.pixels {
+                    crate::frame::Pixels::Gray(v) if f.width == w && f.height == h => Some(v.as_slice()),
+                    _ => None,
+                })
+                .collect();
+            if grays.len() < 2 {
+                continue;
+            }
+            let fitted = if is_adc {
+                crate::imaging::mr_maps::MrMapFit::fit_adc_um2_per_s(&grays, &xs[..grays.len()], 10.0)
+            } else {
+                crate::imaging::mr_maps::MrMapFit::fit_t2_ms(&grays, &xs[..grays.len()], 10.0)
+            };
+            let full = crate::imaging::window::full(&fitted, false);
+            let template = &loaded[0];
+            let frame = Arc::new(Frame {
+                width: w,
+                height: h,
+                pixels: crate::frame::Pixels::Gray(fitted),
+                stored_window: Some(if is_adc {
+                    Window::new(1000.0, 2000.0)
+                } else {
+                    Window::new(100.0, 200.0)
+                }),
+                full_window: full,
+                bits_window: None,
+                inverts: false,
+                voi_lut_applied: false,
+                slope: 1.0,
+                spacing: template.spacing,
+                pixel_ratio: template.pixel_ratio,
+                origin: template.origin,
+                orientation: template.orientation,
+                is_3d_plane: template.is_3d_plane,
+                frame_of_reference_uid: template.frame_of_reference_uid.clone(),
+                slice_thickness: template.slice_thickness,
+                slice_location: template.slice_location,
+                value_unit: if is_adc { "×10⁻⁶ mm²/s" } else { "ms" },
+                suv_factor: None,
+            });
+            map_slices.push(base.slices[valid_items[0].1].clone());
+            map_frames.push(frame);
+        }
+
+        if map_frames.is_empty() {
+            self.message = Some(
+                if is_adc {
+                    if es {
+                        "No se encontraron cortes con múltiples valores b en la misma posición para ADC"
+                    } else {
+                        "No slices with multiple b-values at the same position found for ADC"
+                    }
+                } else if es {
+                    "No se encontraron cortes con múltiples tiempos de eco (TE) para mapa T2"
+                } else {
+                    "No slices with multiple echo times (TE) found for T2 map"
+                }
+                .to_string(),
+            );
+            return;
+        }
+
+        let new_ri = if let Some(ref mut idx) = self.index
+            && let Some(study) = idx.studies.get_mut(si)
+        {
+            let tag = if is_adc { "ADC Map" } else { "T2 Map" };
+            let mut map_series = base.clone();
+            map_series.uid = format!("{}.{}", base.uid, if is_adc { "adc" } else { "t2" });
+            map_series.description = if base.description.is_empty() {
+                format!("[{tag}]")
+            } else {
+                format!("{} [{tag}]", base.description)
+            };
+            map_series.slices = map_slices;
+            let idx_new = study.series.len();
+            study.series.push(map_series);
+            idx_new
+        } else {
+            return;
+        };
+
+        for (sl_i, frame) in map_frames.into_iter().enumerate() {
+            let key = SliceKey {
+                scan_gen: self.scan_gen,
+                study: si,
+                series: new_ri,
+                slice: sl_i,
+            };
+            self.cache.insert(key, frame);
+        }
+        let vp = self.active_viewport;
+        self.assign_series_to_viewport(vp, Some((si, new_ri)));
+        self.message = Some(if is_adc {
+            if es { "Mapa ADC generado" } else { "Generated ADC Map" }.to_string()
+        } else if es {
+            "Mapa T2 generado".to_string()
+        } else {
+            "Generated T2 Map".to_string()
         });
     }
 
@@ -1783,6 +1996,12 @@ impl ViewerApp {
             self.request_copy_active_viewport(ctx);
             return;
         }
+        if !self.show_database_view
+            && ctx.input(|i| i.modifiers.command && i.key_pressed(Key::Z))
+        {
+            self.undo_last_roi();
+            return;
+        }
         let keys = [
             Key::ArrowUp,
             Key::ArrowDown,
@@ -2245,6 +2464,9 @@ impl ViewerApp {
         let Some(k) = self.viewport_measure_key(vp_idx) else {
             return;
         };
+        if self.measures.get(&k).is_some_and(|l| !l.is_empty()) {
+            self.push_roi_undo(&k);
+        }
         let removed_idx = if let Some((ref sp, sfr, idx)) = self.selected_roi
             && *sp == k.0
             && sfr == k.1

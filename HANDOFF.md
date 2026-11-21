@@ -1,4 +1,4 @@
-# Handoff: where the project stands (v0.7.0, 20 Nov 2026)
+# Handoff: where the project stands (v0.7.5, 21 Nov 2026)
 
 Written for whoever continues this, human or agent. It records what exists,
 the owner's standing rules, what was verified, what is unfinished, and what
@@ -220,28 +220,23 @@ Not verified:
 
 ## Next steps
 
-Open threads from the latest work:
-- Check the per-level alignment and the new "= mm" / centring on more real
-  two-date studies; tune the per-level limits (30 mm height, 15 mm, 6°) from
-  `sekhmetx.log` if needed.
-- Reading a picture-only series' plane from the image itself (symmetry and
-  shape of the body), as a fallback when its block does not show the other
-  two planes. Not needed for the studies seen so far.
-- Curved MPR: a thick-slab (MIP) option and saving paths, as IsiX has.
-- 3D scissors: the mask is at most 128 cells per side, so cut edges are coarse
-  on large volumes; a finer mask or a GPU-side cut would sharpen them.
+Done in `v0.7.2`–`v0.7.5`: Curved MPR thick-slab (MIP/MinIP/Mean), saved paths,
+transverse cross-section, and Virtual Endoscopy / Fly-through; 256³ parallel 3D
+scissors; `USRegion` ultrasound calibration; DICOM SR & GSPS viewport viewer;
+animated GIF cine export; compressed `.zip` library storage; DWI b-value
+splitting and live ADC/T2 map generation; 3D ROI volume (`cm³`) and ROI Undo
+(`Ctrl+Z`); custom W/L presets & Hanging Protocols UI; direct `DICOMDIR`
+opening; and `src/net/mod.rs` PACS/DICOMweb groundwork.
 
-Longer-term options. Done in 0.6–0.7: curved MPR, PET-CT fusion with SUV, key
-images and report export, 3D scissors, app icon and installer. Still open:
-
-1. Native DICOM query/retrieve or DICOMweb client (`network-pacs`, `dicomweb`):
-   waits for the owner's plugin design (see "Behaviour the owner has decided").
-2. No code signing: the owner will not pay for certificates (decided at 0.7.1).
+Still open:
+1. Real-world testing & polish of `v0.7.2`–`v0.7.5` features on clinical exams
+   (PET-CT, MR DWI, Ultrasound, SR dose reports, Curved MPR + Fly-through,
+   two-date alignment tuning from `sekhmetx.log`).
+2. Native DICOM PACS (`dicom-ul`) & DICOMweb (`ureq`) transports wired to
+   `src/net/mod.rs` (parked for later testing).
+3. Web-portal plugin system — dead last, waits for the owner's design.
+4. No code signing: the owner will not pay for certificates (decided at 0.7.1).
    Do not add signing back unless asked.
-
-Smaller candidates the IsiX 6.0.4 review turned up: live length ratios
-(`ROILengthRatio`), calibrating spacing from a known length
-(`RulerCalibration`), and ultrasound region calibration (`USRegion`).
 
 ## Working across sessions
 

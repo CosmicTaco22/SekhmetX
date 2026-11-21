@@ -792,7 +792,15 @@ pub fn collect_files(inputs: &[PathBuf]) -> Vec<PathBuf> {
                 }
             }
         } else if input.is_file() {
-            if is_zip_file(input) {
+            if input
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case("DICOMDIR"))
+            {
+                if let Some(parent) = input.parent() {
+                    out.extend(collect_files(&[parent.to_path_buf()]));
+                }
+            } else if is_zip_file(input) {
                 if let Some(dir) = extract_zip_to_temp(input) {
                     out.extend(collect_files(&[dir]));
                 }

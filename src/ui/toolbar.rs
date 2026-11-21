@@ -425,8 +425,20 @@ impl ViewerApp {
                             self.compute_active_series_roi_volume();
                             ui.close();
                         }
+                        let undo_lbl = match self.lang {
+                            crate::i18n::Lang::En => "Undo ROI (Ctrl+Z)",
+                            crate::i18n::Lang::Es => "Deshacer ROI (Ctrl+Z)",
+                        };
+                        if ui
+                            .add_enabled(!self.roi_undo.is_empty(), egui::Button::new(undo_lbl))
+                            .clicked()
+                        {
+                            self.undo_last_roi();
+                            ui.close();
+                        }
                         if ui.button(tr.clear_rois).clicked() {
                             if let Some(k) = self.viewport_measure_key(self.active_viewport) {
+                                self.push_roi_undo(&k);
                                 self.measures.remove(&k);
                                 self.persist_measures_for(&k);
                             }
@@ -885,6 +897,18 @@ impl ViewerApp {
                         };
                         if ui.button(split_lbl).clicked() {
                             self.split_dwi_series(si, ri);
+                            ui.close();
+                        }
+                        let (adc_lbl, t2_lbl) = match self.lang {
+                            crate::i18n::Lang::En => ("Generate ADC Map", "Generate T2 Map"),
+                            crate::i18n::Lang::Es => ("Generar Mapa ADC", "Generar Mapa T2"),
+                        };
+                        if ui.button(adc_lbl).clicked() {
+                            self.generate_mr_map(si, ri, true);
+                            ui.close();
+                        }
+                        if ui.button(t2_lbl).clicked() {
+                            self.generate_mr_map(si, ri, false);
                             ui.close();
                         }
                     }

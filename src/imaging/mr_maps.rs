@@ -159,6 +159,20 @@ pub struct MrMapFit;
 
 #[allow(dead_code)]
 impl MrMapFit {
+    /// Reads Echo Time `(0018,0081)` in milliseconds from a DICOM file header.
+    pub fn read_echo_time_ms(path: &Path) -> Option<f64> {
+        let obj = OpenFileOptions::new()
+            .read_until(Tag(0x7FE0, 0x0010))
+            .open_file(path)
+            .ok()?;
+        let elem = obj.element_opt(Tag(0x0018, 0x0081)).ok().flatten()?;
+        let te = elem
+            .to_float64()
+            .ok()
+            .or_else(|| elem.to_str().ok().and_then(|s| BValueSplit::parse_number(&s)))?;
+        (te.is_finite() && te > 0.0).then_some(te)
+    }
+
     /// Groups slice indices of a single stack by 3D origin (equal within `1e-4` mm on each axis).
     /// When any origin has only one image, returns the whole stack as one group (matching IsiX).
     pub fn echo_groups_by_origin(origins: &[[f64; 3]]) -> Vec<Vec<usize>> {

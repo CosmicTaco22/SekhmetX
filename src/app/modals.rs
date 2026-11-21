@@ -462,6 +462,65 @@ impl ViewerApp {
                     }
                 }
 
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(if es {
+                        "Protocolos de Colgado (diseño por modalidad)"
+                    } else {
+                        "Hanging Protocols (layout by modality)"
+                    })
+                    .strong(),
+                );
+                ui.horizontal(|ui| {
+                    egui::ComboBox::from_id_salt("hp_mod_combo")
+                        .selected_text(&self.new_hp_modality)
+                        .width(64.0)
+                        .show_ui(ui, |ui| {
+                            for m in ["CT", "MR", "PT", "US", "DX", "CR"] {
+                                ui.selectable_value(&mut self.new_hp_modality, m.to_string(), m);
+                            }
+                        });
+                    ui.add(egui::DragValue::new(&mut self.new_hp_rows).range(1..=4).prefix("R:"));
+                    ui.add(egui::DragValue::new(&mut self.new_hp_cols).range(1..=4).prefix("C:"));
+                    ui.checkbox(&mut self.new_hp_auto_mpr, "MPR");
+                    if ui.small_button(if es { "Agregar" } else { "Add" }).clicked() {
+                        let proto = crate::settings::HangingProtocol {
+                            modality: self.new_hp_modality.clone(),
+                            rows: self.new_hp_rows,
+                            cols: self.new_hp_cols,
+                            auto_mpr: self.new_hp_auto_mpr,
+                        };
+                        self.hanging_protocols.retain(|p| p.modality != proto.modality);
+                        self.hanging_protocols.push(proto);
+                        if let Some(ref db) = self.db {
+                            crate::settings::AppSettings::new(db)
+                                .set_hanging_protocols(&self.hanging_protocols);
+                        }
+                    }
+                });
+                let mut remove_hp: Option<usize> = None;
+                for (hi, hp) in self.hanging_protocols.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "{}: {}×{}{}",
+                            hp.modality,
+                            hp.rows,
+                            hp.cols,
+                            if hp.auto_mpr { " · MPR" } else { "" }
+                        ));
+                        if ui.small_button("×").clicked() {
+                            remove_hp = Some(hi);
+                        }
+                    });
+                }
+                if let Some(hi) = remove_hp {
+                    self.hanging_protocols.remove(hi);
+                    if let Some(ref db) = self.db {
+                        crate::settings::AppSettings::new(db)
+                            .set_hanging_protocols(&self.hanging_protocols);
+                    }
+                }
+
                 let (upd_hdr, lbl_auto, lbl_manual, lbl_check_now) = match self.lang {
                     crate::i18n::Lang::Es => (
                         "Actualizaciones",
