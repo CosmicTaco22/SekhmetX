@@ -417,6 +417,14 @@ impl ViewerApp {
                         .is_some_and(|m| !m.is_empty())
                     {
                         ui.separator();
+                        let vol_lbl = match self.lang {
+                            crate::i18n::Lang::En => "Compute ROI Volume (cm³)",
+                            crate::i18n::Lang::Es => "Calcular Volumen ROI (cm³)",
+                        };
+                        if ui.button(vol_lbl).clicked() {
+                            self.compute_active_series_roi_volume();
+                            ui.close();
+                        }
                         if ui.button(tr.clear_rois).clicked() {
                             if let Some(k) = self.viewport_measure_key(self.active_viewport) {
                                 self.measures.remove(&k);
@@ -470,6 +478,19 @@ impl ViewerApp {
                                         .clicked()
                                     {
                                         chosen_win = Some(Some(full));
+                                    }
+                                }
+                                if !self.custom_presets.is_empty() {
+                                    ui.separator();
+                                    for cp in &self.custom_presets {
+                                        let w = Window::new(cp.level, cp.width);
+                                        let text = format!(
+                                            "★   {}   L {:.0} W {:.0}",
+                                            cp.name, cp.level, cp.width
+                                        );
+                                        if ui.selectable_label(active_win == Some(w), text).clicked() {
+                                            chosen_win = Some(Some(w));
+                                        }
                                     }
                                 }
                                 ui.separator();
@@ -853,6 +874,20 @@ impl ViewerApp {
                             ui.close();
                         }
                     });
+                    if let Some((si, ri)) = self.active_cell().selected
+                        && self
+                            .viewport_series(self.active_viewport)
+                            .is_some_and(|s| s.modality.eq_ignore_ascii_case("MR") && s.slices.len() >= 2)
+                    {
+                        let split_lbl = match self.lang {
+                            crate::i18n::Lang::En => "Split DWI by b-value",
+                            crate::i18n::Lang::Es => "Separar DWI por valor b",
+                        };
+                        if ui.button(split_lbl).clicked() {
+                            self.split_dwi_series(si, ri);
+                            ui.close();
+                        }
+                    }
                     ui.separator();
                     if ui.button(tr.reset_viewport).clicked() {
                         let vp = self.active_cell_mut();

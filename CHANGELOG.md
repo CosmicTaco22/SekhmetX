@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.4] - 2026-11-21
+
+### Added
+- **DWI b-value splitting in the viewer** (`src/imaging/mr_maps.rs`, `src/app/mod.rs`, `src/ui/toolbar.rs`): added **Split DWI by b-value** (`Separar DWI por valor b`) in the View menu for MR series, reading standard/Siemens/GE/Philips b-value tags and creating one sub-series per b-value (`b=0`, `b=500`, `b=1000`, …).
+- **3D ROI Volume (`cm³`)** (`src/roi/mod.rs`, `src/app/mod.rs`, `src/ui/toolbar.rs`): added **Compute ROI Volume (cm³)** (`Calcular Volumen ROI (cm³)`) in the ROI menu, integrating closed ROI areas (Oval, Rect, Polygon, Pencil) across slices with trapezoidal integration and half-slice end caps.
+- **Custom Window / Level presets & Hanging Protocol storage** (`src/settings.rs`, `src/app/modals.rs`, `src/ui/toolbar.rs`): users can now add and delete custom `(Name, WL, WW)` presets in Settings; they persist in SQLite and appear directly in the toolbar W/L preset menu.
+- **Virtual Endoscopy / Fly-Through** (`src/imaging/endoscopy.rs`, `src/app/cpr_view.rs`): perspective surface ray-casting camera flying along any Curved MPR centerline with Phong headlight shading and an adjustable HU iso-surface threshold (`-900..400 HU`), toggled via **Fly-through** (`Endoscopia`) inside the Curved MPR window.
+
 ## [0.7.3] - 2026-11-21
 
 ### Added

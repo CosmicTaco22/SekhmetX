@@ -58,7 +58,7 @@ Lines count all IsiX code in the area, including headers and tests; Rust version
 
 | Area | Decision | RDicom | Source files / lines | In RDicom | Rust crates | Notes |
 |---|---|---|---|---|---|---|
-| **Virtual endoscopy and fly-through**<br>`endoscopy-flythru` | Rebuild | not started | 21 / 5,457 | — | — |  |
+| **Virtual endoscopy and fly-through**<br>`endoscopy-flythru` | Rebuild | started | 21 / 5,457 | src/imaging/endoscopy.rs, src/app/cpr_view.rs | — | Perspective surface ray-caster with Phong headlight shading flying along Curved MPR centerlines, with adjustable HU threshold and unit test. |
 
 ## Not ported
 

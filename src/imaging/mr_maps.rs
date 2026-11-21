@@ -6,6 +6,10 @@
 //! - `Modules/IsiXImaging/Sources/BufferOperations/T2FitMapping.swift`
 
 use std::collections::BTreeMap;
+use std::path::Path;
+
+use dicom_core::Tag;
+use dicom_object::OpenFileOptions;
 
 /// One b-value and the slice indices belonging to it, in series order (`BValueSplit.Group`).
 #[allow(dead_code)]
@@ -97,6 +101,55 @@ impl BValueSplit {
         } else {
             Vec::new()
         }
+    }
+
+    /// Reads the diffusion b-value from a DICOM file on disk (header-only, skipping pixel data),
+    /// trying standard `(0018,9087)`, Siemens `(0019,100C)`, GE `(0043,1039)`, Philips `(2001,1003)`,
+    /// and Siemens SequenceName `(0018,0024)` in IsiX's exact priority order.
+    pub fn read_from_file(path: &Path) -> Option<f64> {
+        let obj = OpenFileOptions::new()
+            .read_until(Tag(0x7FE0, 0x0010))
+            .open_file(path)
+            .ok()?;
+
+        let try_num = |tag: Tag| -> Option<f64> {
+            let elem = obj.element_opt(tag).ok().flatten()?;
+            if let Ok(v) = elem.to_float64()
+                && v.is_finite()
+                && v >= 0.0
+            {
+                return Some(v);
+            }
+            if let Ok(s) = elem.to_str() {
+                return Self::parse_number(&s);
+            }
+            None
+        };
+
+        // 1. Standard Diffusion b-value (0018,9087)
+        if let Some(v) = try_num(Tag(0x0018, 0x9087)) {
+            return Some(v);
+        }
+        // 2. Siemens private (0019,100C)
+        if let Some(v) = try_num(Tag(0x0019, 0x100C)) {
+            return Some(v);
+        }
+        // 3. GE private (0043,1039)
+        if let Some(v) = try_num(Tag(0x0043, 0x1039)) {
+            return Some(Self::ge_b_value(v));
+        }
+        // 4. Philips private (2001,1003)
+        if let Some(v) = try_num(Tag(0x2001, 0x1003)) {
+            return Some(v);
+        }
+        // 5. Siemens SequenceName (0018,0024)
+        if let Some(elem) = obj.element_opt(Tag(0x0018, 0x0024)).ok().flatten()
+            && let Ok(s) = elem.to_str()
+            && let Some(v) = Self::sequence_name_b_value(&s)
+        {
+            return Some(v);
+        }
+        None
     }
 }
 

@@ -409,6 +409,59 @@ impl ViewerApp {
                     }
                 });
 
+                ui.separator();
+                let es = self.lang == crate::i18n::Lang::Es;
+                ui.label(
+                    egui::RichText::new(if es {
+                        "Preajustes personalizados de Ventana / Nivel"
+                    } else {
+                        "Custom Window / Level Presets"
+                    })
+                    .strong(),
+                );
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.new_preset_name)
+                            .desired_width(110.0)
+                            .hint_text(if es { "Nombre" } else { "Name" }),
+                    );
+                    ui.label("WL:");
+                    ui.add(egui::DragValue::new(&mut self.new_preset_wl).speed(1.0));
+                    ui.label("WW:");
+                    ui.add(egui::DragValue::new(&mut self.new_preset_ww).speed(1.0).range(1.0..=100_000.0));
+                    if ui.small_button(if es { "Agregar" } else { "Add" }).clicked() {
+                        let name = self.new_preset_name.trim().to_string();
+                        if !name.is_empty() && self.new_preset_ww > 0.0 {
+                            self.custom_presets.push(crate::settings::CustomPreset {
+                                name,
+                                level: self.new_preset_wl,
+                                width: self.new_preset_ww,
+                            });
+                            self.new_preset_name.clear();
+                            if let Some(ref db) = self.db {
+                                crate::settings::AppSettings::new(db)
+                                    .set_custom_presets(&self.custom_presets);
+                            }
+                        }
+                    }
+                });
+                let mut remove_idx: Option<usize> = None;
+                for (pi, cp) in self.custom_presets.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("★ {}  (WL {:.0} / WW {:.0})", cp.name, cp.level, cp.width));
+                        if ui.small_button("×").clicked() {
+                            remove_idx = Some(pi);
+                        }
+                    });
+                }
+                if let Some(ri) = remove_idx {
+                    self.custom_presets.remove(ri);
+                    if let Some(ref db) = self.db {
+                        crate::settings::AppSettings::new(db)
+                            .set_custom_presets(&self.custom_presets);
+                    }
+                }
+
                 let (upd_hdr, lbl_auto, lbl_manual, lbl_check_now) = match self.lang {
                     crate::i18n::Lang::Es => (
                         "Actualizaciones",

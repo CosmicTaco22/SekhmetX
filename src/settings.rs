@@ -1,8 +1,27 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use serde::{Deserialize, Serialize};
+
 use crate::db::{CopyToLibraryPolicy, Database};
 use crate::i18n::Lang;
+
+/// User-defined Window / Level preset saved in SQLite settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CustomPreset {
+    pub name: String,
+    pub level: f32,
+    pub width: f32,
+}
+
+/// Hanging protocol rule: preferred layout & auto-MPR for a given modality.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HangingProtocol {
+    pub modality: String,
+    pub rows: usize,
+    pub cols: usize,
+    pub auto_mpr: bool,
+}
 
 /// Typed wrapper around `Database` settings so setting keys are not scattered across UI code.
 pub struct AppSettings<'a> {
@@ -104,6 +123,32 @@ impl<'a> AppSettings<'a> {
             .and_then(|json| serde_json::from_str(&json).ok())
             .unwrap_or_default()
     }
+
+    pub fn custom_presets(&self) -> Vec<CustomPreset> {
+        self.db
+            .get_setting("custom_presets")
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_custom_presets(&self, presets: &[CustomPreset]) {
+        if let Ok(json) = serde_json::to_string(presets) {
+            let _ = self.db.set_setting("custom_presets", &json);
+        }
+    }
+
+    pub fn hanging_protocols(&self) -> Vec<HangingProtocol> {
+        self.db
+            .get_setting("hanging_protocols")
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_hanging_protocols(&self, protocols: &[HangingProtocol]) {
+        if let Ok(json) = serde_json::to_string(protocols) {
+            let _ = self.db.set_setting("hanging_protocols", &json);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -127,6 +172,23 @@ mod tests {
         assert!(settings.crash_report_opt_in());
         settings.set_crash_report_opt_in(false);
         assert!(!settings.crash_report_opt_in());
+
+        let presets = vec![CustomPreset {
+            name: "Liver".into(),
+            level: 60.0,
+            width: 150.0,
+        }];
+        settings.set_custom_presets(&presets);
+        assert_eq!(settings.custom_presets(), presets);
+
+        let protos = vec![HangingProtocol {
+            modality: "CT".into(),
+            rows: 1,
+            cols: 2,
+            auto_mpr: true,
+        }];
+        settings.set_hanging_protocols(&protos);
+        assert_eq!(settings.hanging_protocols(), protos);
 
         assert!(!settings.first_run_notice_ack());
         settings.set_first_run_notice_ack(true);

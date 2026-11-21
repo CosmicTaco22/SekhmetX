@@ -24,9 +24,11 @@ pub(crate) struct CprView {
     pub(crate) texture: Option<TextureHandle>,
     pub(crate) tex_key: Option<(i64, i64, u8, i64, u32, u32, bool)>,
     pub(crate) show_cross_section: bool,
+    pub(crate) flythrough_mode: bool,
+    pub(crate) endo_threshold_hu: f32,
     pub(crate) cross_col: usize,
     pub(crate) cross_texture: Option<TextureHandle>,
-    pub(crate) cross_tex_key: Option<(usize, i64, u32, u32, bool)>,
+    pub(crate) cross_tex_key: Option<(usize, i64, u32, u32, bool, bool, i32)>,
     /// A length measured on the straightened image, image pixels.
     pub(crate) measure: Option<(Pos2, Pos2)>,
     pub(crate) open: bool,
@@ -98,6 +100,8 @@ impl ViewerApp {
             texture: None,
             tex_key: None,
             show_cross_section: true,
+            flythrough_mode: false,
+            endo_threshold_hu: -500.0,
             cross_col: 0,
             cross_texture: None,
             cross_tex_key: None,
@@ -233,6 +237,20 @@ impl ViewerApp {
                         }
                     ui.separator();
                     ui.checkbox(&mut view.show_cross_section, t("Cross-section", "Transversal"));
+                    if view.show_cross_section {
+                        ui.checkbox(&mut view.flythrough_mode, t("Fly-through", "Endoscopia"))
+                            .on_hover_text(t(
+                                "Virtual endoscopy perspective camera flying along the centerline",
+                                "Cámara de endoscopia virtual volando a lo largo del trazado",
+                            ));
+                        if view.flythrough_mode {
+                            ui.add(
+                                egui::Slider::new(&mut view.endo_threshold_hu, -900.0..=400.0)
+                                    .suffix(" HU")
+                                    .step_by(25.0),
+                            );
+                        }
+                    }
                     if view.show_cross_section
                         && let Some(ref r) = view.result
                         && r.path.len() > 1
@@ -351,22 +369,51 @@ impl ViewerApp {
                                 view.window.level.to_bits(),
                                 view.window.width.to_bits(),
                                 view.invert,
+                                view.flythrough_mode,
+                                view.endo_threshold_hu as i32,
                             );
-                            if (view.cross_texture.is_none() || view.cross_tex_key != Some(c_key))
-                                && let Some(cf) =
+                            if view.cross_texture.is_none() || view.cross_tex_key != Some(c_key) {
+                                if view.flythrough_mode {
+                                    let n_pts = result.path.len();
+                                    let col = view.cross_col.min(n_pts.saturating_sub(1));
+                                    let pos = result.path[col];
+                                    let a = result.path[col.saturating_sub(1)];
+                                    let b = result.path[(col + 1).min(n_pts.saturating_sub(1))];
+                                    let fwd = crate::volume::normalize3(crate::volume::sub3(b, a));
+                                    let up = result.normals[col];
+                                    let dim = 160usize;
+                                    let rgba = crate::imaging::endoscopy::render_flythrough_rgba(
+                                        v_ref,
+                                        pos,
+                                        fwd,
+                                        up,
+                                        75.0,
+                                        view.endo_threshold_hu,
+                                        true,
+                                        dim,
+                                    );
+                                    let cimg = egui::ColorImage::from_rgba_unmultiplied([dim, dim], &rgba);
+                                    view.cross_texture = Some(ctx.load_texture(
+                                        "curved-mpr-cross",
+                                        cimg,
+                                        egui::TextureOptions::LINEAR,
+                                    ));
+                                    view.cross_tex_key = Some(c_key);
+                                } else if let Some(cf) =
                                     result.cross_section_at(v_ref, view.cross_col, view.half_width_mm)
-                            {
-                                let rgba = cf.render_with_clut(view.window, view.invert != cf.inverts, None);
-                                let cimg = egui::ColorImage::from_rgba_unmultiplied(
-                                    [cf.width as usize, cf.height as usize],
-                                    &rgba,
-                                );
-                                view.cross_texture = Some(ctx.load_texture(
-                                    "curved-mpr-cross",
-                                    cimg,
-                                    egui::TextureOptions::LINEAR,
-                                ));
-                                view.cross_tex_key = Some(c_key);
+                                {
+                                    let rgba = cf.render_with_clut(view.window, view.invert != cf.inverts, None);
+                                    let cimg = egui::ColorImage::from_rgba_unmultiplied(
+                                        [cf.width as usize, cf.height as usize],
+                                        &rgba,
+                                    );
+                                    view.cross_texture = Some(ctx.load_texture(
+                                        "curved-mpr-cross",
+                                        cimg,
+                                        egui::TextureOptions::LINEAR,
+                                    ));
+                                    view.cross_tex_key = Some(c_key);
+                                }
                             }
                             if let Some(ref ctex) = view.cross_texture {
                                 let (crect, _) = ui.allocate_exact_size(vec2(cross_side, cross_side), Sense::hover());

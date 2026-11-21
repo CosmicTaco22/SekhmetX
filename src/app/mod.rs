@@ -545,6 +545,10 @@ pub(crate) struct ViewerApp {
     pending_copy_prompt: bool,
     pub(crate) show_settings_modal: bool,
     study_storage_zip: bool,
+    pub(crate) custom_presets: Vec<crate::settings::CustomPreset>,
+    pub(crate) new_preset_name: String,
+    pub(crate) new_preset_wl: f32,
+    pub(crate) new_preset_ww: f32,
     pub(crate) previous_crash_pending: bool,
     show_crash_modal: bool,
     show_first_run_notice: bool,
@@ -663,6 +667,10 @@ impl ViewerApp {
             .as_ref()
             .map(|s| s.study_storage_zip())
             .unwrap_or(false);
+        let saved_custom_presets = settings
+            .as_ref()
+            .map(|s| s.custom_presets())
+            .unwrap_or_default();
         // "column,asc" e.g. "5,0" = by date, newest first. Default: patient name A→Z, as Horos.
         let saved_db_sort = db
             .as_ref()
@@ -811,6 +819,10 @@ impl ViewerApp {
             pending_copy_prompt: false,
             show_settings_modal: false,
             study_storage_zip: saved_storage_zip,
+            custom_presets: saved_custom_presets,
+            new_preset_name: String::new(),
+            new_preset_wl: 40.0,
+            new_preset_ww: 400.0,
             previous_crash_pending: false,
             show_crash_modal: false,
             show_first_run_notice: !first_run_ack,
@@ -1068,6 +1080,140 @@ impl ViewerApp {
                 Err(e) => {
                     self.message = Some(format!("GIF export failed: {e}"));
                 }
+            }
+        }
+    }
+
+    /// Splits a multi-b-value MR DWI series into separate sub-series (one per b-value)
+    /// using IsiX's `BValueSplit` tag priority and grouping rules.
+    pub(crate) fn split_dwi_series(&mut self, si: usize, ri: usize) {
+        let es = self.lang == crate::i18n::Lang::Es;
+        let Some(ref mut idx) = self.index else {
+            return;
+        };
+        let Some(study) = idx.studies.get_mut(si) else {
+            return;
+        };
+        let Some(base) = study.series.get(ri).cloned() else {
+            return;
+        };
+        let b_vals: Vec<Option<f64>> = base
+            .slices
+            .iter()
+            .map(|s| crate::imaging::mr_maps::BValueSplit::read_from_file(&s.path))
+            .collect();
+        let groups = crate::imaging::mr_maps::BValueSplit::groups(&b_vals);
+        if groups.is_empty() {
+            self.message = Some(
+                if es {
+                    "Esta serie no tiene múltiples valores b para separar"
+                } else {
+                    "This series does not contain multiple b-values to split"
+                }
+                .to_string(),
+            );
+            return;
+        }
+        let n_groups = groups.len();
+        for (gi, g) in groups.into_iter().enumerate() {
+            let tag = match g.b_value {
+                Some(b) => format!("b={b:.0}"),
+                None => "b=?".to_string(),
+            };
+            let mut sub = base.clone();
+            sub.uid = format!("{}.b{}", base.uid, gi + 1);
+            sub.description = if base.description.is_empty() {
+                format!("DWI [{tag}]")
+            } else {
+                format!("{} [{tag}]", base.description)
+            };
+            sub.slices = g.indices.into_iter().map(|i| base.slices[i].clone()).collect();
+            study.series.push(sub);
+        }
+        self.message = Some(if es {
+            format!("Serie DWI separada en {n_groups} grupos de valor b")
+        } else {
+            format!("Split DWI series into {n_groups} b-value groups")
+        });
+    }
+
+    /// Computes total 3D volume (cm³) of closed ROIs drawn across slices of the active series.
+    pub(crate) fn compute_active_series_roi_volume(&mut self) {
+        let es = self.lang == crate::i18n::Lang::Es;
+        let vp_idx = self.active_viewport;
+        let Some((si, ri)) = self.viewports[vp_idx].selected else {
+            return;
+        };
+        let Some(ref idx) = self.index else {
+            return;
+        };
+        let Some(se) = idx.studies.get(si).and_then(|st| st.series.get(ri)) else {
+            return;
+        };
+        let mut slice_areas: Vec<(f64, f64)> = Vec::new();
+        let mut fallback_thick = 1.0_f64;
+        for (sl_i, sl) in se.slices.iter().enumerate() {
+            let key = (sl.path.clone(), sl.frame);
+            let Some(items) = self.measures.get(&key) else {
+                continue;
+            };
+            let Some((sp_y, sp_x)) = sl.spacing else {
+                continue;
+            };
+            if sp_x <= 0.0 || sp_y <= 0.0 {
+                continue;
+            }
+            let mut area_mm2 = 0.0_f64;
+            for m in items {
+                let area_px2: f64 = match m {
+                    Measure::Oval(a, b) => {
+                        let rx = ((b.x - a.x) * 0.5).abs() as f64;
+                        let ry = ((b.y - a.y) * 0.5).abs() as f64;
+                        std::f64::consts::PI * rx * ry
+                    }
+                    Measure::Rect(a, b) => ((b.x - a.x).abs() * (b.y - a.y).abs()) as f64,
+                    Measure::Polygon(pts) | Measure::Pencil(pts) if pts.len() >= 3 => {
+                        let outline: Vec<crate::roi::RoiPoint> = pts
+                            .iter()
+                            .map(|p| crate::roi::RoiPoint::new(p.x as f64, p.y as f64))
+                            .collect();
+                        crate::roi::RoiPlanarGeometry::area_of_polygon(&outline) as f64
+                    }
+                    _ => 0.0,
+                };
+                area_mm2 += area_px2 * sp_x * sp_y;
+            }
+            if area_mm2 > 0.0 {
+                let z = sl.slice_location.unwrap_or(sl_i as f64);
+                slice_areas.push((z, area_mm2));
+            }
+        }
+        if se.slices.len() >= 2
+            && let (Some(a), Some(b)) = (se.slices[0].slice_location, se.slices[1].slice_location)
+        {
+            let d = (b - a).abs();
+            if d > 0.0 {
+                fallback_thick = d;
+            }
+        }
+        match crate::roi::compute_roi_volume_cm3(&slice_areas, fallback_thick) {
+            Some(vol_cm3) => {
+                let n = slice_areas.len();
+                self.message = Some(if es {
+                    format!("Volumen ROI: {vol_cm3:.2} cm³ ({n} cortes)")
+                } else {
+                    format!("ROI Volume: {vol_cm3:.2} cm³ ({n} slices)")
+                });
+            }
+            None => {
+                self.message = Some(
+                    if es {
+                        "Dibuje al menos una ROI cerrada (Óvalo, Rect, Polígono o Lápiz) para calcular el volumen"
+                    } else {
+                        "Draw at least one closed ROI (Oval, Rect, Polygon, or Pencil) to compute volume"
+                    }
+                    .to_string(),
+                );
             }
         }
     }

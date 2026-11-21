@@ -541,6 +541,38 @@ impl RoiLengthRatio {
     }
 }
 
+/// Computes the 3D volume in `cm³` from `(slice_position_mm, area_mm2)` pairs across
+/// slices using trapezoidal integration with half-slice end caps (Horos ROI Volume).
+pub fn compute_roi_volume_cm3(
+    slice_areas_mm2: &[(f64, f64)],
+    fallback_thickness_mm: f64,
+) -> Option<f64> {
+    let mut valid: Vec<(f64, f64)> = slice_areas_mm2
+        .iter()
+        .copied()
+        .filter(|&(z, a)| z.is_finite() && a.is_finite() && a > 0.0)
+        .collect();
+    if valid.is_empty() {
+        return None;
+    }
+    valid.sort_by(|a, b| a.0.total_cmp(&b.0));
+    if valid.len() == 1 {
+        let thick = fallback_thickness_mm.max(0.0);
+        if thick <= 0.0 {
+            return None;
+        }
+        return Some((valid[0].1 * thick) / 1000.0);
+    }
+    let mut vol_mm3 = 0.0_f64;
+    for w in valid.windows(2) {
+        let dz = (w[1].0 - w[0].0).abs();
+        vol_mm3 += 0.5 * (w[0].1 + w[1].1) * dz;
+    }
+    let avg_dz = (valid.last().unwrap().0 - valid[0].0).abs() / (valid.len() - 1) as f64;
+    vol_mm3 += 0.5 * (valid[0].1 + valid.last().unwrap().1) * avg_dz;
+    Some(vol_mm3 / 1000.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -556,5 +588,15 @@ mod tests {
         assert_eq!(RoiLengthRatio::text(Some(0.0456)), "0.046");
         assert_eq!(RoiLengthRatio::value(2.0, true, 2.0, false), None);
         assert_eq!(RoiLengthRatio::value(2.0, true, 0.0, true), None);
+    }
+
+    #[test]
+    fn roi_volume_trapezoidal_cylinder_is_exact() {
+        // 5 slices spaced 2 mm apart, each with 100 mm² area -> 100 * (5 * 2) = 1000 mm³ = 1.0 cm³
+        let slices = [(0.0, 100.0), (2.0, 100.0), (4.0, 100.0), (6.0, 100.0), (8.0, 100.0)];
+        let vol = compute_roi_volume_cm3(&slices, 2.0).unwrap();
+        assert!((vol - 1.0).abs() < 1e-9, "got {vol}");
+        // Single slice with 5 mm thickness: 200 mm² * 5 mm = 1.0 cm³
+        assert!((compute_roi_volume_cm3(&[(10.0, 200.0)], 5.0).unwrap() - 1.0).abs() < 1e-9);
     }
 }

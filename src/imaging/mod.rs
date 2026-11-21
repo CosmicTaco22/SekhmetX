@@ -11,6 +11,7 @@ pub mod convolution;
 pub mod cpr;
 pub mod defaults;
 pub mod drag;
+pub mod endoscopy;
 pub mod fusion;
 pub mod mr_maps;
 pub mod photometry;
