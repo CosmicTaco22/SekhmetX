@@ -35,7 +35,7 @@ Lines count all IsiX code in the area, including headers and tests; Rust version
 
 | Area | Decision | RDicom | Source files / lines | In RDicom | Rust crates | Notes |
 |---|---|---|---|---|---|---|
-| **PACS networking: echo, query/retrieve, send, listener, TLS, worklist**<br>`network-pacs` | Port | started | 184 / 38,534 | src/net/mod.rs, src/net/dimse.rs, src/app/modals.rs | pure-Rust PS 3.8 TCP (C-ECHO SCU); dicom-ul/rustls (planned) |  |
+| **PACS networking: echo, query/retrieve, send, listener, TLS, worklist**<br>`network-pacs` | Port | started | 184 / 38,534 | src/net/mod.rs, src/net/dimse.rs, src/app/modals.rs | pure-Rust PS 3.8/DIMSE TCP (C-ECHO, C-FIND, C-STORE SCU) |  |
 | **DICOMweb and WADO (QIDO/WADO/STOW, OAuth)**<br>`dicomweb` | Port | started | 18 / 6,588 | src/net/mod.rs, src/net/dicomweb.rs, src/app/modals.rs | ureq |  |
 | **MPR: orthogonal and oblique reslicing, thick slab MIP/MinIP**<br>`mpr` | Rebuild | started | 58 / 17,955 | src/volume.rs, src/app.rs | wgpu, rayon | In-place single-viewport 3D MPR (Axial/Coronal/Sagittal/Oblique 3D trackball rotation), hybrid multi-series (AX/COR/SAG) tri-planar resolution fusion, and Thick-Slab MIP/MinIP/Mean ray-marched projections. |
 | **PET-CT fusion and SUV**<br>`fusion-pet` | Port | started | 20 / 6,105 | src/imaging/suv.rs, src/imaging/fusion.rs, src/frame.rs, src/app/viewport.rs, src/ui/toolbar.rs | — | Ported SUVParameters, SUVComputation, PETSUVConversion, PETWindowing, SUVWindowScaling, FusionBlend, FusionComparison, PETBlendingTable, and ViewTransform.alphaTable with unit tests; wired SUV cursor/ROI readouts and LPS-aligned 2D PET-CT fusion overlay + toolbar popover. |
@@ -48,11 +48,11 @@ Lines count all IsiX code in the area, including headers and tests; Rust version
 
 | Area | Decision | RDicom | Source files / lines | In RDicom | Rust crates | Notes |
 |---|---|---|---|---|---|---|
-| **3D: volume rendering, MIP/VR, surface rendering, 3D presets**<br>`volume-3d` | Rebuild | not started | 127 / 38,587 | — | wgpu | IsiX renders 3D with VTK and Metal. Rebuild as a wgpu ray caster; the opacity/colour preset maths ports directly. |
+| **3D: volume rendering, MIP/VR, surface rendering, 3D presets**<br>`volume-3d` | Rebuild | started | 127 / 38,587 | src/gpu_view.rs, src/imaging/vr_presets.rs, src/imaging/stl.rs, src/sculpt.rs | wgpu | IsiX renders 3D with VTK and Metal. Rebuild as a wgpu ray caster; the opacity/colour preset maths ports directly. |
 | **Curved MPR (CPR) and straightened views**<br>`cpr` | Rebuild | started | 47 / 21,007 | src/imaging/cpr.rs (path checks and straightened sampling), src/app/cpr_view.rs (window) | — |  |
 | **Segmentation, registration, subtraction, SEG objects**<br>`segmentation-registration` | Port | started | 28 / 7,417 | src/volume.rs (RigidTransform3D), src/app.rs | — | Automatic 6-DOF 3D rigid registration (foreground centroid + multi-scale Normalized Cross-Correlation) and manual 3D lock for cross-study comparison. |
 | **MR maps: T1/T2 fitting, synthetic DWI, b-value split**<br>`advanced-mr` | Port | started | 11 / 2,795 | src/imaging/mr_maps.rs | — | Ported IsiX BValueSplit and T2FitMapping echo grouping, plus log-linear T2 (ms) and mono-exponential ADC fitting with unit tests. |
-| **Reports (Word/Pages/RTF templates linked to studies)**<br>`reports` | Rebuild | not started | 20 / 5,815 | — | — | Decide later: may be replaced by your own dictation workflow. |
+| **Reports (Word/Pages/RTF templates linked to studies)**<br>`reports` | Rebuild | started | 20 / 5,815 | src/app/mod.rs (report_html), src/settings.rs (report_template) | — | Decide later: may be replaced by your own dictation workflow. |
 
 ## P4 · maybe
 

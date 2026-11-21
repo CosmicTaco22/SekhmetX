@@ -521,6 +521,113 @@ impl ViewerApp {
                     }
                 }
 
+                let es_s = self.lang == crate::i18n::Lang::Es;
+                ui.collapsing(
+                    if es_s {
+                        "Plantilla de informe (Key Images)"
+                    } else {
+                        "Report template (Key Images)"
+                    },
+                    |ui| {
+                        let resp = ui.add(
+                            egui::TextEdit::multiline(&mut self.report_template)
+                                .desired_rows(4)
+                                .desired_width(f32::INFINITY)
+                                .hint_text(if es_s {
+                                    "ANTECEDENTES:\nTÉCNICA:\nHALLAZGOS:\nIMPRESIÓN:"
+                                } else {
+                                    "CLINICAL HISTORY:\nTECHNIQUE:\nFINDINGS:\nIMPRESSION:"
+                                }),
+                        );
+                        if resp.changed()
+                            && let Some(ref db) = self.db
+                        {
+                            crate::settings::AppSettings::new(db)
+                                .set_report_template(&self.report_template);
+                        }
+                        if ui
+                            .small_button(if es_s {
+                                "Insertar plantilla estándar"
+                            } else {
+                                "Insert standard template"
+                            })
+                            .clicked()
+                        {
+                            self.report_template = if es_s {
+                                "ANTECEDENTES:\n\nTÉCNICA:\n\nHALLAZGOS:\n\nIMPRESIÓN:\n".to_string()
+                            } else {
+                                "CLINICAL HISTORY:\n\nTECHNIQUE:\n\nFINDINGS:\n\nIMPRESSION:\n".to_string()
+                            };
+                            if let Some(ref db) = self.db {
+                                crate::settings::AppSettings::new(db)
+                                    .set_report_template(&self.report_template);
+                            }
+                        }
+                    },
+                );
+
+                ui.collapsing(
+                    if es_s {
+                        "Atajos de teclado personalizados"
+                    } else {
+                        "Custom keyboard shortcuts"
+                    },
+                    |ui| {
+                        let mut changed = false;
+                        for (id, lbl_en, lbl_es, def_key) in [
+                            ("wl", "Window / Level", "Ventana / Nivel", "W"),
+                            ("scroll", "Scroll", "Desplazar", "Z"),
+                            ("pan", "Pan", "Mover", "X"),
+                            ("zoom", "Zoom", "Zoom", "Q"),
+                            ("length", "Length ROI", "Medir longitud", "L"),
+                            ("oval", "Oval ROI", "ROI ovalada", "E"),
+                            ("reset", "Reset View", "Restablecer vista", "R"),
+                            ("key_image", "Toggle Key Image", "Marcar imagen clave", "K"),
+                            ("pacs", "PACS / DICOMweb", "PACS / DICOMweb", "N"),
+                        ] {
+                            ui.horizontal(|ui| {
+                                ui.label(if es_s { lbl_es } else { lbl_en });
+                                let mut val = self
+                                    .custom_shortcuts
+                                    .get(id)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                let edit = ui.add(
+                                    egui::TextEdit::singleline(&mut val)
+                                        .desired_width(48.0)
+                                        .hint_text(def_key),
+                                );
+                                if edit.changed() {
+                                    let trimmed = val.trim().to_ascii_uppercase();
+                                    if trimmed.is_empty() {
+                                        self.custom_shortcuts.remove(id);
+                                    } else {
+                                        self.custom_shortcuts.insert(id.to_string(), trimmed);
+                                    }
+                                    changed = true;
+                                }
+                            });
+                        }
+                        if ui
+                            .small_button(if es_s {
+                                "Restablecer atajos por defecto"
+                            } else {
+                                "Reset default shortcuts"
+                            })
+                            .clicked()
+                        {
+                            self.custom_shortcuts.clear();
+                            changed = true;
+                        }
+                        if changed
+                            && let Some(ref db) = self.db
+                        {
+                            crate::settings::AppSettings::new(db)
+                                .set_custom_shortcuts(&self.custom_shortcuts);
+                        }
+                    },
+                );
+
                 let (upd_hdr, lbl_auto, lbl_manual, lbl_check_now) = match self.lang {
                     crate::i18n::Lang::Es => (
                         "Actualizaciones",
@@ -1664,7 +1771,7 @@ impl ViewerApp {
                     {
                         self.pacs_tab_dimse = false;
                     }
-                    if crate::ui::icons::choice(ui, self.pacs_tab_dimse, "DICOM PACS (C-ECHO)")
+                    if crate::ui::icons::choice(ui, self.pacs_tab_dimse, "DICOM PACS (DIMSE)")
                         .clicked()
                     {
                         self.pacs_tab_dimse = true;
@@ -1862,6 +1969,40 @@ impl ViewerApp {
                     ctx_c.request_repaint();
                 });
             }
+            let study_files = self.active_study_file_paths();
+            let can_stow = !self.pacs_busy && !self.dicomweb_servers.is_empty() && !study_files.is_empty();
+            if ui
+                .add_enabled(
+                    can_stow,
+                    egui::Button::new(if es { "Enviar (STOW)" } else { "Send (STOW)" }),
+                )
+                .clicked()
+            {
+                let srv = self.dicomweb_servers[self.selected_dicomweb].clone();
+                let secret = if self.dicomweb_secret.trim().is_empty() {
+                    None
+                } else {
+                    Some(self.dicomweb_secret.clone())
+                };
+                let tx = self.pacs_tx.clone();
+                let ctx_c = ctx.clone();
+                self.pacs_busy = true;
+                self.pacs_status = Some(if es {
+                    format!("Enviando {} archivos por STOW-RS…", study_files.len())
+                } else {
+                    format!("Uploading {} file(s) via STOW-RS…", study_files.len())
+                });
+                std::thread::spawn(move || {
+                    let res = crate::net::dicomweb::stow_store_files(
+                        &srv,
+                        secret.as_deref(),
+                        &study_files,
+                    )
+                    .map_err(|e| format!("{e:#}"));
+                    let _ = tx.send(crate::app::PacsBgResult::Store(res));
+                    ctx_c.request_repaint();
+                });
+            }
         });
 
         ui.add_space(4.0);
@@ -2019,6 +2160,94 @@ impl ViewerApp {
                 }
             }
         });
+
+        ui.horizontal(|ui| {
+            ui.label(if es { "Paciente:" } else { "Patient:" });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pacs_filter.patient_name)
+                    .desired_width(110.0)
+                    .hint_text("DOE*"),
+            );
+            ui.label("Mod:");
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pacs_filter.modality)
+                    .desired_width(48.0)
+                    .hint_text("CT"),
+            );
+            ui.label(if es { "Fecha:" } else { "Date:" });
+            ui.add(
+                egui::TextEdit::singleline(&mut self.pacs_filter.study_date)
+                    .desired_width(90.0)
+                    .hint_text("YYYYMMDD"),
+            );
+            let can_find = !self.pacs_busy && !self.pacs_nodes.is_empty();
+            if ui
+                .add_enabled(
+                    can_find,
+                    egui::Button::new(if es { "Buscar (C-FIND)" } else { "Search (C-FIND)" }),
+                )
+                .clicked()
+            {
+                let node = self.pacs_nodes[self.selected_pacs_node].clone();
+                let filter = self.pacs_filter.clone();
+                let tx = self.pacs_tx.clone();
+                let ctx_c = ctx.clone();
+                self.pacs_busy = true;
+                self.pacs_status = None;
+                std::thread::spawn(move || {
+                    let res =
+                        crate::net::dimse::c_find_studies(&node, &filter).map_err(|e| format!("{e:#}"));
+                    let _ = tx.send(crate::app::PacsBgResult::Find(res));
+                    ctx_c.request_repaint();
+                });
+            }
+            let study_files = self.active_study_file_paths();
+            let can_store = !self.pacs_busy && !self.pacs_nodes.is_empty() && !study_files.is_empty();
+            if ui
+                .add_enabled(
+                    can_store,
+                    egui::Button::new(if es { "Enviar (C-STORE)" } else { "Send (C-STORE)" }),
+                )
+                .clicked()
+            {
+                let node = self.pacs_nodes[self.selected_pacs_node].clone();
+                let tx = self.pacs_tx.clone();
+                let ctx_c = ctx.clone();
+                self.pacs_busy = true;
+                self.pacs_status = Some(if es {
+                    format!("Enviando {} archivos por C-STORE…", study_files.len())
+                } else {
+                    format!("Sending {} file(s) via C-STORE…", study_files.len())
+                });
+                std::thread::spawn(move || {
+                    let res = crate::net::dimse::c_store_files(&node, &study_files)
+                        .map_err(|e| format!("{e:#}"));
+                    let _ = tx.send(crate::app::PacsBgResult::Store(res));
+                    ctx_c.request_repaint();
+                });
+            }
+        });
+
+        if !self.pacs_results.is_empty() {
+            egui::ScrollArea::vertical()
+                .id_salt("dimse_results_scroll")
+                .max_height(130.0)
+                .show(ui, |ui| {
+                    for st in &self.pacs_results {
+                        ui.label(format!(
+                            "{}  |  {}  |  {}  |  {}",
+                            if st.patient_name.is_empty() {
+                                "—"
+                            } else {
+                                &st.patient_name
+                            },
+                            st.study_date,
+                            st.modalities,
+                            st.description
+                        ));
+                    }
+                });
+        }
 
         ui.separator();
         ui.label(

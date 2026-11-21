@@ -175,6 +175,27 @@ impl<'a> AppSettings<'a> {
             let _ = self.db.set_setting("dicomweb_servers", &json);
         }
     }
+
+    pub fn report_template(&self) -> String {
+        self.db.get_setting("report_template").unwrap_or_default()
+    }
+
+    pub fn set_report_template(&self, template: &str) {
+        let _ = self.db.set_setting("report_template", template);
+    }
+
+    pub fn custom_shortcuts(&self) -> HashMap<String, String> {
+        self.db
+            .get_setting("custom_shortcuts")
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_custom_shortcuts(&self, shortcuts: &HashMap<String, String>) {
+        if let Ok(json) = serde_json::to_string(shortcuts) {
+            let _ = self.db.set_setting("custom_shortcuts", &json);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -235,6 +256,15 @@ mod tests {
         }];
         settings.set_dicomweb_servers(&servers);
         assert_eq!(settings.dicomweb_servers(), servers);
+
+        settings.set_report_template("FINDINGS:\n- Normal\n\nIMPRESSION:\n- Unremarkable");
+        assert!(settings.report_template().contains("IMPRESSION:"));
+
+        let mut sc = HashMap::new();
+        sc.insert("wl".to_string(), "W".to_string());
+        sc.insert("pacs".to_string(), "P".to_string());
+        settings.set_custom_shortcuts(&sc);
+        assert_eq!(settings.custom_shortcuts(), sc);
 
         assert!(!settings.first_run_notice_ack());
         settings.set_first_run_notice_ack(true);

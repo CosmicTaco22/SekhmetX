@@ -221,6 +221,52 @@ pub fn wado_retrieve_study(
     Ok(parts.len())
 }
 
+/// Builds a `multipart/related; type="application/dicom"` body for STOW-RS.
+pub fn build_stow_multipart_body(instances: &[Vec<u8>], boundary: &str) -> Vec<u8> {
+    let mut body = Vec::new();
+    for inst in instances {
+        body.extend_from_slice(format!("--{boundary}\r\nContent-Type: application/dicom\r\n\r\n").as_bytes());
+        body.extend_from_slice(inst);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    body
+}
+
+/// Uploads DICOM files to `server` via DICOMweb STOW-RS (`POST /studies`).
+pub fn stow_store_files(
+    server: &DicomWebServer,
+    secret: Option<&str>,
+    paths: &[std::path::PathBuf],
+) -> Result<usize> {
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    let mut instances = Vec::with_capacity(paths.len());
+    for p in paths {
+        let bytes = std::fs::read(p).with_context(|| format!("failed to read {}", p.display()))?;
+        instances.push(bytes);
+    }
+    let boundary = "sekhmetx_stow_boundary_01";
+    let body = build_stow_multipart_body(&instances, boundary);
+    let base = server.base_url.trim_end_matches('/');
+    let url = format!("{base}/studies");
+    let agent = build_agent();
+    let mut req = agent
+        .post(&url)
+        .header(
+            "Content-Type",
+            &format!("multipart/related; type=\"application/dicom\"; boundary={boundary}"),
+        )
+        .header("Accept", "application/dicom+json");
+    if let Some(auth) = auth_header_value(server.auth, secret) {
+        req = req.header("Authorization", &auth);
+    }
+    req.send(&body[..])
+        .with_context(|| format!("STOW-RS upload failed for {url}"))?;
+    Ok(instances.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,5 +302,13 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0], b"PART_ONE_DATA");
         assert_eq!(parts[1], b"PART_TWO");
+    }
+
+    #[test]
+    fn stow_multipart_roundtrips_with_extractor() {
+        let files = vec![b"DICM_FILE_1".to_vec(), b"DICM_FILE_2".to_vec()];
+        let body = build_stow_multipart_body(&files, "b123");
+        let extracted = extract_multipart_dicom(&body, "b123");
+        assert_eq!(extracted, files);
     }
 }

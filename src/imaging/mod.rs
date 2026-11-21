@@ -18,6 +18,8 @@ pub mod photometry;
 pub mod presets;
 pub mod slab_scale;
 pub mod sr;
+pub mod stl;
+pub mod subtraction;
 pub mod suv;
 pub mod us_region;
 pub mod voi_lut;

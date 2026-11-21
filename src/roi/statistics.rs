@@ -208,6 +208,49 @@ impl CalciumScoreSums {
             _ => None,
         }
     }
+
+    /// Computes Agatston score, volume (mm³), and approximate mass (mg) for one
+    /// ROI slice given its interior HU samples, pixel area (mm²), and slice thickness (mm).
+    pub fn from_hu_samples(
+        samples: &[f32],
+        pixel_area_mm2: f32,
+        slice_thickness_mm: f32,
+        threshold_hu: f32,
+    ) -> Self {
+        let mut count = 0usize;
+        let mut max_hu = f32::NEG_INFINITY;
+        let mut sum_hu = 0.0f64;
+        for &v in samples {
+            if v.is_finite() && v >= threshold_hu {
+                count += 1;
+                max_hu = max_hu.max(v);
+                sum_hu += v as f64;
+            }
+        }
+        if count == 0 || pixel_area_mm2 <= 0.0 || slice_thickness_mm <= 0.0 {
+            return Self::ZERO;
+        }
+        let area_mm2 = count as f32 * pixel_area_mm2;
+        let weight = if max_hu >= 400.0 {
+            4.0
+        } else if max_hu >= 300.0 {
+            3.0
+        } else if max_hu >= 200.0 {
+            2.0
+        } else {
+            1.0
+        };
+        let thickness_factor = slice_thickness_mm / 3.0;
+        let score = area_mm2 * weight * thickness_factor;
+        let volume = area_mm2 * slice_thickness_mm;
+        let mean_hu = (sum_hu / count as f64) as f32;
+        let mass = mean_hu * volume * 0.001;
+        Self {
+            score,
+            mass,
+            volume,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -290,5 +333,16 @@ mod tests {
                     && ((dev as f64) / (2.0f64.sqrt() * (scale as f64)) - 1.0).abs() < 1e-6
             );
         }
+    }
+
+    #[test]
+    fn calcium_scoring_agatston_weights() {
+        assert_eq!(CalciumScoreSums::lower_threshold(0), Some(90));
+        assert_eq!(CalciumScoreSums::lower_threshold(1), Some(130));
+        let cs = CalciumScoreSums::from_hu_samples(&[50.0, 150.0, 250.0, 420.0], 0.5, 3.0, 130.0);
+        // 3 pixels >= 130 HU -> area 1.5 mm², max 420 -> weight 4, 3mm thickness -> score = 6.0
+        assert!((cs.score - 6.0).abs() < 1e-4);
+        assert!((cs.volume - 4.5).abs() < 1e-4);
+        assert!(cs.mass > 0.0);
     }
 }

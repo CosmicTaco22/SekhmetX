@@ -9,8 +9,12 @@ pub enum VrPreset {
     Default,
     Bone,
     Vascular,
+    CoronaryCta,
     SoftTissue,
+    MuscleSkin,
     Lung,
+    Colon,
+    Endoscopy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -27,12 +31,16 @@ const fn stop(t: f32, r: f32, g: f32, b: f32, a: f32) -> TfStop {
 }
 
 impl VrPreset {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 9] = [
         Self::Default,
         Self::Bone,
         Self::Vascular,
+        Self::CoronaryCta,
         Self::SoftTissue,
+        Self::MuscleSkin,
         Self::Lung,
+        Self::Colon,
+        Self::Endoscopy,
     ];
 
     pub const fn label(self) -> &'static str {
@@ -40,8 +48,12 @@ impl VrPreset {
             Self::Default => "Default",
             Self::Bone => "Bone",
             Self::Vascular => "Angio / Vascular",
+            Self::CoronaryCta => "Coronary CTA",
             Self::SoftTissue => "Soft Tissue",
+            Self::MuscleSkin => "Muscle / Skin",
             Self::Lung => "Lung / Airway",
+            Self::Colon => "Colon",
+            Self::Endoscopy => "Endoscopy",
         }
     }
 
@@ -50,8 +62,12 @@ impl VrPreset {
             Self::Default => Window::new(300.0, 1200.0),
             Self::Bone => Window::new(500.0, 1400.0),
             Self::Vascular => Window::new(220.0, 520.0),
+            Self::CoronaryCta => Window::new(280.0, 620.0),
             Self::SoftTissue => Window::new(60.0, 380.0),
+            Self::MuscleSkin => Window::new(40.0, 420.0),
             Self::Lung => Window::new(-550.0, 950.0),
+            Self::Colon => Window::new(-400.0, 1000.0),
+            Self::Endoscopy => Window::new(-300.0, 800.0),
         }
     }
 
@@ -96,12 +112,46 @@ impl VrPreset {
             stop(0.90, 0.98, 0.96, 0.92, 0.82),
             stop(1.00, 1.00, 1.00, 1.00, 0.95),
         ];
+        const CORONARY_STOPS: &[TfStop] = &[
+            stop(0.00, 0.00, 0.00, 0.00, 0.00),
+            stop(0.24, 0.50, 0.05, 0.04, 0.00),
+            stop(0.42, 0.90, 0.14, 0.08, 0.24),
+            stop(0.66, 1.00, 0.56, 0.24, 0.65),
+            stop(0.86, 1.00, 0.92, 0.78, 0.92),
+            stop(1.00, 1.00, 1.00, 0.98, 1.00),
+        ];
+        const MUSCLE_SKIN_STOPS: &[TfStop] = &[
+            stop(0.00, 0.00, 0.00, 0.00, 0.00),
+            stop(0.16, 0.76, 0.56, 0.44, 0.00),
+            stop(0.32, 0.86, 0.64, 0.50, 0.18),
+            stop(0.56, 0.78, 0.28, 0.22, 0.36),
+            stop(0.82, 0.95, 0.88, 0.80, 0.68),
+            stop(1.00, 1.00, 0.98, 0.94, 0.92),
+        ];
+        const COLON_STOPS: &[TfStop] = &[
+            stop(0.00, 0.00, 0.00, 0.00, 0.00),
+            stop(0.25, 0.68, 0.38, 0.32, 0.00),
+            stop(0.42, 0.88, 0.56, 0.46, 0.48),
+            stop(0.70, 0.96, 0.74, 0.62, 0.76),
+            stop(1.00, 1.00, 0.92, 0.86, 0.94),
+        ];
+        const ENDOSCOPY_STOPS: &[TfStop] = &[
+            stop(0.00, 0.00, 0.00, 0.00, 0.00),
+            stop(0.30, 0.72, 0.34, 0.28, 0.00),
+            stop(0.45, 0.92, 0.58, 0.48, 0.72),
+            stop(0.75, 0.98, 0.80, 0.70, 0.90),
+            stop(1.00, 1.00, 0.96, 0.92, 0.98),
+        ];
         match self {
             Self::Default => DEFAULT_STOPS,
             Self::Bone => BONE_STOPS,
             Self::Vascular => VASCULAR_STOPS,
+            Self::CoronaryCta => CORONARY_STOPS,
             Self::SoftTissue => SOFT_TISSUE_STOPS,
+            Self::MuscleSkin => MUSCLE_SKIN_STOPS,
             Self::Lung => LUNG_STOPS,
+            Self::Colon => COLON_STOPS,
+            Self::Endoscopy => ENDOSCOPY_STOPS,
         }
     }
 

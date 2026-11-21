@@ -391,6 +391,8 @@ pub(crate) enum PacsBgResult {
     Qido(Result<Vec<crate::net::StudyQueryResult>, String>),
     Wado(Result<(PathBuf, usize), String>),
     Echo(Result<u128, String>),
+    Find(Result<Vec<crate::net::StudyQueryResult>, String>),
+    Store(Result<usize, String>),
 }
 
 pub type SeriesPair = ((usize, usize), (usize, usize));
@@ -582,6 +584,8 @@ pub(crate) struct ViewerApp {
     pub(crate) new_pacs_local_ae: String,
     pub(crate) pacs_tx: std::sync::mpsc::Sender<PacsBgResult>,
     pacs_rx: Receiver<PacsBgResult>,
+    pub(crate) report_template: String,
+    pub(crate) custom_shortcuts: HashMap<String, String>,
     pub(crate) previous_crash_pending: bool,
     show_crash_modal: bool,
     show_first_run_notice: bool,
@@ -715,6 +719,14 @@ impl ViewerApp {
         let saved_dicomweb_servers = settings
             .as_ref()
             .map(|s| s.dicomweb_servers())
+            .unwrap_or_default();
+        let saved_report_template = settings
+            .as_ref()
+            .map(|s| s.report_template())
+            .unwrap_or_default();
+        let saved_custom_shortcuts = settings
+            .as_ref()
+            .map(|s| s.custom_shortcuts())
             .unwrap_or_default();
         let (pacs_tx, pacs_rx) = std::sync::mpsc::channel();
         // "column,asc" e.g. "5,0" = by date, newest first. Default: patient name A→Z, as Horos.
@@ -896,6 +908,8 @@ impl ViewerApp {
             new_pacs_local_ae: "SEKHMETX".to_string(),
             pacs_tx,
             pacs_rx,
+            report_template: saved_report_template,
+            custom_shortcuts: saved_custom_shortcuts,
             previous_crash_pending: false,
             show_crash_modal: false,
             show_first_run_notice: !first_run_ack,
@@ -1407,6 +1421,272 @@ impl ViewerApp {
         });
     }
 
+    /// Collects unique on-disk `.dcm` paths for the currently active study (for C-STORE / STOW-RS).
+    pub(crate) fn active_study_file_paths(&self) -> Vec<PathBuf> {
+        let Some((si, _)) = self.active_cell().selected else {
+            return Vec::new();
+        };
+        let Some(study) = self.study_at(si) else {
+            return Vec::new();
+        };
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for se in &study.series {
+            for sl in &se.slices {
+                if sl.path.is_file() && seen.insert(sl.path.clone()) {
+                    out.push(sl.path.clone());
+                }
+            }
+        }
+        out
+    }
+
+    /// Computes a live digital subtraction series (`post - mask`) from the active series
+    /// and a mask series (either another viewport's series in the same study, or the
+    /// preceding series in the study).
+    pub(crate) fn subtract_active_series(&mut self) {
+        let es = self.lang == crate::i18n::Lang::Es;
+        let Some((si, post_ri)) = self.active_cell().selected else {
+            return;
+        };
+        // Pick mask series: prefer another visible viewport in the same study, else post_ri - 1.
+        let mut mask_ri = None;
+        for (i, vp) in self.viewports.iter().take(self.tiling.cell_count()).enumerate() {
+            if i != self.active_viewport
+                && let Some((vsi, vri)) = vp.selected
+                && vsi == si
+                && vri != post_ri
+            {
+                mask_ri = Some(vri);
+                break;
+            }
+        }
+        let mask_ri = mask_ri.or_else(|| post_ri.checked_sub(1));
+        let Some(mask_ri) = mask_ri else {
+            self.message = Some(if es {
+                "Abra o seleccione otra serie del mismo estudio como máscara para sustraer.".into()
+            } else {
+                "Open another series from the same study (or select a post-contrast series) as mask.".into()
+            });
+            return;
+        };
+        let (post_series, mask_series) = match self
+            .index
+            .as_ref()
+            .and_then(|idx| idx.studies.get(si))
+            .and_then(|st| Some((st.series.get(post_ri)?.clone(), st.series.get(mask_ri)?.clone())))
+        {
+            Some(pair) => pair,
+            None => return,
+        };
+        let n = post_series.slices.len().min(mask_series.slices.len());
+        if n == 0 {
+            return;
+        }
+        let mut sub_slices = Vec::with_capacity(n);
+        let mut sub_frames = Vec::with_capacity(n);
+        for i in 0..n {
+            let p_sl = &post_series.slices[i];
+            let m_sl = &mask_series.slices[i];
+            let Ok(pf) = crate::frame::load_frame(&p_sl.path, p_sl.frame) else {
+                continue;
+            };
+            let Ok(mf) = crate::frame::load_frame(&m_sl.path, m_sl.frame) else {
+                continue;
+            };
+            if let Some(sub) = crate::imaging::subtraction::subtract_frames(&pf, &mf) {
+                let mut sl = p_sl.clone();
+                sl.path = PathBuf::from(format!("memory://sub/{si}/{post_ri}-{mask_ri}/{i}"));
+                sub_slices.push(sl);
+                sub_frames.push(Arc::new(sub));
+            }
+        }
+        if sub_frames.is_empty() {
+            self.message = Some(if es {
+                "Las series no tienen las mismas dimensiones en escala de grises.".into()
+            } else {
+                "Series dimensions or pixel formats do not match for subtraction.".into()
+            });
+            return;
+        }
+        let new_ri = if let Some(study) = self.index.as_mut().and_then(|i| i.studies.get_mut(si)) {
+            let mut sub_se = post_series.clone();
+            sub_se.uid = format!("{}.sub.{mask_ri}", post_series.uid);
+            sub_se.description = if post_series.description.is_empty() {
+                "[SUB]".to_string()
+            } else {
+                format!("{} [SUB]", post_series.description)
+            };
+            sub_se.slices = sub_slices;
+            let idx_new = study.series.len();
+            study.series.push(sub_se);
+            idx_new
+        } else {
+            return;
+        };
+        for (sl_i, frame) in sub_frames.into_iter().enumerate() {
+            self.cache.insert(
+                SliceKey {
+                    scan_gen: self.scan_gen,
+                    study: si,
+                    series: new_ri,
+                    slice: sl_i,
+                },
+                frame,
+            );
+        }
+        let vp = self.active_viewport;
+        self.assign_series_to_viewport(vp, Some((si, new_ri)));
+        self.message = Some(if es {
+            "Serie de sustracción [SUB] generada".into()
+        } else {
+            "Subtraction series [SUB] generated".into()
+        });
+    }
+
+    /// Computes total Agatston Calcium Score across all closed ROIs on the active CT series (≥ 130 HU).
+    pub(crate) fn compute_active_calcium_score(&mut self) {
+        let es = self.lang == crate::i18n::Lang::Es;
+        let Some((si, ri)) = self.active_cell().selected else {
+            return;
+        };
+        let Some(series) = self
+            .index
+            .as_ref()
+            .and_then(|idx| idx.studies.get(si))
+            .and_then(|st| st.series.get(ri))
+            .cloned()
+        else {
+            return;
+        };
+        let mut total = crate::roi::statistics::CalciumScoreSums::ZERO;
+        let mut roi_count = 0usize;
+        for sl in &series.slices {
+            let key = (sl.path.clone(), sl.frame);
+            let Some(list) = self.measures.get(&key) else {
+                continue;
+            };
+            let Ok(frame) = crate::frame::load_frame(&sl.path, sl.frame) else {
+                continue;
+            };
+            let (sx, sy) = self
+                .series_spacing_override
+                .get(&(si, ri))
+                .copied()
+                .or(frame.spacing)
+                .unwrap_or((1.0, 1.0));
+            let px_area = (sx * sy) as f32;
+            let thickness = frame.slice_thickness.unwrap_or(3.0).max(0.1) as f32;
+            for m in list {
+                let outline: Vec<crate::roi::RoiPoint> = match m {
+                    Measure::Oval(a, b) => {
+                        let cx = (a.x + b.x) * 0.5;
+                        let cy = (a.y + b.y) * 0.5;
+                        let rx = (b.x - a.x).abs() * 0.5;
+                        let ry = (b.y - a.y).abs() * 0.5;
+                        (0..48)
+                            .map(|k| {
+                                let t = (k as f32 / 48.0) * std::f32::consts::TAU;
+                                crate::roi::RoiPoint::new(
+                                    (cx + rx * t.cos()) as f64,
+                                    (cy + ry * t.sin()) as f64,
+                                )
+                            })
+                            .collect()
+                    }
+                    Measure::Rect(a, b) => vec![
+                        crate::roi::RoiPoint::new(a.x as f64, a.y as f64),
+                        crate::roi::RoiPoint::new(b.x as f64, a.y as f64),
+                        crate::roi::RoiPoint::new(b.x as f64, b.y as f64),
+                        crate::roi::RoiPoint::new(a.x as f64, b.y as f64),
+                    ],
+                    Measure::Polygon(pts) | Measure::Pencil(pts) if pts.len() >= 3 => pts
+                        .iter()
+                        .map(|p| crate::roi::RoiPoint::new(p.x as f64, p.y as f64))
+                        .collect(),
+                    _ => continue,
+                };
+                let samples = crate::roi::sample_region_values(&frame, &outline);
+                let cs = crate::roi::statistics::CalciumScoreSums::from_hu_samples(
+                    &samples, px_area, thickness, 130.0,
+                );
+                total.add(cs);
+                roi_count += 1;
+            }
+        }
+        if roi_count == 0 {
+            self.message = Some(if es {
+                "Dibuje una o más ROIs cerradas sobre calcificaciones (≥ 130 HU) primero.".into()
+            } else {
+                "Draw one or more closed ROIs over calcifications (≥ 130 HU) first.".into()
+            });
+        } else {
+            self.message = Some(if es {
+                format!(
+                    "Calcio Agatston: {:.1}  ·  Volumen: {:.1} mm³  ·  Masa: {:.1} mg ({roi_count} ROIs)",
+                    total.score, total.volume, total.mass
+                )
+            } else {
+                format!(
+                    "Agatston Score: {:.1}  ·  Volume: {:.1} mm³  ·  Mass: {:.1} mg ({roi_count} ROIs)",
+                    total.score, total.volume, total.mass
+                )
+            });
+        }
+    }
+
+    /// Extracts an iso-surface from the active 3D volume and saves it as a binary `.stl` mesh.
+    pub(crate) fn export_active_3d_stl(&mut self) {
+        let es = self.lang == crate::i18n::Lang::Es;
+        let vp_idx = self.active_viewport;
+        let Some(vol) = self.viewport_volume(vp_idx).cloned() else {
+            self.message = Some(if es {
+                "Active una serie 3D / volumen primero para exportar superficie STL.".into()
+            } else {
+                "Open a 3D volume series first to export a 3D STL surface.".into()
+            });
+            return;
+        };
+        let threshold = self.viewports[vp_idx]
+            .window
+            .map(|w| w.level)
+            .unwrap_or(250.0);
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("STL 3D Mesh", &["stl"])
+            .set_file_name("surface.stl")
+            .save_file()
+        else {
+            return;
+        };
+        let tris = crate::imaging::stl::extract_isosurface_triangles(&vol, threshold, 128);
+        if tris.is_empty() {
+            self.message = Some(if es {
+                format!("No se encontró superficie en el umbral {threshold:.0} HU.")
+            } else {
+                format!("No iso-surface found at threshold {threshold:.0} HU.")
+            });
+            return;
+        }
+        match crate::imaging::stl::write_binary_stl(&path, &tris) {
+            Ok(()) => {
+                self.message = Some(if es {
+                    format!(
+                        "Superficie 3D exportada: {} triángulos ({threshold:.0} HU)",
+                        tris.len()
+                    )
+                } else {
+                    format!(
+                        "Exported 3D STL surface: {} triangles ({threshold:.0} HU)",
+                        tris.len()
+                    )
+                });
+            }
+            Err(e) => {
+                self.message = Some(format!("STL export failed: {e}"));
+            }
+        }
+    }
+
     /// Applies a matching saved `HangingProtocol` (if configured for the study's primary
     /// modality) when opening study `si`, optionally placing `lead_series` in viewport 0.
     pub(crate) fn apply_hanging_protocol_for_study(
@@ -1676,6 +1956,36 @@ impl ViewerApp {
                         format!("Error C-ECHO: {e}")
                     } else {
                         format!("C-ECHO failed: {e}")
+                    });
+                }
+                PacsBgResult::Find(Ok(studies)) => {
+                    let n = studies.len();
+                    self.pacs_results = studies;
+                    self.pacs_status = Some(if es {
+                        format!("C-FIND: {n} estudio(s) encontrados.")
+                    } else {
+                        format!("C-FIND: found {n} study(ies).")
+                    });
+                }
+                PacsBgResult::Find(Err(e)) => {
+                    self.pacs_status = Some(if es {
+                        format!("Error C-FIND: {e}")
+                    } else {
+                        format!("C-FIND failed: {e}")
+                    });
+                }
+                PacsBgResult::Store(Ok(count)) => {
+                    self.pacs_status = Some(if es {
+                        format!("Enviados {count} archivo(s) DICOM exitosamente.")
+                    } else {
+                        format!("Sent {count} DICOM file(s) successfully.")
+                    });
+                }
+                PacsBgResult::Store(Err(e)) => {
+                    self.pacs_status = Some(if es {
+                        format!("Error al enviar: {e}")
+                    } else {
+                        format!("Send failed: {e}")
                     });
                 }
             }
@@ -2165,6 +2475,62 @@ impl ViewerApp {
         {
             self.undo_last_roi();
             return;
+        }
+        // Check user-customized single-letter shortcuts first.
+        if !self.custom_shortcuts.is_empty() {
+            let mut matched_action: Option<String> = None;
+            ctx.input(|i| {
+                if i.modifiers.command || i.modifiers.ctrl || i.modifiers.alt {
+                    return;
+                }
+                for (action, key_str) in &self.custom_shortcuts {
+                    if let Some(k) = Key::from_name(key_str.trim())
+                        && i.key_pressed(k)
+                    {
+                        matched_action = Some(action.clone());
+                        break;
+                    }
+                }
+            });
+            if let Some(action) = matched_action {
+                let vp = self.active_viewport;
+                match action.as_str() {
+                    "wl" => {
+                        self.tool = Tool::WindowLevel;
+                        self.drawing.clear();
+                    }
+                    "scroll" => {
+                        self.tool = Tool::Scroll;
+                        self.drawing.clear();
+                    }
+                    "pan" => {
+                        self.tool = Tool::Pan;
+                        self.drawing.clear();
+                    }
+                    "zoom" => {
+                        self.tool = Tool::Zoom;
+                        self.drawing.clear();
+                    }
+                    "length" => {
+                        self.tool = Tool::Length;
+                        self.drawing.clear();
+                    }
+                    "oval" => {
+                        self.tool = Tool::Oval;
+                        self.drawing.clear();
+                    }
+                    "reset" => {
+                        self.viewports[vp].reset_view();
+                        self.viewports[vp].reset_clut();
+                        self.viewports[vp].invert = false;
+                        self.set_active_window(None);
+                    }
+                    "key_image" => self.toggle_viewport_key_image(vp),
+                    "pacs" => self.show_pacs_modal = !self.show_pacs_modal,
+                    _ => {}
+                }
+                return;
+            }
         }
         let keys = [
             Key::ArrowUp,
@@ -2801,7 +3167,7 @@ impl ViewerApp {
                 measure_count: e.measure_count,
             });
         }
-        let html = report_html(&study_desc, &cards, es);
+        let html = report_html(&study_desc, &cards, es, &self.report_template);
         let ok = std::fs::write(dir.join("report.html"), html).is_ok()
             && std::fs::write(dir.join("case_summary.txt"), summary).is_ok();
         let count = cards.len();
@@ -3106,7 +3472,7 @@ fn html_escape(s: &str) -> String {
 /// The case report page: the key images with their series, image numbers and
 /// measurement values, a findings box to type into, and a print button. No patient
 /// name, ID or dates.
-pub(crate) fn report_html(study_desc: &str, cards: &[ReportCard], es: bool) -> String {
+pub(crate) fn report_html(study_desc: &str, cards: &[ReportCard], es: bool, template: &str) -> String {
     let t = |en: &'static str, sp: &'static str| if es { sp } else { en };
     let mut h = String::new();
     h.push_str("<!doctype html>\n<html lang=\"");
@@ -3166,8 +3532,9 @@ footer{color:var(--dim);font-size:12.5px;margin-top:24px}\n\
     h.push_str("<h2 style=\"font-size:17px\">");
     h.push_str(t("Findings", "Hallazgos"));
     h.push_str(&format!(
-        "</h2><div class=\"findings\" contenteditable=\"true\" data-placeholder=\"{}\"></div>\n",
-        t("Type your findings here before printing…", "Escriba aquí sus hallazgos antes de imprimir…")
+        "</h2><div class=\"findings\" contenteditable=\"true\" data-placeholder=\"{}\">{}</div>\n",
+        t("Type your findings here before printing…", "Escriba aquí sus hallazgos antes de imprimir…"),
+        html_escape(template.trim())
     ));
     h.push_str("<footer>");
     h.push_str(t(
@@ -3194,13 +3561,14 @@ mod report_tests {
             },
             ReportCard { file: None, label: "PT Se 50".into(), image_no: 7, measurements: vec![], measure_count: 1 },
         ];
-        let html = report_html("CT TORAX", &cards, false);
+        let html = report_html("CT TORAX", &cards, false, "IMPRESSION:\n- Normal");
         assert!(html.contains("<img src=\"key_01.png\""));
         assert!(html.contains("Axial &lt;2.5mm&gt;"), "names are escaped");
         assert!(html.contains("<li>2.31 cm (23.1 mm)</li>"));
         assert!(html.contains("Measurements: 1"));
         assert!(html.contains("2 key images"));
-        let es = report_html("", &cards, true);
+        assert!(html.contains("IMPRESSION:"));
+        let es = report_html("", &cards, true, "");
         assert!(es.contains("Hallazgos") && es.contains("Imprimir"));
     }
 }

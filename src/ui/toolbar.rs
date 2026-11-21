@@ -429,6 +429,14 @@ impl ViewerApp {
                             crate::i18n::Lang::En => "Undo ROI (Ctrl+Z)",
                             crate::i18n::Lang::Es => "Deshacer ROI (Ctrl+Z)",
                         };
+                        let ca_lbl = match self.lang {
+                            crate::i18n::Lang::En => "Agatston Calcium Score (≥ 130 HU)",
+                            crate::i18n::Lang::Es => "Puntaje de Calcio Agatston (≥ 130 HU)",
+                        };
+                        if ui.button(ca_lbl).clicked() {
+                            self.compute_active_calcium_score();
+                            ui.close();
+                        }
                         if ui
                             .add_enabled(!self.roi_undo.is_empty(), egui::Button::new(undo_lbl))
                             .clicked()
@@ -885,7 +893,23 @@ impl ViewerApp {
                             self.export_active_anonymized_dicom();
                             ui.close();
                         }
+                        let stl_lbl = match self.lang {
+                            crate::i18n::Lang::En => "Export 3D Surface (.stl)…",
+                            crate::i18n::Lang::Es => "Exportar Superficie 3D (.stl)…",
+                        };
+                        if ui.button(stl_lbl).clicked() {
+                            self.export_active_3d_stl();
+                            ui.close();
+                        }
                     });
+                    let sub_lbl = match self.lang {
+                        crate::i18n::Lang::En => "Subtract Series (Mask)",
+                        crate::i18n::Lang::Es => "Sustraer Serie (Máscara)",
+                    };
+                    if ui.button(sub_lbl).clicked() {
+                        self.subtract_active_series();
+                        ui.close();
+                    }
                     if let Some((si, ri)) = self.active_cell().selected
                         && self
                             .viewport_series(self.active_viewport)

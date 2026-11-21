@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0] - 2026-11-21
+
+### Added
+- **Classic PACS (DIMSE C-FIND & C-STORE) + DICOMweb STOW-RS** (`src/net/dimse.rs`, `src/net/dicomweb.rs`, `src/app/modals.rs`):
+  - Pure-Rust Study-Root **C-FIND SCU** for searching studies on classic DICOM PACS peers.
+  - Pure-Rust **C-STORE SCU** and **DICOMweb STOW-RS** for sending the active study directly to a PACS peer or DICOMweb server.
+- **Digital Image Subtraction & Agatston Calcium Scoring UI** (`src/imaging/subtraction.rs`, `src/roi/statistics.rs`, `src/app/mod.rs`, `src/ui/toolbar.rs`):
+  - **Subtract Series (Mask)** (`Sustraer Serie (Máscara)`) in the View menu computes a live `[SUB]` (`post - mask`) series for DSA and contrast-enhanced CT/MR.
+  - **Agatston Calcium Score (≥ 130 HU)** (`Puntaje de Calcio Agatston`) in the ROI menu computes total Agatston score, calcified volume (`mm³`), and approximate mass (`mg`) across closed ROIs on the active CT series.
+- **Expanded 3D Volume Rendering Presets & 3D Surface STL Export** (`src/imaging/vr_presets.rs`, `src/imaging/stl.rs`, `src/app/mod.rs`, `src/ui/toolbar.rs`):
+  - Added 4 clinical 3D VR presets (**Coronary CTA**, **Muscle / Skin**, **Colon**, **Endoscopy** — 9 total).
+  - Added **Export 3D Surface (.stl)…** (`Exportar Superficie 3D (.stl)…`) using Surface Nets iso-surface extraction in patient millimeter (LPS) space to write binary `.stl` meshes.
+- **Customizable Report Templates & Keyboard Shortcuts** (`src/settings.rs`, `src/app/modals.rs`, `src/app/mod.rs`):
+  - Configure a custom structured radiology report template in Settings (pre-filled automatically in exported `report.html` Key Images reports).
+  - Customize single-key tool & action shortcuts (`wl`, `scroll`, `pan`, `zoom`, `length`, `oval`, `reset`, `key_image`, `pacs`) in Settings with one-click reset to defaults.
+
 ## [0.7.6] - 2026-11-21
 
 ### Added
