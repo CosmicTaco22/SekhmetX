@@ -16,8 +16,8 @@ use dicom_pixeldata::{PhotometricInterpretation, PixelDecoder};
 use crate::dicom_index::{get_f64, get_f64s, get_int, get_str};
 use crate::geometry::{ImagePlaneCoordinates, ImagePlaneGeometry};
 use crate::imaging::{
-    clut::ColorLookupTable, defaults, photometry, suv::SuvParameters, voi_lut::VoiLut, window,
-    Window,
+    clut::ColorLookupTable, defaults, photometry, suv::SuvParameters, us_region::UsRegion,
+    voi_lut::VoiLut, window, Window,
 };
 
 pub enum Pixels {
@@ -258,6 +258,67 @@ impl Frame {
     }
 }
 
+/// Reads `SequenceOfUltrasoundRegions` `(0018,6011)` for calibrated US measurements.
+fn read_us_regions(obj: &DefaultDicomObject) -> Vec<UsRegion> {
+    let Some(seq) = obj
+        .element_opt(tags::SEQUENCE_OF_ULTRASOUND_REGIONS)
+        .ok()
+        .flatten()
+    else {
+        return Vec::new();
+    };
+    let Some(items) = seq.items() else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .map(|item| {
+            let get_i = |t| {
+                item.element_opt(t)
+                    .ok()
+                    .flatten()
+                    .and_then(|e| e.to_int::<i32>().ok())
+                    .unwrap_or(0)
+            };
+            let get_f = |t| {
+                item.element_opt(t)
+                    .ok()
+                    .flatten()
+                    .and_then(|e| e.to_float64().ok())
+                    .unwrap_or(0.0)
+            };
+            UsRegion {
+                region_spatial_format: get_i(tags::REGION_SPATIAL_FORMAT),
+                region_data_type: get_i(tags::REGION_DATA_TYPE),
+                region_flags: get_i(tags::REGION_FLAGS),
+                region_location_min_x0: get_i(tags::REGION_LOCATION_MIN_X0),
+                region_location_min_y0: get_i(tags::REGION_LOCATION_MIN_Y0),
+                region_location_max_x1: get_i(tags::REGION_LOCATION_MAX_X1),
+                region_location_max_y1: get_i(tags::REGION_LOCATION_MAX_Y1),
+                reference_pixel_x0: get_i(tags::REFERENCE_PIXEL_X0),
+                reference_pixel_y0: get_i(tags::REFERENCE_PIXEL_Y0),
+                physical_units_x_direction: get_i(tags::PHYSICAL_UNITS_X_DIRECTION),
+                physical_units_y_direction: get_i(tags::PHYSICAL_UNITS_Y_DIRECTION),
+                ref_pixel_physical_value_x: get_f(tags::REFERENCE_PIXEL_PHYSICAL_VALUE_X),
+                ref_pixel_physical_value_y: get_f(tags::REFERENCE_PIXEL_PHYSICAL_VALUE_Y),
+                physical_delta_x: get_f(tags::PHYSICAL_DELTA_X),
+                physical_delta_y: get_f(tags::PHYSICAL_DELTA_Y),
+                doppler_correction_angle: get_f(tags::DOPPLER_CORRECTION_ANGLE),
+                is_reference_pixel_x0_present: item
+                    .element_opt(tags::REFERENCE_PIXEL_X0)
+                    .ok()
+                    .flatten()
+                    .is_some(),
+                is_reference_pixel_y0_present: item
+                    .element_opt(tags::REFERENCE_PIXEL_Y0)
+                    .ok()
+                    .flatten()
+                    .is_some(),
+            }
+        })
+        .collect()
+}
+
 /// Reads PET SUV parameters from a DICOM object, following IsiX `SUVParameters.swift`.
 fn read_suv_parameters(obj: &DefaultDicomObject) -> Option<SuvParameters> {
     let mut params = SuvParameters {
@@ -416,7 +477,8 @@ pub fn load_frame(path: &Path, frame: u32) -> Result<Frame> {
     let raw_spacing = get_f64s(&obj, tags::PIXEL_SPACING)
         .or_else(|| get_f64s(&obj, tags::IMAGER_PIXEL_SPACING))
         .filter(|v| v.len() >= 2 && v[0] > 0.0 && v[1] > 0.0)
-        .map(|v| (v[0], v[1]));
+        .map(|v| (v[0], v[1]))
+        .or_else(|| UsRegion::primary_spacing_row_col_mm(&read_us_regions(&obj)));
     let (spacing, pixel_ratio) = match raw_spacing {
         Some((row_sp, col_sp)) => {
             let settled = ImagePlaneGeometry::settled_pixel_spacing(

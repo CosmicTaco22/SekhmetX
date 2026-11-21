@@ -337,7 +337,10 @@ id = "annotations-sr"
 name = "Presentation states (GSPS), key images, structured reports"
 decision = "port"
 priority = 2
-progress = "todo"
+progress = "partial"
+ported_from = "087f2cd0f721"
+rdicom = "src/imaging/sr.rs, src/db.rs (key_images), src/app/mod.rs (case report)"
+notes = "Key images + HTML case report export done; SR ContentSequence tree parser and GSPS PR reader groundwork added in src/imaging/sr.rs."
 names = ['KeyObject(Controller|PopupController|Report)', '(All|Selected)KeyImagesArrayController',
          'GSPSDocument', 'Structured.*', 'StructuredReportExtraction', 'HorosStructuredReportBridge',
          'AnnotationsSRPruning', 'ArchivedSR.*', 'ViewerKeyObjectDocument', 'IsiXDCMTKStructuredReportReader', 'SRAnnotation']

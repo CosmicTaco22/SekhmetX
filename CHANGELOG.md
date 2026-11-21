@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.2] - 2026-11-21
+
+### Improved
+- **Curved MPR thick-slab and saved paths** (`src/imaging/cpr.rs`, `src/app/cpr_view.rs`, `src/db.rs`): added **Thin / MIP / MinIP / Mean** thick-slab projection (2–50 mm, parallelized with `rayon`) along the curve binormal, plus **Save / Load / Delete** named CPR paths per series in the SQLite library (`cpr_paths` table), with English and Spanish labels.
+- **Sharper 3D scissors** (`src/sculpt.rs`): raised the sculpting mask resolution from 128³ to **256³** (8× more cells / 2× sharper edges on every axis) and parallelized `SculptMask::cut` across slices with `rayon`.
+
+### Added (P2 / P3 groundwork)
+- **Ultrasound region calibration (`USRegion`)** (`src/imaging/us_region.rs`, `src/frame.rs`): ported IsiX's `USRegion.swift` and its 4 unit tests, and wired `SequenceOfUltrasoundRegions` `(0018,6011)` as a spacing fallback when `PixelSpacing` is absent so ultrasound measurements calibrate in millimetres automatically.
+- **Structured Report & GSPS groundwork** (`src/imaging/sr.rs`): recursive DICOM `ContentSequence` `(0040,A730)` text tree extraction (`SrNode`) and basic GSPS (`PR`) window/rotation/flip/text-annotation reader (`GspsState`) with unit tests.
+- **PACS & DICOMweb groundwork** (`src/net/mod.rs`): typed, serializable `PacsNode`, `DicomWebServer` (with QIDO-RS query URL encoding), `QueryFilter`, and `StudyQueryResult` models with unit tests, ready for `dicom-ul` / `ureq` transport integration.
+
 ## [0.7.1] - 2026-11-20
 
 ### Removed

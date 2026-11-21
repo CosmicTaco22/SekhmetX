@@ -13,6 +13,7 @@ mod i18n;
 mod imaging;
 mod loader;
 mod navigation;
+mod net;
 mod legacy_cleanup;
 mod roi;
 mod sculpt;

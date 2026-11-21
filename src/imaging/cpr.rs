@@ -12,8 +12,10 @@
 
 use std::sync::Arc;
 
+use rayon::prelude::*;
+
 use crate::frame::{Frame, Pixels};
-use crate::volume::{add3, cross3, dot3, len3, normalize3, scale3, sub3, Volume3D};
+use crate::volume::{add3, cross3, dot3, len3, normalize3, scale3, sub3, SlabMode, Volume3D};
 
 const MINIMUM_NODES: usize = 3;
 const MINIMUM_LENGTH_MM: f64 = 1.0;
@@ -200,12 +202,27 @@ pub struct Straightened {
 /// the path was drawn on) turned by `angle_deg` about the curve and kept at right
 /// angles to it, `half_width_mm` to each side. Returns `None` when the path fails
 /// the checks.
+#[allow(dead_code)]
 pub fn straighten(
     vol: &Volume3D,
     nodes: &[[f64; 3]],
     initial_normal: [f64; 3],
     angle_deg: f64,
     half_width_mm: f64,
+) -> Option<Straightened> {
+    straighten_slab(vol, nodes, initial_normal, angle_deg, half_width_mm, SlabMode::Thin, 0.0)
+}
+
+/// Straightens `vol` along `nodes` with optional thick-slab projection (`MIP`, `MinIP`,
+/// or `Mean`) across `slab_thickness_mm` perpendicular to both the curve tangent and row normal.
+pub fn straighten_slab(
+    vol: &Volume3D,
+    nodes: &[[f64; 3]],
+    initial_normal: [f64; 3],
+    angle_deg: f64,
+    half_width_mm: f64,
+    slab_mode: SlabMode,
+    slab_thickness_mm: f64,
 ) -> Option<Straightened> {
     let spacing = vol.spacing[0].min(vol.spacing[1]).min(vol.spacing[2]).clamp(0.3, 1.5);
     let length = polyline_length(nodes);
@@ -226,6 +243,7 @@ pub fn straighten(
         normalize3(sub3(b, a))
     };
     let mut normals = Vec::with_capacity(width);
+    let mut binormals = Vec::with_capacity(width);
     let mut prev = normalize3(initial_normal);
     for i in 0..width {
         let t = tangent(i);
@@ -235,19 +253,92 @@ pub fn straighten(
             n = cross3(t, if t[0].abs() < 0.9 { [1.0, 0.0, 0.0] } else { [0.0, 1.0, 0.0] });
         }
         n = normalize3(n);
-        normals.push(normalize3(rotate_about(n, t, angle_deg)));
+        let n_rot = normalize3(rotate_about(n, t, angle_deg));
+        let b_rot = normalize3(cross3(t, n_rot));
+        normals.push(n_rot);
+        binormals.push(b_rot);
         prev = n;
     }
+
+    let use_slab = slab_mode != SlabMode::Thin && slab_thickness_mm > spacing;
+    let slab_offsets: Vec<f64> = if use_slab {
+        let steps = ((slab_thickness_mm / spacing).ceil() as usize + 1).clamp(3, 41);
+        let half_slab = 0.5 * slab_thickness_mm;
+        (0..steps)
+            .map(|k| -half_slab + (k as f64 / (steps - 1) as f64) * slab_thickness_mm)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     let bg = vol.background_value();
     let mut pixels = vec![bg; width * height];
-    for (col, (&p, &n)) in path.iter().zip(&normals).enumerate() {
-        for row in 0..height {
+    pixels
+        .par_chunks_mut(width)
+        .enumerate()
+        .for_each(|(row, row_buf)| {
             let offset = (row as f64 - half_rows as f64) * spacing;
-            if let Some(v) = vol.sample_lps(add3(p, scale3(n, offset))) {
-                pixels[row * width + col] = v;
+            for (col, dst) in row_buf.iter_mut().enumerate() {
+                let base_pt = add3(path[col], scale3(normals[col], offset));
+                if slab_offsets.is_empty() {
+                    if let Some(v) = vol.sample_lps(base_pt) {
+                        *dst = v;
+                    }
+                } else {
+                    let b = binormals[col];
+                    match slab_mode {
+                        SlabMode::Thin => {
+                            if let Some(v) = vol.sample_lps(base_pt) {
+                                *dst = v;
+                            }
+                        }
+                        SlabMode::Mip => {
+                            let mut best = f32::NEG_INFINITY;
+                            let mut any = false;
+                            for &s_off in &slab_offsets {
+                                if let Some(v) = vol.sample_lps(add3(base_pt, scale3(b, s_off))) {
+                                    if v > best {
+                                        best = v;
+                                    }
+                                    any = true;
+                                }
+                            }
+                            if any {
+                                *dst = best;
+                            }
+                        }
+                        SlabMode::MinIp => {
+                            let mut best = f32::INFINITY;
+                            let mut any = false;
+                            for &s_off in &slab_offsets {
+                                if let Some(v) = vol.sample_lps(add3(base_pt, scale3(b, s_off))) {
+                                    if v < best {
+                                        best = v;
+                                    }
+                                    any = true;
+                                }
+                            }
+                            if any {
+                                *dst = best;
+                            }
+                        }
+                        SlabMode::Mean => {
+                            let mut sum = 0.0_f64;
+                            let mut count = 0usize;
+                            for &s_off in &slab_offsets {
+                                if let Some(v) = vol.sample_lps(add3(base_pt, scale3(b, s_off))) {
+                                    sum += v as f64;
+                                    count += 1;
+                                }
+                            }
+                            if count > 0 {
+                                *dst = (sum / count as f64) as f32;
+                            }
+                        }
+                    }
+                }
             }
-        }
-    }
+        });
     let frame = Frame {
         width: width as u32,
         height: height as u32,
@@ -264,7 +355,7 @@ pub fn straighten(
         orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
         is_3d_plane: false,
         frame_of_reference_uid: vol.frame_of_reference_uid.clone(),
-        slice_thickness: None,
+        slice_thickness: if use_slab { Some(slab_thickness_mm) } else { None },
         slice_location: None,
         value_unit: vol.value_unit,
         suv_factor: vol.suv_factor,

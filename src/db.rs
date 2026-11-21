@@ -136,6 +136,13 @@ impl Database {
                 frame INTEGER NOT NULL,
                 PRIMARY KEY (file_path, frame)
             );
+            CREATE TABLE IF NOT EXISTS cpr_paths (
+                series_uid TEXT NOT NULL,
+                name TEXT NOT NULL,
+                nodes_json TEXT NOT NULL,
+                plane_normal_json TEXT NOT NULL,
+                PRIMARY KEY (series_uid, name)
+            );
             ",
         )?;
         Self::migrate_if_needed(&conn)?;
@@ -673,6 +680,60 @@ impl Database {
             out.insert((PathBuf::from(p), f));
         }
         Ok(out)
+    }
+
+    /// Saves or overwrites a named Curved MPR centerline path for `series_uid`.
+    pub fn save_cpr_path(
+        &self,
+        series_uid: &str,
+        name: &str,
+        nodes: &[[f64; 3]],
+        plane_normal: [f64; 3],
+    ) -> Result<()> {
+        let nodes_json = serde_json::to_string(nodes)?;
+        let normal_json = serde_json::to_string(&plane_normal)?;
+        self.conn.execute(
+            "INSERT OR REPLACE INTO cpr_paths (series_uid, name, nodes_json, plane_normal_json)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![series_uid, name, nodes_json, normal_json],
+        )?;
+        Ok(())
+    }
+
+    /// Loads all saved Curved MPR paths for `series_uid`.
+    #[allow(clippy::type_complexity)]
+    pub fn load_cpr_paths(&self, series_uid: &str) -> Result<Vec<(String, Vec<[f64; 3]>, [f64; 3])>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT name, nodes_json, plane_normal_json FROM cpr_paths
+             WHERE series_uid = ?1 ORDER BY name",
+        )?;
+        let rows = stmt.query_map(params![series_uid], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            let (name, nj, pj) = r?;
+            if let (Ok(nodes), Ok(normal)) = (
+                serde_json::from_str::<Vec<[f64; 3]>>(&nj),
+                serde_json::from_str::<[f64; 3]>(&pj),
+            ) {
+                out.push((name, nodes, normal));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Deletes a named Curved MPR path for `series_uid`.
+    pub fn delete_cpr_path(&self, series_uid: &str, name: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM cpr_paths WHERE series_uid = ?1 AND name = ?2",
+            params![series_uid, name],
+        )?;
+        Ok(())
     }
 
     pub fn get_setting(&self, key: &str) -> Option<String> {

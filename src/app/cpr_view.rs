@@ -15,11 +15,14 @@ pub(crate) struct CprView {
     pub(crate) plane_normal: [f64; 3],
     pub(crate) angle_deg: f64,
     pub(crate) half_width_mm: f64,
+    pub(crate) slab_mode: crate::volume::SlabMode,
+    pub(crate) slab_thickness_mm: f64,
+    pub(crate) path_name: String,
     pub(crate) result: Option<cpr::Straightened>,
     pub(crate) window: Window,
     pub(crate) invert: bool,
     pub(crate) texture: Option<TextureHandle>,
-    pub(crate) tex_key: Option<(i64, i64, u32, u32, bool)>,
+    pub(crate) tex_key: Option<(i64, i64, u8, i64, u32, u32, bool)>,
     /// A length measured on the straightened image, image pixels.
     pub(crate) measure: Option<(Pos2, Pos2)>,
     pub(crate) open: bool,
@@ -27,7 +30,15 @@ pub(crate) struct CprView {
 
 impl CprView {
     fn rebuild(&mut self, vol: &crate::volume::Volume3D) {
-        self.result = cpr::straighten(vol, &self.nodes, self.plane_normal, self.angle_deg, self.half_width_mm);
+        self.result = cpr::straighten_slab(
+            vol,
+            &self.nodes,
+            self.plane_normal,
+            self.angle_deg,
+            self.half_width_mm,
+            self.slab_mode,
+            self.slab_thickness_mm,
+        );
         self.texture = None;
         self.measure = None;
     }
@@ -69,6 +80,9 @@ impl ViewerApp {
             plane_normal,
             angle_deg: 0.0,
             half_width_mm: 40.0,
+            slab_mode: crate::volume::SlabMode::Thin,
+            slab_thickness_mm: 10.0,
+            path_name: "Path 1".to_string(),
             result: None,
             window,
             invert: self.viewports[vp_idx].effective_invert(),
@@ -175,6 +189,79 @@ impl ViewerApp {
                         }
                     }
                 });
+                // Thick-slab projection (Thin / MIP / MinIP / Mean) & Save/Load Path controls.
+                let series_uid = self
+                    .viewport_series(view.vp)
+                    .map(|se| se.uid.clone())
+                    .unwrap_or_default();
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(t("Slab", "Lámina"));
+                    for (mode, lbl) in [
+                        (crate::volume::SlabMode::Thin, t("Thin", "Fina")),
+                        (crate::volume::SlabMode::Mip, "MIP"),
+                        (crate::volume::SlabMode::MinIp, "MinIP"),
+                        (crate::volume::SlabMode::Mean, t("Mean", "Media")),
+                    ] {
+                        if ui.selectable_label(view.slab_mode == mode, lbl).clicked() {
+                            view.slab_mode = mode;
+                            rebuild = true;
+                        }
+                    }
+                    if view.slab_mode != crate::volume::SlabMode::Thin
+                        && ui
+                            .add(
+                                egui::Slider::new(&mut view.slab_thickness_mm, 2.0..=50.0)
+                                    .suffix(" mm")
+                                    .step_by(1.0),
+                            )
+                            .drag_stopped()
+                        {
+                            rebuild = true;
+                        }
+                    if let Some(ref db) = self.db
+                        && !series_uid.is_empty()
+                    {
+                        ui.separator();
+                        ui.add(
+                            egui::TextEdit::singleline(&mut view.path_name)
+                                .desired_width(88.0)
+                                .hint_text(t("Path name", "Nombre")),
+                        );
+                        if ui.small_button(t("Save", "Guardar")).clicked() {
+                            let name = view.path_name.trim();
+                            if !name.is_empty()
+                                && db.save_cpr_path(&series_uid, name, &view.nodes, view.plane_normal).is_ok()
+                            {
+                                self.message = Some(format!(
+                                    "{}: {}",
+                                    t("Saved CPR path", "Trazado CPR guardado"),
+                                    name
+                                ));
+                            }
+                        }
+                        let saved = db.load_cpr_paths(&series_uid).unwrap_or_default();
+                        if !saved.is_empty() {
+                            egui::ComboBox::from_id_salt("cpr_saved_paths")
+                                .selected_text(t("Saved…", "Guardados…"))
+                                .width(110.0)
+                                .show_ui(ui, |ui| {
+                                    for (name, nodes, normal) in saved {
+                                        ui.horizontal(|ui| {
+                                            if ui.selectable_label(false, &name).clicked() {
+                                                view.nodes = nodes;
+                                                view.plane_normal = normal;
+                                                view.path_name = name.clone();
+                                                rebuild = true;
+                                            }
+                                            if ui.small_button("×").clicked() {
+                                                let _ = db.delete_cpr_path(&series_uid, &name);
+                                            }
+                                        });
+                                    }
+                                });
+                        }
+                    }
+                });
                 ui.label(
                     egui::RichText::new(t(
                         "Drag on the image to measure a length. The path runs along the middle row.",
@@ -190,6 +277,8 @@ impl ViewerApp {
                 let key = (
                     (view.angle_deg * 10.0) as i64,
                     (view.half_width_mm * 10.0) as i64,
+                    view.slab_mode as u8,
+                    (view.slab_thickness_mm * 10.0) as i64,
                     view.window.level.to_bits(),
                     view.window.width.to_bits(),
                     view.invert,

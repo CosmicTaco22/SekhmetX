@@ -5,7 +5,9 @@
 //! IsiX does this in its VTK-based 3D window (scissors on `VRView`), which cannot be
 //! translated; this is a rebuild for the wgpu ray-caster in `src/gpu_view.rs`.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+use rayon::prelude::*;
 
 use crate::volume::Volume3D;
 
@@ -81,8 +83,10 @@ pub enum CutSide {
 
 static NEXT_VERSION: AtomicU64 = AtomicU64::new(1);
 
-/// Keep (255) or cut (0) for each cell of a grid laid over the volume, at most 128
-/// cells per side. `version` changes with every edit so the GPU copy is refreshed.
+/// Keep (255) or cut (0) for each cell of a grid laid over the volume, up to 256
+/// cells per side (2× finer per axis / 8× more cells than 128³ for sharper cut
+/// edges on large volumes). `version` changes with every edit so the GPU copy is
+/// refreshed.
 #[derive(Debug, Clone)]
 pub struct SculptMask {
     pub dims: [usize; 3],
@@ -94,7 +98,7 @@ pub struct SculptMask {
 
 impl SculptMask {
     pub fn new(vol: &Volume3D) -> Self {
-        let dims = [vol.width.clamp(1, 128), vol.height.clamp(1, 128), vol.depth.clamp(1, 128)];
+        let dims = [vol.width.clamp(1, 256), vol.height.clamp(1, 256), vol.depth.clamp(1, 256)];
         Self {
             dims,
             data: vec![255; dims[0] * dims[1] * dims[2]],
@@ -141,31 +145,44 @@ impl SculptMask {
         }
         let [mw, mh, md] = self.dims;
         let ext = cam.half_ext;
-        let mut cut = 0usize;
-        for z in 0..md {
-            for y in 0..mh {
-                for x in 0..mw {
-                    let i = (z * mh + y) * mw + x;
-                    if self.data[i] == 0 {
-                        continue;
-                    }
-                    let uvw = [(x as f32 + 0.5) / mw as f32, (y as f32 + 0.5) / mh as f32, (z as f32 + 0.5) / md as f32];
-                    let p: [f32; 3] = std::array::from_fn(|k| (uvw[k] * 2.0 - 1.0) * ext[k]);
-                    let [vx, vy] = cam.project(p, zoom, aspect);
-                    let hit = (0.0..1.0).contains(&vx)
-                        && (0.0..1.0).contains(&vy)
-                        && inside[(vy * GRID as f32) as usize * GRID + (vx * GRID as f32) as usize];
-                    let remove = match side {
-                        CutSide::Inside => hit,
-                        CutSide::Outside => !hit,
-                    };
-                    if remove {
-                        self.data[i] = 0;
-                        cut += 1;
+        let cut_total = AtomicUsize::new(0);
+        let plane_len = mw * mh;
+        self.data
+            .par_chunks_mut(plane_len)
+            .enumerate()
+            .for_each(|(z, slice)| {
+                let uz = (z as f32 + 0.5) / md as f32;
+                let pz = (uz * 2.0 - 1.0) * ext[2];
+                let mut local_cut = 0usize;
+                for y in 0..mh {
+                    let uy = (y as f32 + 0.5) / mh as f32;
+                    let py = (uy * 2.0 - 1.0) * ext[1];
+                    let row = &mut slice[y * mw..(y + 1) * mw];
+                    for (x, cell) in row.iter_mut().enumerate() {
+                        if *cell == 0 {
+                            continue;
+                        }
+                        let ux = (x as f32 + 0.5) / mw as f32;
+                        let p = [(ux * 2.0 - 1.0) * ext[0], py, pz];
+                        let [vx, vy] = cam.project(p, zoom, aspect);
+                        let hit = (0.0..1.0).contains(&vx)
+                            && (0.0..1.0).contains(&vy)
+                            && inside[(vy * GRID as f32) as usize * GRID + (vx * GRID as f32) as usize];
+                        let remove = match side {
+                            CutSide::Inside => hit,
+                            CutSide::Outside => !hit,
+                        };
+                        if remove {
+                            *cell = 0;
+                            local_cut += 1;
+                        }
                     }
                 }
-            }
-        }
+                if local_cut > 0 {
+                    cut_total.fetch_add(local_cut, Ordering::Relaxed);
+                }
+            });
+        let cut = cut_total.load(Ordering::Relaxed);
         if cut > 0 {
             self.version = NEXT_VERSION.fetch_add(1, Ordering::Relaxed);
         }
