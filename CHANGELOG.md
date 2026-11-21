@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.1] - 2026-11-21
+
+### Fixed
+- **Large (>4 GB) ZIP archive support** (`src/dicom_index.rs`, `src/app/mod.rs`): raised ZIP extraction caps to **32 GB total**, **4 GB per file**, and **200,000 entries** (previously capped at 4 GB total / 20,000 entries, which rejected 5 GB+ study archives), added 256 KB buffered writes for faster extraction, and surfaced any ZIP extraction error directly in the status bar.
+
 ## [0.9.0] - 2026-11-21
 
 ### Added

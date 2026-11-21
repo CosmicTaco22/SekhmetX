@@ -2426,10 +2426,16 @@ impl ViewerApp {
                         vp.reset_series_state(None);
                     }
                     if index.studies.is_empty() {
-                        self.message = Some(format!(
-                            "No DICOM images found ({} files checked).",
-                            index.files_seen
-                        ));
+                        if let Some(zerr) = dicom_index::take_last_zip_error() {
+                            self.message = Some(format!("ZIP error: {zerr}"));
+                        } else {
+                            self.message = Some(format!(
+                                "No DICOM images found ({} files checked).",
+                                index.files_seen
+                            ));
+                        }
+                    } else {
+                        let _ = dicom_index::take_last_zip_error();
                     }
                     let mut index = index;
                     let has_ephemeral_zip = index.studies.iter().any(|st| {

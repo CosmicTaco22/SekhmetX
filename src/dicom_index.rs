@@ -817,9 +817,29 @@ fn is_zip_file(path: &Path) -> bool {
         .is_some_and(|ext| ext.eq_ignore_ascii_case("zip"))
 }
 
-const MAX_ZIP_ENTRIES: usize = 20_000;
-const MAX_ZIP_ENTRY_BYTES: u64 = 512 * 1024 * 1024;
-const MAX_ZIP_TOTAL_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_ZIP_ENTRIES: usize = 200_000;
+const MAX_ZIP_ENTRY_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_ZIP_TOTAL_BYTES: u64 = 32 * 1024 * 1024 * 1024;
+
+static LAST_ZIP_ERROR: std::sync::OnceLock<std::sync::Mutex<Option<String>>> =
+    std::sync::OnceLock::new();
+
+pub fn take_last_zip_error() -> Option<String> {
+    LAST_ZIP_ERROR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|mut g| g.take())
+}
+
+fn set_last_zip_error(err: String) {
+    if let Ok(mut g) = LAST_ZIP_ERROR
+        .get_or_init(|| std::sync::Mutex::new(None))
+        .lock()
+    {
+        *g = Some(err);
+    }
+}
 
 fn process_zip_cache_dir() -> PathBuf {
     std::env::temp_dir().join(format!("sekhmetx-zip-{}", std::process::id()))
@@ -907,21 +927,24 @@ fn extract_zip_to_temp(zip_path: &Path) -> Option<PathBuf> {
     }
     std::fs::create_dir_all(&dest_dir).ok()?;
 
-    if extract_zip_streaming(
+    match extract_zip_streaming(
         zip_path,
         &dest_dir,
         MAX_ZIP_ENTRIES,
         MAX_ZIP_ENTRY_BYTES,
         MAX_ZIP_TOTAL_BYTES,
-    )
-    .is_ok()
-    {
-        let _ = std::fs::write(&marker, b"ok");
-        record_zip_origin(&dest_dir, zip_path);
-        Some(dest_dir)
-    } else {
-        let _ = std::fs::remove_dir_all(&dest_dir);
-        None
+    ) {
+        Ok(()) => {
+            let _ = std::fs::write(&marker, b"ok");
+            record_zip_origin(&dest_dir, zip_path);
+            Some(dest_dir)
+        }
+        Err(e) => {
+            eprintln!("SekhmetX ZIP extract error ({}): {e:#}", zip_path.display());
+            set_last_zip_error(format!("{e:#}"));
+            let _ = std::fs::remove_dir_all(&dest_dir);
+            None
+        }
     }
 }
 
@@ -968,7 +991,8 @@ fn extract_zip_streaming(
         if let Some(parent) = out_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let mut out = std::fs::File::create(&out_path)?;
+        let out_file = std::fs::File::create(&out_path)?;
+        let mut out = std::io::BufWriter::with_capacity(256 * 1024, out_file);
         let mut limited = entry.take(max_entry_bytes + 1);
         let copied = std::io::copy(&mut limited, &mut out)?;
         if copied > max_entry_bytes {
