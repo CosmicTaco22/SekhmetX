@@ -195,6 +195,29 @@ impl<'a> AppSettings<'a> {
             let _ = self.db.set_setting("custom_shortcuts", &json);
         }
     }
+
+    pub fn auto_rename_zips(&self) -> bool {
+        self.db.get_setting("auto_rename_zips").as_deref() == Some("1")
+    }
+
+    pub fn set_auto_rename_zips(&self, enabled: bool) {
+        let _ = self
+            .db
+            .set_setting("auto_rename_zips", if enabled { "1" } else { "0" });
+    }
+
+    pub fn manually_renamed_zips(&self) -> std::collections::HashSet<String> {
+        self.db
+            .get_setting("manually_renamed_zips")
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn set_manually_renamed_zips(&self, uids: &std::collections::HashSet<String>) {
+        if let Ok(json) = serde_json::to_string(uids) {
+            let _ = self.db.set_setting("manually_renamed_zips", &json);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -264,6 +287,15 @@ mod tests {
         sc.insert("pacs".to_string(), "P".to_string());
         settings.set_custom_shortcuts(&sc);
         assert_eq!(settings.custom_shortcuts(), sc);
+
+        assert!(!settings.auto_rename_zips());
+        settings.set_auto_rename_zips(true);
+        assert!(settings.auto_rename_zips());
+
+        let mut manual = std::collections::HashSet::new();
+        manual.insert("1.2.3.4".to_string());
+        settings.set_manually_renamed_zips(&manual);
+        assert_eq!(settings.manually_renamed_zips(), manual);
 
         assert!(!settings.first_run_notice_ack());
         settings.set_first_run_notice_ack(true);

@@ -905,6 +905,126 @@ pub fn original_zip_for_extracted_path(path: &Path) -> Option<PathBuf> {
     None
 }
 
+/// Updates recorded `.zip` origin paths after a `.zip` file is renamed on disk.
+pub fn update_zip_origin(old_zip: &Path, new_zip: &Path) {
+    if let Ok(mut guard) = zip_origins().lock() {
+        for val in guard.values_mut() {
+            if *val == old_zip {
+                *val = new_zip.to_path_buf();
+            }
+        }
+    }
+}
+
+/// Sanitizes a string for safe cross-platform filenames (Windows/macOS/Linux).
+pub fn sanitize_zip_stem(raw: &str) -> String {
+    let trimmed = raw
+        .trim()
+        .strip_suffix(".zip")
+        .or_else(|| raw.trim().strip_suffix(".ZIP"))
+        .unwrap_or(raw.trim());
+    let mut out = String::with_capacity(trimmed.len());
+    let mut prev_space = false;
+    for ch in trimmed.chars() {
+        let mapped = match ch {
+            '^' => ' ',
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            c if c.is_control() => ' ',
+            c => c,
+        };
+        if mapped.is_whitespace() {
+            if !prev_space && !out.is_empty() {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            out.push(mapped);
+            prev_space = false;
+        }
+    }
+    let cleaned = out.trim_matches(|c: char| c == ' ' || c == '.' || c == '_' || c == '-');
+    let mut capped: String = cleaned.chars().take(120).collect();
+    while capped.ends_with([' ', '.', '_']) {
+        capped.pop();
+    }
+    if capped.is_empty() {
+        "DICOM_Study".to_string()
+    } else {
+        capped
+    }
+}
+
+/// Builds a readable `.zip` filename stem from a study's Patient Name, Patient ID,
+/// Modality / Study Description, and Study Date.
+pub fn suggested_study_zip_stem(study: &Study) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    let name = study.patient_name.replace('^', " ");
+    let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !name.is_empty() && !name.eq_ignore_ascii_case("unknown") {
+        parts.push(name);
+    }
+    let pid = study.patient_id.trim();
+    if !pid.is_empty() {
+        parts.push(pid.to_string());
+    }
+    let primary_mod = study
+        .series
+        .iter()
+        .find(|s| !s.modality.is_empty() && s.modality != "SR" && s.modality != "PR")
+        .or_else(|| study.series.first())
+        .map(|s| s.modality.trim())
+        .unwrap_or("");
+    let desc = study.description.trim();
+    let study_type = match (primary_mod.is_empty(), desc.is_empty()) {
+        (false, false) => {
+            if desc.to_ascii_uppercase().contains(&primary_mod.to_ascii_uppercase()) {
+                desc.to_string()
+            } else {
+                format!("{primary_mod} {desc}")
+            }
+        }
+        (false, true) => primary_mod.to_string(),
+        (true, false) => desc.to_string(),
+        (true, true) => String::new(),
+    };
+    if !study_type.is_empty() {
+        parts.push(study_type);
+    }
+    let digits: String = study.date.chars().filter(|c| c.is_ascii_digit()).collect();
+    if digits.len() >= 8 {
+        parts.push(format!("{}-{}-{}", &digits[0..4], &digits[4..6], &digits[6..8]));
+    } else if !study.date.trim().is_empty() {
+        parts.push(study.date.trim().to_string());
+    }
+    sanitize_zip_stem(&parts.join(" - "))
+}
+
+/// Renames `zip_path` in-place to `<new_stem>.zip` (avoiding collisions) and updates
+/// the session's `.zip` origin mapping.
+pub fn rename_zip_file(zip_path: &Path, new_stem: &str) -> anyhow::Result<PathBuf> {
+    if !zip_path.is_file() {
+        anyhow::bail!("ZIP file no longer exists: {}", zip_path.display());
+    }
+    let parent = zip_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("ZIP path has no parent directory"))?;
+    let clean = sanitize_zip_stem(new_stem);
+    let mut candidate = parent.join(format!("{clean}.zip"));
+
+    // Already named identically?
+    if candidate.to_string_lossy().eq_ignore_ascii_case(&zip_path.to_string_lossy()) {
+        return Ok(zip_path.to_path_buf());
+    }
+    let mut suffix = 2usize;
+    while candidate.exists() {
+        candidate = parent.join(format!("{clean} ({suffix}).zip"));
+        suffix += 1;
+    }
+    std::fs::rename(zip_path, &candidate)?;
+    update_zip_origin(zip_path, &candidate);
+    Ok(candidate)
+}
+
 /// Extracts a `.zip` archive into a per-process temporary directory under `std::env::temp_dir()`
 /// using streaming `zip::ZipArchive` with path-traversal and size/entry caps.
 fn extract_zip_to_temp(zip_path: &Path) -> Option<PathBuf> {
@@ -1909,5 +2029,45 @@ mod tests {
         assert_eq!(std::fs::read(out_ok.join("study/s2.dcm")).unwrap(), b"DICM_DATA_2");
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn zip_rename_sanitizes_avoids_collisions_and_renames() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let src = dir.path().join("raw_export.zip");
+        std::fs::write(&src, b"zip1").unwrap();
+
+        let study = Study {
+            uid: "1.2.3".into(),
+            patient_name: "DOE^JANE".into(),
+            patient_id: "ID:99/01".into(),
+            birth_date: String::new(),
+            accession: String::new(),
+            description: "CT CHEST".into(),
+            date: "20261122".into(),
+            series: Vec::new(),
+            mpr_groups: Vec::new(),
+            reformats: Vec::new(),
+            files_missing: false,
+        };
+        let stem = suggested_study_zip_stem(&study);
+        assert_eq!(stem, "DOE JANE - ID_99_01 - CT CHEST - 2026-11-22");
+
+        let renamed = rename_zip_file(&src, &stem).unwrap();
+        assert!(renamed.is_file());
+        assert!(!src.exists());
+        assert_eq!(
+            renamed.file_name().unwrap().to_str().unwrap(),
+            "DOE JANE - ID_99_01 - CT CHEST - 2026-11-22.zip"
+        );
+
+        // Second file with same stem gets " (2)" instead of overwriting.
+        let src2 = dir.path().join("raw_export2.zip");
+        std::fs::write(&src2, b"zip2").unwrap();
+        let renamed2 = rename_zip_file(&src2, &stem).unwrap();
+        assert_eq!(
+            renamed2.file_name().unwrap().to_str().unwrap(),
+            "DOE JANE - ID_99_01 - CT CHEST - 2026-11-22 (2).zip"
+        );
     }
 }

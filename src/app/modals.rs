@@ -420,6 +420,19 @@ impl ViewerApp {
 
                 ui.separator();
                 let es = self.lang == crate::i18n::Lang::Es;
+                let auto_zip_lbl = if es {
+                    "Renombrar automáticamente archivos .zip al abrirlos (Paciente - ID - Estudio - Fecha.zip)"
+                } else {
+                    "Auto-rename opened .zip files (Patient - ID - Study - Date.zip)"
+                };
+                if ui.checkbox(&mut self.auto_rename_zips, auto_zip_lbl).changed()
+                    && let Some(ref db) = self.db
+                {
+                    crate::settings::AppSettings::new(db)
+                        .set_auto_rename_zips(self.auto_rename_zips);
+                }
+                ui.add_space(4.0);
+                ui.separator();
                 ui.label(
                     egui::RichText::new(if es {
                         "Preajustes personalizados de Ventana / Nivel"
@@ -2443,6 +2456,101 @@ impl ViewerApp {
                 }
             }
         });
+    }
+
+    pub(super) fn draw_rename_zip_modal(&mut self, ctx: &egui::Context) {
+        let Some((study_uid, zip_path)) = self.rename_zip_target.clone() else {
+            return;
+        };
+        let es = self.lang == crate::i18n::Lang::Es;
+        let title = if es {
+            "Renombrar archivo .zip"
+        } else {
+            "Rename .zip file"
+        };
+        let mut open = true;
+        let mut do_rename = false;
+        let mut cancel = false;
+        egui::Window::new(title)
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_min_width(420.0);
+                let cur_name = zip_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("archive.zip");
+                ui.label(format!(
+                    "{} {cur_name}",
+                    if es { "Archivo actual:" } else { "Current file:" }
+                ));
+                ui.add_space(4.0);
+                ui.label(if es {
+                    "Nuevo nombre (sin .zip):"
+                } else {
+                    "New name (without .zip):"
+                });
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.rename_zip_text)
+                        .desired_width(f32::INFINITY),
+                );
+                if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    do_rename = true;
+                }
+                ui.add_space(4.0);
+                ui.small(if es {
+                    "Renombrar manualmente evita que el renombrado automático sobrescriba este archivo."
+                } else {
+                    "Manual renaming prevents auto-rename from overwriting this file's name."
+                });
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(
+                            !self.rename_zip_text.trim().is_empty(),
+                            egui::Button::new(if es { "Renombrar" } else { "Rename" }),
+                        )
+                        .clicked()
+                    {
+                        do_rename = true;
+                    }
+                    if ui
+                        .button(if es { "Cancelar" } else { "Cancel" })
+                        .clicked()
+                    {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if do_rename {
+            match crate::dicom_index::rename_zip_file(&zip_path, &self.rename_zip_text) {
+                Ok(new_path) => {
+                    self.manually_renamed_zips.insert(study_uid);
+                    if let Some(ref db) = self.db {
+                        crate::settings::AppSettings::new(db)
+                            .set_manually_renamed_zips(&self.manually_renamed_zips);
+                    }
+                    let fname = new_path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("archive.zip");
+                    self.message = Some(if es {
+                        format!("ZIP renombrado manualmente a: {fname}")
+                    } else {
+                        format!("Renamed ZIP to: {fname}")
+                    });
+                    self.rename_zip_target = None;
+                }
+                Err(e) => {
+                    self.message = Some(format!("ZIP rename failed: {e}"));
+                }
+            }
+        } else if !open || cancel {
+            self.rename_zip_target = None;
+        }
     }
 }
 

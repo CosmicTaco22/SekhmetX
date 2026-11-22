@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.4] - 2026-11-22
+
+### Added
+- **Automatic & Manual `.zip` Renaming** (`src/dicom_index.rs`, `src/settings.rs`, `src/app/mod.rs`, `src/app/modals.rs`, `src/ui/toolbar.rs`):
+  - New Settings toggle (disabled by default): **Auto-rename opened `.zip` files (`Patient - ID - Study - Date.zip`)**. When enabled, opening a `.zip` archive automatically renames it in-place using sanitized Patient Name, Patient ID, Modality/Study Description, and Study Date (avoiding collisions with `(2)`, `(3)`, …).
+  - Manual **Rename Study `.zip` File…** (`Renombrar archivo .zip del estudio…`) in the View menu (pre-filled with the suggested name, editable); manually renamed studies are remembered in SQLite so auto-rename will never overwrite your custom name.
+
+### Security
+- Updated transitive dependencies `url` (`2.5.8` → `2.5.9`, fixing `RUSTSEC-2026-0592`) and `rustix` (`1.1.5` → `1.1.6`, fixing `RUSTSEC-2026-0486`) so `cargo audit` passes in CI.
+
 ## [0.9.3] - 2026-11-22
 
 ### Fixed & Improved

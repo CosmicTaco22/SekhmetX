@@ -555,6 +555,10 @@ pub(crate) struct ViewerApp {
     pending_copy_prompt: bool,
     pub(crate) show_settings_modal: bool,
     study_storage_zip: bool,
+    pub(crate) auto_rename_zips: bool,
+    pub(crate) manually_renamed_zips: std::collections::HashSet<String>,
+    pub(crate) rename_zip_target: Option<(String, PathBuf)>,
+    pub(crate) rename_zip_text: String,
     pub(crate) custom_presets: Vec<crate::settings::CustomPreset>,
     pub(crate) new_preset_name: String,
     pub(crate) new_preset_wl: f32,
@@ -712,6 +716,14 @@ impl ViewerApp {
             .as_ref()
             .map(|s| s.study_storage_zip())
             .unwrap_or(false);
+        let saved_auto_rename_zips = settings
+            .as_ref()
+            .map(|s| s.auto_rename_zips())
+            .unwrap_or(false);
+        let saved_manually_renamed_zips = settings
+            .as_ref()
+            .map(|s| s.manually_renamed_zips())
+            .unwrap_or_default();
         let saved_custom_presets = settings
             .as_ref()
             .map(|s| s.custom_presets())
@@ -885,6 +897,10 @@ impl ViewerApp {
             pending_copy_prompt: false,
             show_settings_modal: false,
             study_storage_zip: saved_storage_zip,
+            auto_rename_zips: saved_auto_rename_zips,
+            manually_renamed_zips: saved_manually_renamed_zips,
+            rename_zip_target: None,
+            rename_zip_text: String::new(),
             custom_presets: saved_custom_presets,
             new_preset_name: String::new(),
             new_preset_wl: 40.0,
@@ -2317,6 +2333,30 @@ impl ViewerApp {
         Some((s.path.clone(), s.frame))
     }
 
+    /// Returns the original `.zip` path for study `si`, if it was opened from a `.zip` in this session.
+    pub(crate) fn study_zip_origin(&self, si: usize) -> Option<PathBuf> {
+        let st = self.study_at(si)?;
+        st.series.iter().find_map(|se| {
+            se.slices
+                .first()
+                .and_then(|sl| dicom_index::original_zip_for_extracted_path(&sl.path))
+        })
+    }
+
+    /// Opens the manual `.zip` rename dialog for study `si`.
+    pub(crate) fn open_rename_zip_for_study(&mut self, si: usize) {
+        let Some(zip_path) = self.study_zip_origin(si) else {
+            return;
+        };
+        let Some(st) = self.study_at(si) else {
+            return;
+        };
+        let uid = st.uid.clone();
+        let suggested = dicom_index::suggested_study_zip_stem(st);
+        self.rename_zip_text = suggested;
+        self.rename_zip_target = Some((uid, zip_path));
+    }
+
     // ------------------------------------------------------- background work
 
     fn poll_background(&mut self, ctx: &egui::Context) {
@@ -2475,6 +2515,40 @@ impl ViewerApp {
                         }
                     } else {
                         let _ = dicom_index::take_last_zip_error();
+                        if self.auto_rename_zips {
+                            let mut handled_zips = std::collections::HashSet::new();
+                            let mut last_renamed: Option<String> = None;
+                            for st in &index.studies {
+                                if self.manually_renamed_zips.contains(&st.uid) {
+                                    continue;
+                                }
+                                let orig_zip = st.series.iter().find_map(|se| {
+                                    se.slices.first().and_then(|sl| {
+                                        dicom_index::original_zip_for_extracted_path(&sl.path)
+                                    })
+                                });
+                                if let Some(zip_path) = orig_zip
+                                    && handled_zips.insert(zip_path.clone())
+                                {
+                                    let stem = dicom_index::suggested_study_zip_stem(st);
+                                    if let Ok(new_path) =
+                                        dicom_index::rename_zip_file(&zip_path, &stem)
+                                        && new_path != zip_path
+                                        && let Some(fname) =
+                                            new_path.file_name().and_then(|n| n.to_str())
+                                    {
+                                        last_renamed = Some(fname.to_string());
+                                    }
+                                }
+                            }
+                            if let Some(fname) = last_renamed {
+                                self.message = Some(if self.lang == crate::i18n::Lang::Es {
+                                    format!("ZIP renombrado a: {fname}")
+                                } else {
+                                    format!("Renamed ZIP to: {fname}")
+                                });
+                            }
+                        }
                     }
                     let mut index = index;
                     let has_ephemeral_zip = index.studies.iter().any(|st| {
@@ -3849,6 +3923,7 @@ impl eframe::App for ViewerApp {
         self.draw_update_modal(&ctx);
         self.draw_settings_modal(&ctx);
         self.draw_pacs_modal(&ctx);
+        self.draw_rename_zip_modal(&ctx);
         self.draw_cpr_window(&ctx);
         self.draw_calibrate_modal(&ctx);
         self.draw_remove_study_modal(&ctx);

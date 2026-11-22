@@ -1025,6 +1025,18 @@ impl ViewerApp {
                         self.show_detached_library = !self.show_detached_library;
                         ui.close();
                     }
+                    if let Some((si, _)) = self.active_cell().selected
+                        && self.study_zip_origin(si).is_some()
+                    {
+                        let rzip_lbl = match self.lang {
+                            crate::i18n::Lang::En => "Rename Study .zip File…",
+                            crate::i18n::Lang::Es => "Renombrar archivo .zip del estudio…",
+                        };
+                        if ui.button(rzip_lbl).clicked() {
+                            self.open_rename_zip_for_study(si);
+                            ui.close();
+                        }
+                    }
                     ui.separator();
                     if ui.button(tr.reset_viewport).clicked() {
                         let vp = self.active_cell_mut();
