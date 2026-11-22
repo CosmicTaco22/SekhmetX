@@ -464,10 +464,15 @@ impl ViewerApp {
                 .viewport_volume(vp_idx)
                 .is_some_and(|v| !v.geometry_verified);
         if unverified_geom {
+            let warn = if self.lang == crate::i18n::Lang::Es {
+                "⚠ Geometría 3D irregular — mediciones aproximadas"
+            } else {
+                "⚠ Irregular 3D geometry — measurements are approximate"
+            };
             painter.text(
                 pos2(view.center().x, view.max.y - 26.0),
                 Align2::CENTER_BOTTOM,
-                "Geometry not verified: measurements disabled",
+                warn,
                 FontId::proportional(11.5),
                 Color32::from_rgb(255, 195, 80),
             );

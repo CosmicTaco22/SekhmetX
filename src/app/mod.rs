@@ -2298,8 +2298,22 @@ impl ViewerApp {
     }
 
     pub(crate) fn viewport_measure_key(&self, vp_idx: usize) -> Option<(PathBuf, u32)> {
-        let slice = self.viewports.get(vp_idx)?.slice;
-        let s = self.viewport_series(vp_idx)?.slices.get(slice)?;
+        let vp = self.viewports.get(vp_idx)?;
+        let series = self.viewport_series(vp_idx)?;
+        if vp.mpr_enabled
+            && let (Some(vol), Some(plane)) = (self.viewport_volume(vp_idx), &vp.mpr_plane)
+            && dot3(plane.normal, vol.slice_dir).abs() <= 0.99
+        {
+            let n = plane.normal;
+            return Some((
+                PathBuf::from(format!(
+                    "mpr://{}/{:.2}_{:.2}_{:.2}",
+                    series.uid, n[0], n[1], n[2]
+                )),
+                vp.slice as u32,
+            ));
+        }
+        let s = series.slices.get(vp.slice).or_else(|| series.slices.last())?;
         Some((s.path.clone(), s.frame))
     }
 

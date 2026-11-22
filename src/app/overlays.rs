@@ -465,10 +465,18 @@ impl ViewerApp {
             && self
                 .viewport_volume(vp_idx)
                 .is_some_and(|v| !v.geometry_verified);
-        let roi_stats_disabled = unverified_geom
-            || (self.blend_siblings
-                && self.viewports.get(vp_idx).is_some_and(|v| v.mpr_enabled)
-                && !self.viewport_sibling_volumes(vp_idx).is_empty());
+        let approx_tag = if unverified_geom {
+            if self.lang == crate::i18n::Lang::Es {
+                " (~aprox.)"
+            } else {
+                " (~approx.)"
+            }
+        } else {
+            ""
+        };
+        let roi_stats_disabled = self.blend_siblings
+            && self.viewports.get(vp_idx).is_some_and(|v| v.mpr_enabled)
+            && !self.viewport_sibling_volumes(vp_idx).is_empty();
 
         let unit = self
             .viewport_series(vp_idx)
@@ -599,9 +607,7 @@ impl ViewerApp {
                         draw_move_dot(s(a.lerp(b, 0.5)));
                     }
                     draw_move_dot(s(a.lerp(b, 0.5)));
-                    let lines = if unverified_geom {
-                        vec!["Measurements disabled (unverified 3D geometry)".to_string()]
-                    } else {
+                    let lines = {
                         let eval = roi::evaluate_length_with_spacing(
                             f,
                             RoiPoint::new(a.x as f64, a.y as f64),
@@ -609,6 +615,11 @@ impl ViewerApp {
                             eff_spacing,
                         );
                         let mut out = eval.format_callout(RoiKind::Length, unit, "");
+                        if !approx_tag.is_empty()
+                            && let Some(first) = out.first_mut()
+                        {
+                            first.push_str(approx_tag);
+                        }
                         if let Some(len) = eval.length_cm_or_px {
                             let cal = eval.length_mm.is_some();
                             let len_f64 = len as f64;
@@ -642,9 +653,7 @@ impl ViewerApp {
                     draw_handle(s(v));
                     draw_handle(s(b));
                     draw_move_dot(s(pos2((a.x + v.x + b.x) / 3.0, (a.y + v.y + b.y) / 3.0)));
-                    let lines = if unverified_geom {
-                        vec!["Measurements disabled (unverified 3D geometry)".to_string()]
-                    } else {
+                    let mut lines = {
                         let eval = roi::evaluate_angle_with_spacing(
                             f,
                             RoiPoint::new(a.x as f64, a.y as f64),
@@ -654,6 +663,11 @@ impl ViewerApp {
                         );
                         eval.format_callout(RoiKind::Angle, unit, "")
                     };
+                    if !approx_tag.is_empty()
+                        && let Some(first) = lines.first_mut()
+                    {
+                        first.push_str(approx_tag);
+                    }
                     draw_callout(s(v), &lines, color, ckey);
                 }
                 &Measure::Cobb(a1, b1, a2, b2) => {
@@ -677,9 +691,7 @@ impl ViewerApp {
                         (a1.x + b1.x + a2.x + b2.x) * 0.25,
                         (a1.y + b1.y + a2.y + b2.y) * 0.25,
                     )));
-                    let lines = if unverified_geom {
-                        vec!["Measurements disabled (unverified 3D geometry)".to_string()]
-                    } else {
+                    let lines = {
                         let eval = roi::evaluate_cobb_angle_with_spacing(
                             f,
                             RoiPoint::new(a1.x as f64, a1.y as f64),
@@ -689,7 +701,7 @@ impl ViewerApp {
                             eff_spacing,
                         );
                         let deg = eval.angle_deg.unwrap_or(0.0);
-                        vec![format!("Cobb: {deg:.1}°")]
+                        vec![format!("Cobb: {deg:.1}°{approx_tag}")]
                     };
                     draw_callout(sb2, &lines, color, ckey);
                 }
@@ -752,7 +764,13 @@ impl ViewerApp {
                             Some(RoiSize::new(roi_rect.size.width, roi_rect.size.height)),
                             eff_spacing,
                         );
-                        eval.format_callout(RoiKind::Oval, unit, "")
+                        let mut out = eval.format_callout(RoiKind::Oval, unit, "");
+                        if !approx_tag.is_empty()
+                            && let Some(first) = out.first_mut()
+                        {
+                            first.push_str(approx_tag);
+                        }
+                        out
                     };
                     let anchor = pos2(
                         (roi_rect.origin.x + roi_rect.size.width) as f32,
@@ -792,7 +810,13 @@ impl ViewerApp {
                             None,
                             eff_spacing,
                         );
-                        eval.format_callout(RoiKind::Rectangle, unit, "")
+                        let mut out = eval.format_callout(RoiKind::Rectangle, unit, "");
+                        if !approx_tag.is_empty()
+                            && let Some(first) = out.first_mut()
+                        {
+                            first.push_str(approx_tag);
+                        }
+                        out
                     };
                     let anchor = pos2(roi_rect.max_x() as f32, roi_rect.min_y() as f32);
                     draw_callout(s(anchor), &lines, roi_color, ckey);
@@ -821,7 +845,13 @@ impl ViewerApp {
                                 None,
                                 eff_spacing,
                             );
-                            eval.format_callout(RoiKind::ClosedPolygon, unit, "")
+                            let mut out = eval.format_callout(RoiKind::ClosedPolygon, unit, "");
+                            if !approx_tag.is_empty()
+                                && let Some(first) = out.first_mut()
+                            {
+                                first.push_str(approx_tag);
+                            }
+                            out
                         };
                         draw_callout(s(pts[0]), &lines, roi_color, ckey);
                     }
@@ -856,7 +886,13 @@ impl ViewerApp {
                                     None,
                                     eff_spacing,
                                 );
-                                eval.format_callout(RoiKind::Pencil, unit, "")
+                                let mut out = eval.format_callout(RoiKind::Pencil, unit, "");
+                            if !approx_tag.is_empty()
+                                && let Some(first) = out.first_mut()
+                            {
+                                first.push_str(approx_tag);
+                            }
+                            out
                             };
                             draw_callout(s(pts[0]), &lines, roi_color, ckey);
                         }

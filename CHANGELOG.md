@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.3] - 2026-11-22
+
+### Fixed & Improved
+- **Measurements on non-native / reconstructed MPR planes** (`src/app/mod.rs`): fixed `viewport_measure_key()` returning `None` when a reconstructed Coronal/Sagittal/Oblique MPR plane had more slices than the source acquisition, and gave non-native MPR planes their own slice measurement keys so ROIs work on every slice without colliding with native slices.
+- **Approximate measurements on irregular 3D geometry** (`src/app/overlays.rs`, `src/app/viewport.rs`): instead of blocking measurements when 3D MPR is forced on an acquisition with irregular slice spacing or missing geometry, SekhmetX now computes the best available measurement, tags callouts with `(~approx.)` / `(~aprox.)`, and shows a bilingual warning banner (`⚠ Irregular 3D geometry — measurements are approximate`).
+
 ## [0.9.2] - 2026-11-21
 
 ### Fixed & Improved (Housekeeping & UI Alignment)
