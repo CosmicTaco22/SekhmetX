@@ -475,8 +475,7 @@ impl Database {
                 }
                 let mpr_groups = build_mpr_groups(&mut series_list, &description);
                 crate::dicom_index::infer_missing_planes(&mut series_list);
-                let reformats = crate::dicom_index::find_reconstructions(&series_list);
-                studies.push(Study {
+                let mut study = Study {
                     uid,
                     patient_name,
                     patient_id,
@@ -485,10 +484,14 @@ impl Database {
                     description,
                     accession,
                     series: series_list,
-                    reformats,
+                    reformats: Vec::new(),
+                    cut_badges: Vec::new(),
+                    full_volumes: Vec::new(),
                     mpr_groups,
                     files_missing: !any_present,
-                });
+                };
+                study.refresh_derived();
+                studies.push(study);
             }
         }
 
@@ -497,50 +500,6 @@ impl Database {
             files_seen: total_images,
             files_skipped: 0,
         })
-    }
-
-    /// Loads slices for a single series on demand.
-    #[allow(dead_code)]
-    pub fn load_series_slices(&self, series_id: i64) -> Result<Vec<SliceRef>> {
-        let mut slice_stmt = self.conn.prepare_cached(
-            "SELECT path, frame, instance, pos_x, pos_y, pos_z, orient,
-                    is_3d_plane, spacing_r, spacing_c, slice_location, frame_of_reference_uid
-             FROM slices WHERE series_id = ?1 ORDER BY idx ASC",
-        )?;
-        let rows = slice_stmt.query_map(params![series_id], |row| {
-            let path_str: String = row.get(0)?;
-            let px: Option<f64> = row.get(3)?;
-            let py: Option<f64> = row.get(4)?;
-            let pz: Option<f64> = row.get(5)?;
-            let position = match (px, py, pz) {
-                (Some(x), Some(y), Some(z)) => Some([x, y, z]),
-                _ => None,
-            };
-            let orient_str: String = row.get(6)?;
-            let orientation = parse_orient(&orient_str);
-            let sr: Option<f64> = row.get(8)?;
-            let sc: Option<f64> = row.get(9)?;
-            let spacing = match (sr, sc) {
-                (Some(r), Some(c)) => Some((r, c)),
-                _ => None,
-            };
-            Ok(SliceRef {
-                path: PathBuf::from(path_str),
-                frame: row.get::<_, i64>(1)? as u32,
-                instance: row.get(2)?,
-                position,
-                orientation,
-                is_3d_plane: row.get::<_, i64>(7)? != 0,
-                spacing,
-                slice_location: row.get(10)?,
-                frame_of_reference_uid: row.get(11)?,
-            })
-        })?;
-        let mut out = Vec::new();
-        for r in rows {
-            out.push(r?);
-        }
-        Ok(out)
     }
 
     pub fn remove_study(&self, study_uid: &str) -> Result<()> {
@@ -1012,6 +971,8 @@ mod tests {
                 accession: "ACC1".into(),
                 mpr_groups: Vec::new(),
                 reformats: Vec::new(),
+                cut_badges: Vec::new(),
+                full_volumes: Vec::new(),
                 files_missing: false,
                 series: vec![Series {
                     uid: "1.2.840.100.1".into(),

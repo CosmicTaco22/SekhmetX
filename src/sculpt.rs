@@ -19,6 +19,11 @@ pub struct VrCamera {
     pub up: [f32; 3],
     pub fwd: [f32; 3],
     pub half_ext: [f32; 3],
+    /// The patient's left, superior (head) and anterior directions in the same
+    /// space, for the orientation cube.
+    pub left: [f32; 3],
+    pub sup: [f32; 3],
+    pub ant: [f32; 3],
 }
 
 fn norm3(v: [f32; 3]) -> [f32; 3] {
@@ -60,7 +65,7 @@ pub fn vr_camera(vol: &Volume3D, yaw: f32, pitch: f32, rotation_deg: f32, x_flip
     let u_rot: [f32; 3] = std::array::from_fn(|k| -right0[k] * sr + up0[k] * cr);
     let right = if x_flipped { r_rot.map(|v| -v) } else { r_rot };
     let up = if y_flipped { u_rot.map(|v| -v) } else { u_rot };
-    VrCamera { right, up, fwd, half_ext }
+    VrCamera { right, up, fwd, half_ext, left: v_left, sup: v_sup, ant: v_ant }
 }
 
 impl VrCamera {

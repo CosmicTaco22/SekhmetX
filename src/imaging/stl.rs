@@ -271,7 +271,6 @@ mod tests {
             spacing: [1.0, 1.0, 1.0],
             center_lps: [7.5, 7.5, 7.5],
             foreground_centroid_lps: [7.5, 7.5, 7.5],
-            bounding_radius_mm: 13.0,
             native_orientation: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0],
             stored_window: None,
             full_window: crate::imaging::Window::new(0.0, 1500.0),

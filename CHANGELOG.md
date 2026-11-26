@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.5] - 2026-11-26
+
+### Changed: code clean-up and speed
+- **Faster series list on big studies.** Each series' badge (MPR, MPR-A, AX…) and whether it is a complete volume are now worked out once when the library loads (`Study::refresh_derived`), not on every screen frame; before, every frame sorted every series' slice positions and compared every series with every other, also while typing a search. Studies that gain series while open (DWI split, maps, subtraction) refresh them at once.
+- **Faster scrolling on turned planes.** The map of where the body is now keeps only the two ends of each row (the only points a scroll range can depend on), about 30× fewer points for the same result.
+- **One 3D camera.** The orientation cube in the 3D view uses the same camera calculation as the renderer and the scissors (`sculpt::vr_camera`), instead of its own copy that could drift.
+- **Removed unused code:** an unused plane-mapping function, an unused library query, an unused volume field, an unused layout table and a duplicate badge helper; helpers only the tests use are now marked as test code. The ported IsiX libraries are kept whole, with their tests, as the porting rules ask. Two needless image copies per frame removed. The unused `bytemuck` dependency removed.
+- No change in behaviour: clippy clean, the same 169 tests pass, and the series list and 3D view were checked on the synthetic study.
+
 ## [0.9.4] - 2026-11-22
 
 ### Added

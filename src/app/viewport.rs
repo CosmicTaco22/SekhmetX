@@ -215,7 +215,7 @@ impl ViewerApp {
                 let r = self.image_rect(vp_idx, view, &prev);
                 let w = self.effective_window(vp_idx, &prev);
                 painter.add(
-                    self.gpu_callback(ui, vp_idx, prev.clone(), key, r, w)
+                    self.gpu_callback(ui, vp_idx, prev, key, r, w)
                         .into_shape(view),
                 );
             } else if let Some(tex) = &self.viewports[vp_idx].texture {
@@ -573,7 +573,7 @@ impl ViewerApp {
                 .map(|(mf, _)| mf)
                 .unwrap_or_else(|| source_frame.clone())
         } else {
-            source_frame.clone()
+            source_frame
         };
         self.draw_measures(&painter, vp_idx, view, img, &stats_frame);
         self.draw_cpr_path(&painter, vp_idx, img, &stats_frame);
@@ -1227,64 +1227,11 @@ impl ViewerApp {
         if view.width() < 140.0 || view.height() < 140.0 {
             return;
         }
-        let norm3 = |v: [f32; 3]| -> [f32; 3] {
-            let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-5);
-            [v[0] / l, v[1] / l, v[2] / l]
-        };
-        let cross3 = |a: [f32; 3], b: [f32; 3]| -> [f32; 3] {
-            [
-                a[1] * b[2] - a[2] * b[1],
-                a[2] * b[0] - a[0] * b[2],
-                a[0] * b[1] - a[1] * b[0],
-            ]
-        };
         let dot = |a: [f32; 3], b: [f32; 3]| -> f32 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] };
-
-        let v_left = norm3([
-            vol.row_dir[0] as f32,
-            vol.col_dir[0] as f32,
-            vol.slice_dir[0] as f32,
-        ]);
-        let v_sup = norm3([
-            vol.row_dir[2] as f32,
-            vol.col_dir[2] as f32,
-            vol.slice_dir[2] as f32,
-        ]);
-        let v_ant = norm3(cross3(v_left, v_sup));
-
-        let (sy, cy) = vp.vr_yaw.sin_cos();
-        let (sp, cp) = vp.vr_pitch.sin_cos();
-        let cam_dir = [
-            v_ant[0] * cy * cp + v_left[0] * sy * cp + v_sup[0] * sp,
-            v_ant[1] * cy * cp + v_left[1] * sy * cp + v_sup[1] * sp,
-            v_ant[2] * cy * cp + v_left[2] * sy * cp + v_sup[2] * sp,
-        ];
-        let fwd = norm3([-cam_dir[0], -cam_dir[1], -cam_dir[2]]);
-        let right0 = norm3(cross3(fwd, v_sup));
-        let up0 = norm3(cross3(right0, fwd));
-
-        let rad = vp.rotation.to_radians();
-        let (sr, cr) = rad.sin_cos();
-        let r_rot = [
-            right0[0] * cr + up0[0] * sr,
-            right0[1] * cr + up0[1] * sr,
-            right0[2] * cr + up0[2] * sr,
-        ];
-        let u_rot = [
-            -right0[0] * sr + up0[0] * cr,
-            -right0[1] * sr + up0[1] * cr,
-            -right0[2] * sr + up0[2] * cr,
-        ];
-        let right = if vp.x_flipped {
-            [-r_rot[0], -r_rot[1], -r_rot[2]]
-        } else {
-            r_rot
-        };
-        let up = if vp.y_flipped {
-            [-u_rot[0], -u_rot[1], -u_rot[2]]
-        } else {
-            u_rot
-        };
+        // The same camera as the renderer, so the cube turns with the image.
+        let cam = crate::sculpt::vr_camera(vol, vp.vr_yaw, vp.vr_pitch, vp.rotation, vp.x_flipped, vp.y_flipped);
+        let (right, up, fwd) = (cam.right, cam.up, cam.fwd);
+        let (v_left, v_sup, v_ant) = (cam.left, cam.sup, cam.ant);
 
         let center = view.right_bottom() - vec2(40.0, 40.0);
         let radius = 20.0;

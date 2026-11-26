@@ -33,7 +33,7 @@ fn paint_series_drag_preview(ui: &egui::Ui, index: &crate::dicom_index::Index) {
     let label = format!(
         "{} [{}] · {}",
         series.modality,
-        crate::dicom_index::study_cut_badge(&index.studies[si].series, ri),
+        index.studies[si].cut_badge(ri),
         desc
     );
     egui::Area::new(egui::Id::unique("series_drag_preview"))
@@ -224,7 +224,7 @@ impl ViewerApp {
                 .series
                 .iter()
                 .enumerate()
-                .filter(|(_, s)| {
+                .filter(|&(ri, s)| {
                     let mod_ok = match mod_filter.as_str() {
                         "ALL" => true,
                         "DX" => matches!(s.modality.as_str(), "DX" | "CR" | "RG" | "MG"),
@@ -241,7 +241,7 @@ impl ViewerApp {
                             .badge()
                             .to_ascii_lowercase()
                             .contains(&query)
-                        || s.cut_badge().to_ascii_lowercase().contains(&query)
+                        || study.cut_badge(ri).to_ascii_lowercase().contains(&query)
                 })
                 .map(|(ri, _)| ri)
                 .collect();
@@ -513,7 +513,7 @@ impl ViewerApp {
                                     // Second line: plane badge + "CT · #2 · 80 images".
                                     let line_y = (row_rect.min.y + if compact { 5.0 } else { 8.0 } + title_h)
                                         .min(row_rect.max.y - if compact { 17.0 } else if kids.is_empty() { 19.0 } else { 37.0 });
-                                    let badge = crate::dicom_index::study_cut_badge(&study.series, ri);
+                                    let badge = study.cut_badge(ri);
                                     let badge_color = theme::plane_color(badge);
                                     let badge_galley = painter.layout_no_wrap(
                                         badge.to_owned(),
@@ -557,13 +557,13 @@ impl ViewerApp {
                                     // read MPR-A/C/S (this card's own plane included); other
                                     // reconstructions read AX/COR/SAG.
                                     let mut planes: Vec<&'static str> = Vec::new();
-                                    let has_twins = kids.iter().any(|&k| study.series[k].is_full_volume());
+                                    let has_twins = kids.iter().any(|&k| study.is_full_volume(k));
                                     if has_twins {
                                         planes.push(crate::dicom_index::lettered_badge(series));
                                     }
                                     for &k in kids {
                                         let ks = &study.series[k];
-                                        let b = if ks.is_full_volume() {
+                                        let b = if study.is_full_volume(k) {
                                             crate::dicom_index::lettered_badge(ks)
                                         } else {
                                             ks.dominant_plane.badge()
@@ -633,8 +633,8 @@ impl ViewerApp {
                                     tr.images,
                                     series.columns,
                                     series.rows,
-                                    crate::dicom_index::study_cut_badge(&study.series, ri),
-                                    if series.is_full_volume() {
+                                    study.cut_badge(ri),
+                                    if study.is_full_volume(ri) {
                                         tr.full_volume_hint
                                     } else if series.is_mpr_capable() {
                                         " · 3D MPR"
@@ -1090,7 +1090,7 @@ impl ViewerApp {
                             } else {
                                 series.description.as_str()
                             };
-                            let cut_badge = crate::dicom_index::study_cut_badge(&study.series, ri);
+                            let cut_badge = study.cut_badge(ri);
                             let hover_txt = format!(
                                 "{} · {} ({cut_badge})\n{} im",
                                 series.modality,

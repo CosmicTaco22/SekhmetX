@@ -1247,6 +1247,7 @@ impl ViewerApp {
             sub.slices = g.indices.into_iter().map(|i| base.slices[i].clone()).collect();
             study.series.push(sub);
         }
+        study.refresh_derived();
         self.message = Some(if es {
             format!("Serie DWI separada en {n_groups} grupos de valor b")
         } else {
@@ -1426,6 +1427,7 @@ impl ViewerApp {
             map_series.slices = map_slices;
             let idx_new = study.series.len();
             study.series.push(map_series);
+            study.refresh_derived();
             idx_new
         } else {
             return;
@@ -1550,6 +1552,7 @@ impl ViewerApp {
             sub_se.slices = sub_slices;
             let idx_new = study.series.len();
             study.series.push(sub_se);
+            study.refresh_derived();
             idx_new
         } else {
             return;

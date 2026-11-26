@@ -233,34 +233,6 @@ impl Default for ViewportTiling {
 }
 
 impl ViewportTiling {
-    #[allow(dead_code)]
-    pub const PRESETS: [Self; 6] = [
-        Self {
-            rows: 1,
-            columns: 1,
-        },
-        Self {
-            rows: 1,
-            columns: 2,
-        },
-        Self {
-            rows: 2,
-            columns: 1,
-        },
-        Self {
-            rows: 2,
-            columns: 2,
-        },
-        Self {
-            rows: 2,
-            columns: 3,
-        },
-        Self {
-            rows: 3,
-            columns: 3,
-        },
-    ];
-
     pub const fn new(rows: usize, columns: usize) -> Self {
         Self { rows, columns }
     }

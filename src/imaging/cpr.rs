@@ -257,7 +257,7 @@ impl Straightened {
 /// the path was drawn on) turned by `angle_deg` about the curve and kept at right
 /// angles to it, `half_width_mm` to each side. Returns `None` when the path fails
 /// the checks.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn straighten(
     vol: &Volume3D,
     nodes: &[[f64; 3]],

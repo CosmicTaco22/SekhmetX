@@ -38,9 +38,6 @@ pub struct Volume3D {
     pub center_lps: [f64; 3],
     /// Intensity-weighted 3D centroid of foreground anatomy (excluding air/background) in LPS mm.
     pub foreground_centroid_lps: [f64; 3],
-    /// Half-diagonal radius of the physical bounding box in mm.
-    #[allow(dead_code)]
-    pub bounding_radius_mm: f64,
     /// Native 9-element direction cosine matrix of the stack.
     pub native_orientation: [f64; 9],
     pub stored_window: Option<Window>,
@@ -53,9 +50,10 @@ pub struct Volume3D {
     pub suv_factor: Option<f64>,
     /// Background air threshold estimated from the volume intensity distribution.
     pub foreground_threshold: f32,
-    /// Points of a coarse grid where the volume holds anatomy (above the foreground
-    /// threshold), LPS mm, and the grid's cell size: where the scanned body is, so a
-    /// turned plane's scroll range covers it without running into empty corners.
+    /// The first and last anatomy point (above the foreground threshold) of each row
+    /// of a coarse grid, LPS mm, and the grid's cell size: where the scanned body
+    /// is, so a turned plane's scroll range covers it without running into empty
+    /// corners.
     pub foreground_points: Vec<[f64; 3]>,
     pub foreground_cell_mm: f64,
     /// `true` when slice spacing, orientation, and dimensions passed validation without forcing.
@@ -189,7 +187,7 @@ impl VolumeError {
 
 impl Volume3D {
     /// Builds a `Volume3D` from a `Series` and its decoded `Frame`s (one per slice).
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn from_series(series: &Series, frames: &[Arc<Frame>]) -> Option<Arc<Self>> {
         Self::from_series_checked(series, frames, false).ok()
     }
@@ -198,7 +196,7 @@ impl Volume3D {
     /// When `force` is `true`, even 1-2 slice stacks or RGB/irregular series are
     /// promoted into a 3D volume using fallback slice thickness / orientation,
     /// with `geometry_verified = false`.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn from_series_with_force(
         series: &Series,
         frames: &[Arc<Frame>],
@@ -434,11 +432,6 @@ impl Volume3D {
                 ),
             ),
         );
-        let bounding_radius_mm = 0.5
-            * (extent_x * extent_x + extent_y * extent_y + extent_z * extent_z)
-                .sqrt()
-                .max(10.0);
-
         // Estimate foreground threshold (e.g., tissue/bone vs surrounding air) and compute
         // the 3D anatomical center of mass so cross-study alignment ignores empty air margins.
         let fg_thresh = min_val + 0.22 * (max_val - min_val);
@@ -453,6 +446,10 @@ impl Volume3D {
             for y in (0..h).step_by(step_y) {
                 let y_mm = y as f64 * dy;
                 let row_base = z * slice_len + y * w;
+                // Only the first and last anatomy point of each row are kept: the
+                // extremes along any direction (all `content_span_mm` needs) lie
+                // at row ends, and the rest only slowed every scroll-range query.
+                let row_start = foreground_points.len();
                 for x in (0..w).step_by(step_x) {
                     let v = voxels[row_base + x] as f32 * voxel_scale + voxel_offset;
                     if v > fg_thresh {
@@ -469,6 +466,9 @@ impl Volume3D {
                         sum_pos[1] += pt[1] * weight;
                         sum_pos[2] += pt[2] * weight;
                         sum_w += weight;
+                        if foreground_points.len() > row_start + 1 {
+                            foreground_points.pop();
+                        }
                         foreground_points.push(pt);
                     }
                 }
@@ -508,7 +508,6 @@ impl Volume3D {
             spacing: [dx, dy, dz],
             center_lps,
             foreground_centroid_lps,
-            bounding_radius_mm,
             native_orientation: [
                 row_dir[0],
                 row_dir[1],
@@ -1624,25 +1623,6 @@ impl RigidTransform3D {
 
     fn global_map(&self, p: [f64; 3]) -> [f64; 3] {
         add3(self.pivot_target_lps, mat3_mul_vec(self.rotation, sub3(p, self.pivot_source_lps)))
-    }
-
-    /// Maps a 3D slicing plane `source_plane` from `source` (Study A) into the corresponding
-    /// 3D slicing plane in `target` (Study B), preserving both 3D slice position and 3D orientation.
-    #[allow(dead_code)]
-    pub fn transform_plane(&self, source_plane: &MprPlane3D) -> MprPlane3D {
-        let center_target = self.transform_point(source_plane.center_lps);
-        let u_target = normalize3(mat3_mul_vec(self.rotation, source_plane.u_axis));
-        let v_target = normalize3(mat3_mul_vec(self.rotation, source_plane.v_axis));
-        let n_target = normalize3(cross3(u_target, v_target));
-        MprPlane3D {
-            center_lps: center_target,
-            u_axis: u_target,
-            v_axis: v_target,
-            normal: n_target,
-            offset_mm: source_plane.offset_mm,
-            slab_mode: source_plane.slab_mode,
-            slab_thickness_mm: source_plane.slab_thickness_mm,
-        }
     }
 }
 

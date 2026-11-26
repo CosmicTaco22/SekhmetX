@@ -158,6 +158,7 @@ impl Series {
 
     /// The badge shown on the series: `MPR` for a complete volume, otherwise its
     /// plane (`AX`, `COR`, `SAG`, `OBL`, `2D`).
+    #[cfg(test)]
     pub fn cut_badge(&self) -> &'static str {
         if self.is_full_volume() {
             "MPR"
@@ -280,11 +281,27 @@ pub fn infer_missing_planes(series: &mut [Series]) {
 /// same reconstruction also exists as a complete volume in another plane (same MPR
 /// group or same name), the plane is added: `MPR-A`, `MPR-C`, `MPR-S`.
 pub fn study_cut_badge(series: &[Series], ri: usize) -> &'static str {
+    study_cut_badge_in(series, &full_volume_flags(series), ri)
+}
+
+/// Which series are complete volumes. `Series::is_full_volume` sorts the slice
+/// positions, so callers that ask about many series compute this once.
+pub fn full_volume_flags(series: &[Series]) -> Vec<bool> {
+    series.iter().map(Series::is_full_volume).collect()
+}
+
+/// `study_cut_badge` for every series of a study.
+pub fn study_cut_badges(series: &[Series]) -> Vec<&'static str> {
+    let full = full_volume_flags(series);
+    (0..series.len()).map(|ri| study_cut_badge_in(series, &full, ri)).collect()
+}
+
+fn study_cut_badge_in(series: &[Series], full: &[bool], ri: usize) -> &'static str {
     let s = &series[ri];
-    if !s.is_full_volume() {
-        return s.cut_badge();
+    if !full[ri] {
+        return s.dominant_plane.badge();
     }
-    let twins = twin_volumes(series, ri);
+    let twins = twin_volumes_in(series, full, ri);
     if twins.len() < 2 || twin_parent(series, &twins) == ri {
         return "MPR";
     }
@@ -304,9 +321,9 @@ pub fn lettered_badge(s: &Series) -> &'static str {
 /// The same reconstruction as complete volumes in different planes: `ri` and every
 /// complete volume of another plane in its MPR group or with its name. Empty or one
 /// entry when there are none.
-pub fn twin_volumes(series: &[Series], ri: usize) -> Vec<usize> {
+fn twin_volumes_in(series: &[Series], full: &[bool], ri: usize) -> Vec<usize> {
     let s = &series[ri];
-    if !s.is_full_volume() {
+    if !full[ri] {
         return Vec::new();
     }
     let key = series_name_key(&s.description);
@@ -316,9 +333,9 @@ pub fn twin_volumes(series: &[Series], ri: usize) -> Vec<usize> {
             && o.dominant_plane != s.dominant_plane
             && !out.iter().any(|&k| series[k].dominant_plane == o.dominant_plane)
             && o.modality == s.modality
+            && full[j]
             && ((s.mpr_group_id.is_some() && o.mpr_group_id == s.mpr_group_id)
                 || series_name_key(&o.description) == key)
-            && o.is_full_volume()
         {
             out.push(j);
         }
@@ -345,7 +362,8 @@ pub fn twin_parent(series: &[Series], twins: &[usize]) -> usize {
 /// kernel (soft tissue, or sharp for lung and bone), the closest acquisition time
 /// and the most similar name wins. Returns `(volume, reconstructions)` pairs.
 pub fn find_reconstructions(series: &[Series]) -> Vec<(usize, Vec<usize>)> {
-    let volumes: Vec<usize> = (0..series.len()).filter(|&i| series[i].is_full_volume()).collect();
+    let full = full_volume_flags(series);
+    let volumes: Vec<usize> = (0..series.len()).filter(|&i| full[i]).collect();
     if volumes.is_empty() {
         return Vec::new();
     }
@@ -360,7 +378,7 @@ pub fn find_reconstructions(series: &[Series]) -> Vec<(usize, Vec<usize>)> {
     };
     let mut out: Vec<(usize, Vec<usize>)> = Vec::new();
     for (c, child) in series.iter().enumerate() {
-        if child.is_full_volume() || child.slices.len() < 3 || child.normal.is_none() {
+        if full[c] || child.slices.len() < 3 || child.normal.is_none() {
             continue;
         }
         let mut best: Option<(f64, usize)> = None;
@@ -430,7 +448,7 @@ pub fn find_reconstructions(series: &[Series]) -> Vec<(usize, Vec<usize>)> {
             let parent = run
                 .iter()
                 .copied()
-                .find(|&r| series[r].is_full_volume())
+                .find(|&r| full[r])
                 .or_else(|| {
                     out.iter()
                         .find(|(_, kids)| kids.iter().any(|k| *k != c && run.contains(k)))
@@ -446,7 +464,7 @@ pub fn find_reconstructions(series: &[Series]) -> Vec<(usize, Vec<usize>)> {
                 _ => None,
             };
             let parent = match parent {
-                Some(v) if series[v].is_full_volume() && at(v).is_some_and(|dt| dt > 20.0) => None,
+                Some(v) if full[v] && at(v).is_some_and(|dt| dt > 20.0) => None,
                 other => other,
             }
             .or_else(|| {
@@ -474,7 +492,7 @@ pub fn find_reconstructions(series: &[Series]) -> Vec<(usize, Vec<usize>)> {
         if condensed.contains(&v) {
             continue;
         }
-        let twins = twin_volumes(series, v);
+        let twins = twin_volumes_in(series, &full, v);
         if twins.len() < 2 {
             continue;
         }
@@ -560,7 +578,43 @@ pub struct Study {
     pub mpr_groups: Vec<MprGroup>,
     /// `(complete volume, reconstructions made from it)`, from `find_reconstructions`.
     pub reformats: Vec<(usize, Vec<usize>)>,
+    /// Per series, computed once with `refresh_derived` (the series list redraws
+    /// every frame): the badge and whether it is a complete volume.
+    pub cut_badges: Vec<&'static str>,
+    pub full_volumes: Vec<bool>,
     pub files_missing: bool,
+}
+
+impl Study {
+    /// Works out the reconstructions, badges and complete-volume flags from
+    /// `series`; call after building or changing the series list.
+    pub fn refresh_derived(&mut self) {
+        self.reformats = find_reconstructions(&self.series);
+        self.cut_badges = study_cut_badges(&self.series);
+        self.full_volumes = full_volume_flags(&self.series);
+    }
+
+    fn derived_current(&self) -> bool {
+        self.cut_badges.len() == self.series.len() && self.full_volumes.len() == self.series.len()
+    }
+
+    /// The badge of series `ri` (`MPR`, `MPR-A`, `AX`, …).
+    pub fn cut_badge(&self, ri: usize) -> &'static str {
+        if self.derived_current() {
+            self.cut_badges[ri]
+        } else {
+            study_cut_badge(&self.series, ri)
+        }
+    }
+
+    /// Whether series `ri` is a complete volume.
+    pub fn is_full_volume(&self, ri: usize) -> bool {
+        if self.derived_current() {
+            self.full_volumes[ri]
+        } else {
+            self.series[ri].is_full_volume()
+        }
+    }
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1166,6 +1220,8 @@ fn build_index(headers: Vec<Header>) -> Index {
                     series: Vec::new(),
                     mpr_groups: Vec::new(),
                     reformats: Vec::new(),
+                    cut_badges: Vec::new(),
+                    full_volumes: Vec::new(),
                     files_missing: false,
                 },
                 HashMap::new(),
@@ -1286,9 +1342,9 @@ fn build_index(headers: Vec<Header>) -> Index {
             }
             let mpr_groups = build_mpr_groups(&mut series, &study.description);
             infer_missing_planes(&mut series);
-            study.reformats = find_reconstructions(&series);
             study.series = series;
             study.mpr_groups = mpr_groups;
+            study.refresh_derived();
             study
         })
         .collect();
@@ -2048,6 +2104,8 @@ mod tests {
             series: Vec::new(),
             mpr_groups: Vec::new(),
             reformats: Vec::new(),
+            cut_badges: Vec::new(),
+            full_volumes: Vec::new(),
             files_missing: false,
         };
         let stem = suggested_study_zip_stem(&study);

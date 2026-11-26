@@ -1,13 +1,12 @@
 [package]
 name = "sekhmetx"
-version = "0.9.4"
+version = "0.9.5"
 edition = "2024"
 description = "SekhmetX: a fast, native cross-platform DICOM viewer in Rust (modeled on IsiX / Horos / OsiriX)"
 license = "LGPL-3.0-or-later"
 
 [dependencies]
 anyhow = "1"
-bytemuck = "1"
 flate2 = "1"
 walkdir = "2.5"
 rayon = "1"

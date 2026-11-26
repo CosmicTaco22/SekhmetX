@@ -4162,11 +4162,10 @@ dependencies = [
 
 [[package]]
 name = "sekhmetx"
-version = "0.9.4"
+version = "0.9.5"
 dependencies = [
  "anyhow",
  "arboard",
- "bytemuck",
  "dicom-core",
  "dicom-dictionary-std",
  "dicom-object",
